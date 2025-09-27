@@ -16,6 +16,7 @@ USER_IMAGE=$(cor docker user-image ${ROOT_IMAGE})
 
 if [ -f "${GITHUB_ENV:-noSuchFile}" ]; then
     ENV_FILE_FLAGS="--env-file ${GITHUB_ENV}"
+    cat "${GITHUB_ENV}"
 fi
 
 docker run \
