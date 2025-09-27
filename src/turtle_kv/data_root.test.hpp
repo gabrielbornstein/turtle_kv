@@ -8,7 +8,8 @@ namespace turtle_kv {
 
 inline batt::StatusOr<std::filesystem::path> data_root() noexcept
 {
-  static const std::filesystem::path cached_ = []() -> batt::StatusOr<std::filesystem::path> {
+  static const StatusOr<std::filesystem::path> cached_ =
+      []() -> batt::StatusOr<std::filesystem::path> {
     const char* var_name = "TURTLE_KV_TEST_DIR";
     const char* var_value = std::getenv(var_name);
 
