@@ -14,7 +14,7 @@ PROJECT_DIR=$(realpath $(dirname "${SCRIPT_DIR}"))
 ROOT_IMAGE=registry.gitlab.com/batteriesincluded/batt-docker/batteries-debian12-build-tools:0.5.0
 USER_IMAGE=$(cor docker user-image ${ROOT_IMAGE})
 
-if [ "${GITHUB_ENV:-}" != "" && -f "${GITHUB_ENV}" ]; then
+if [ -f "${GITHUB_ENV:-noSuchFile}" ]; then
     ENV_FILE_FLAGS="--env-file ${GITHUB_ENV}"
 fi
 
