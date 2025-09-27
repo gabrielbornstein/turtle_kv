@@ -46,7 +46,7 @@ TEST(KVStoreTest, CreateAndOpen)
   batt::StatusOr<std::filesystem::path> root = turtle_kv::data_root();
   ASSERT_TRUE(root.ok());
 
-  std::filesystem::path test_kv_store_dir = *root / "turtle_kv_Test/kv_scan_stress";
+  std::filesystem::path test_kv_store_dir = *root / "turtle_kv_Test" / "kv_create_and_open";
 
   std::thread test_thread{[&] {
     BATT_CHECK_OK(batt::pin_thread_to_cpu(0));
@@ -181,7 +181,7 @@ TEST(KVStoreTest, ScanStressTest)
   batt::StatusOr<std::filesystem::path> root = turtle_kv::data_root();
   ASSERT_TRUE(root.ok());
 
-  std::filesystem::path test_kv_store_dir = *root / "turtle_kv_Test/kv_scan_stress";
+  std::filesystem::path test_kv_store_dir = *root / "turtle_kv_Test" / "kv_scan_stress";
 
   const usize kNumKeys = 1 * 1000 * 1000;
   const double kNumScansPerKey = 0.15;

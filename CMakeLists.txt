@@ -21,10 +21,6 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 #
 set(CMAKE_SKIP_INSTALL_RPATH TRUE)
 
-# Turn off terminal color codes in gcc.
-#
-add_definitions("-fno-diagnostics-color")
-
 # Set options needed for stack tracing.
 #
 add_compile_options(-D_GNU_SOURCE -fno-omit-frame-pointer)
@@ -40,13 +36,7 @@ add_compile_options(-Wno-array-bounds)
 
 add_compile_definitions(BOOST_ERROR_CODE_HEADER_ONLY)
 
-set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -fno-omit-frame-pointer")
-set(CMAKE_LINKER_FLAGS_DEBUG "${CMAKE_LINKER_FLAGS_DEBUG} -fno-omit-frame-pointer")
-
-set(CMAKE_CXX_FLAGS_RELEASE  "-O3 -DNDEBUG -march=native")
-
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-omit-frame-pointer -march=native -mbmi2 -mavx2 -msse2 -msse4.2 -Wno-address-of-packed-member")
-set(CMAKE_LINKER_FLAGS "${CMAKE_LINKER_FLAGS} -fno-omit-frame-pointer")
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-address-of-packed-member")
 
 add_subdirectory(src)
 add_subdirectory(bench)

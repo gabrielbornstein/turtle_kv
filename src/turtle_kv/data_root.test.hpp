@@ -8,16 +8,24 @@ namespace turtle_kv {
 
 inline batt::StatusOr<std::filesystem::path> data_root() noexcept
 {
-  const char* var_name = "TURTLE_KV_TEST_DIR";
-  const char* var_value = std::getenv(var_name);
+  static const std::filesystem::path cached_ = []() -> batt::StatusOr<std::filesystem::path> {
+    const char* var_name = "TURTLE_KV_TEST_DIR";
+    const char* var_value = std::getenv(var_name);
 
-  if (var_value == nullptr) {
-    LOG(ERROR) << "\nERROR: Environment variable '" << var_name
-               << "' is not defined. Define it to resolve this error.";
-    BATT_REQUIRE_NE(var_value, nullptr);
-  }
+    if (var_value == nullptr) {
+      std::error_code ec;
+      std::filesystem::path tmp_dir = std::filesystem::temp_directory_path(ec);
+      BATT_REQUIRE_OK(ec);
 
-  return std::filesystem::path{var_value};
+      LOG(INFO) << "Environment variable '" << var_name
+                << "' is not defined. Using default: " << tmp_dir;
+
+      return tmp_dir;
+    }
+    return std::filesystem::path{var_value};
+  }();
+
+  return cached_;
 }
 
 }  // namespace turtle_kv
