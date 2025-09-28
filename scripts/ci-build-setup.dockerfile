@@ -10,5 +10,5 @@ RUN which cor 2>&1 >/dev/null || {{ \
 #----- --- -- -  -  -   -
 # Initialize a clean Conan cache/home.
 #
-ENV CONAN_HOME "$HOME/_cache/.conan2"
+ENV CONAN_HOME "{user_home_dir}/_cache/.conan2"
 RUN cor conan profile detect
