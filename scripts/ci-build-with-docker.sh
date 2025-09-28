@@ -20,6 +20,7 @@ docker run \
        --env CACHE_CONAN_REMOTE \
        --env CACHE_CONAN_LOGIN_USERNAME \
        --env CACHE_CONAN_PASSWORD \
+       --add-host=ci-cache-host=127.0.0.1 \
        --volume "${HOME}/ci_conan_hosts:/etc/hosts:ro" \
        --volume "${PROJECT_DIR}:${PROJECT_DIR}" \
        --workdir "${PROJECT_DIR}" \
