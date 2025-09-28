@@ -5,8 +5,6 @@ set -Eeuo pipefail
 SCRIPT_DIR=$(realpath $(dirname "$0"))
 PROJECT_DIR=$(realpath $(dirname "${SCRIPT_DIR}"))
 
-. "${SCRIPT_DIR}/install-cor.sh"
-
 # Run the ci-build.sh script using docker.
 #
 ROOT_IMAGE=registry.gitlab.com/batteriesincluded/batt-docker/batteries-debian12-build-tools:0.5.0

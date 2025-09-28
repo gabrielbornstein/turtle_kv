@@ -2,18 +2,6 @@
 #
 set -Eeuo pipefail
 
-SCRIPT_DIR=$(realpath $(dirname "$0"))
-PROJECT_DIR=$(realpath $(dirname "${SCRIPT_DIR}"))
-
-#. "${SCRIPT_DIR}/install-cor.sh"
-
-#----- --- -- -  -  -   -
-# Initialize a clean Conan cache/home.
-#
-#export CONAN_HOME="${HOME}/_cache/.conan2"
-#cor conan profile detect
-#----- --- -- -  -  -   -
-
 # Pull configs for this build.
 #
 cor conan config install --type git https://gitlab.com/batteriesincluded/conan-config/linux-gcc12-x86_64.git
