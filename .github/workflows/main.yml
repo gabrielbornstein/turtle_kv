@@ -1,8 +1,8 @@
 name: "CI Pipeline"
 on:
   pull_request:
-    branches:    
-      - main    
+    branches:
+      - main
   push:
     branches:
       - main
@@ -12,13 +12,19 @@ on:
 concurrency: custom_runner
 
 jobs:
+  #+++++++++++-+-+--+----- --- -- -  -  -   -
   build_and_test:
     runs-on: self-hosted
+    defaults:
+      run:
+        shell: bash
     steps:
+      #----- --- -- -  -  -   -
       - name: Checkout repository
         uses: actions/checkout@master
         with:
           submodules: recursive
+      #----- --- -- -  -  -   -
       - name: Build and test
         env:
           CACHE_CONAN_REMOTE: ${{ vars.CACHE_CONAN_REMOTE }}
