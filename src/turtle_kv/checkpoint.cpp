@@ -26,7 +26,12 @@ namespace turtle_kv {
 
   Subtree tree = Subtree::from_page_id(tree_root_id);
 
+  LOG(INFO) << "About to crash before getting tree.get_height?";
+
   batt::StatusOr<i32> height = tree.get_height(*(checkpoint_volume.new_job()));
+
+  LOG(INFO) << "If this prints, we didn't crash";
+
   BATT_REQUIRE_OK(height);
   BATT_ASSIGN_OK_RESULT(llfs::SlotReadLock slot_read_lock,
 

@@ -314,4 +314,140 @@ TEST(KVStoreTest, ScanStressTest)
   LOG(INFO) << BATT_INSPECT(n_scans);
 }
 
+//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
+//
+// TODO: [Gabe Bornstein 10/30/25] Consider making the test generic so we can set different
+// checkpoint distances and check recovery after variable number of checkpoints have been created
+//
+TEST(KVStoreTest, CheckpointRecovery)
+{
+  batt::StatusOr<std::filesystem::path> root = turtle_kv::data_root();
+  ASSERT_TRUE(root.ok());
+
+  std::filesystem::path test_kv_store_dir = *root / "turtle_kv_Test" / "kv_scan_stress";
+
+  const usize kNumKeys = 1 * 1000 * 1000;
+
+  // TODO: [Gabe Bornstein 11/3/25] Calculate how many put we need to do before a checkpoint is
+  // taken
+  //
+
+  std::default_random_engine rng{/*seed=*/1};
+  RandomStringGenerator generate_key;
+  SequentialStringGenerator generate_value{100};
+
+  StdMapTable expected_table;
+
+  KVStore::Config kv_store_config;
+
+  kv_store_config.initial_capacity_bytes = 0 * kMiB;
+  kv_store_config.change_log_size_bytes = 512 * kMiB * 10;
+
+  TreeOptions& tree_options = kv_store_config.tree_options;
+
+  tree_options.set_node_size(4 * kKiB);
+  tree_options.set_leaf_size(1 * kMiB);
+  tree_options.set_key_size_hint(24);
+  tree_options.set_value_size_hint(10);
+
+  // CREATE A STORAGE_CONTEXT
+  //
+  StatusOr<llfs::ScopedIoRing> scoped_io_ring =
+      llfs::ScopedIoRing::make_new(llfs::MaxQueueDepth{4096},  //
+                                   llfs::ThreadPoolSize{1});
+
+  ASSERT_TRUE(scoped_io_ring.ok()) << BATT_INSPECT(scoped_io_ring.status());
+
+  auto storage_context =
+      llfs::StorageContext::make_shared(batt::Runtime::instance().default_scheduler(),  //
+                                        scoped_io_ring->get_io_ring());
+
+  auto runtime_options = KVStore::RuntimeOptions::with_default_values();
+
+  BATT_CHECK_OK(
+      KVStore::configure_storage_context(*storage_context, tree_options, runtime_options));
+
+  Status create_status =
+      KVStore::create(*storage_context, test_kv_store_dir, kv_store_config, RemoveExisting{true});
+
+  ASSERT_TRUE(create_status.ok()) << BATT_INSPECT(create_status);
+
+  StatusOr<std::unique_ptr<KVStore>> open_result =
+      KVStore::open(batt::Runtime::instance().default_scheduler(),
+                    batt::WorkerPool::default_pool(),
+                    *storage_context,
+                    test_kv_store_dir,
+                    tree_options,
+                    runtime_options);
+
+  ASSERT_TRUE(open_result.ok()) << BATT_INSPECT(open_result.status());
+
+  KVStore& actual_table = **open_result;
+
+  actual_table.set_checkpoint_distance(5);
+
+  // TODO: Change to a std::map that can save key/value
+  //
+  std::map<std::string, std::string> keys_values;
+
+  for (usize i = 0; i < kNumKeys; ++i) {
+    std::string key = generate_key(rng);
+    std::string value = generate_value();
+
+    Status expected_put_status = expected_table.put(KeyView{key}, ValueView::from_str(value));
+    Status actual_put_status = actual_table.put(KeyView{key}, ValueView::from_str(value));
+    // TODO: [Gabe Bornstein 10/31/25] Find out which slot/ key the last checkpoint was taken at.
+    // Stop adding new keys and values to vector at this point.
+    //
+    keys_values[key] = value;
+
+    ASSERT_TRUE(expected_put_status.ok()) << BATT_INSPECT(expected_put_status);
+    ASSERT_TRUE(actual_put_status.ok()) << BATT_INSPECT(actual_put_status);
+  }
+
+  // Test recovering checkpoints after stress test
+  //
+  actual_table.halt();
+  actual_table.join();
+  open_result->reset();
+
+  batt::StatusOr<std::unique_ptr<llfs::Volume>> checkpoint_log_volume =
+      turtle_kv::open_checkpoint_log(*storage_context,  //
+                                     test_kv_store_dir / "checkpoint_log.llfs");
+
+  batt::StatusOr<turtle_kv::Checkpoint> checkpoint =
+      KVStore::recover_latest_checkpoint(**checkpoint_log_volume, test_kv_store_dir);
+
+  BATT_CHECK_OK(checkpoint_log_volume);
+
+  LOG(INFO) << "checkpoint.tree_height()==" << checkpoint->tree_height()
+            << "\ncheckpoint.batch_upper_bound()==" << checkpoint->batch_upper_bound()
+            << "\ncheckpoint.root_id()==" << checkpoint->root_id();
+
+  // There is no checkpoint
+  //
+  if (checkpoint->batch_upper_bound() == turtle_kv::DeltaBatchId::from_u64(0)) {
+    return;
+  }
+
+  // Iterate over all keys and verify their corresponding value in the checkpoint is correct
+  //
+  for (const auto& [key, actual_value] : keys_values) {
+    turtle_kv::KeyView key_view{key};
+    turtle_kv::PageSliceStorage slice_storage;
+    std::unique_ptr<llfs::PageCacheJob> page_loader = (*checkpoint_log_volume)->new_job();
+    turtle_kv::KeyQuery key_query{*page_loader, slice_storage, tree_options, key_view};
+
+    batt::StatusOr<turtle_kv::ValueView> checkpoint_value = checkpoint->find_key(key_query);
+
+    // TODO: Change to a BATT_ASSERT
+    //
+    if (checkpoint_value.ok() && *checkpoint_value == ValueView::from_str(actual_value)) {
+      LOG(INFO) << "Found key: " << key << " in checkpoint with value" << *checkpoint_value;
+    } else {
+      BATT_CHECK_OK(checkpoint_value) << "Key not found in checkpoint: " << key;
+    }
+  }
+}
+
 }  // namespace
