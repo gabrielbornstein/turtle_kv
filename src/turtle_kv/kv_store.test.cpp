@@ -434,7 +434,8 @@ TEST_P(CheckpointTest, CheckpointRecovery)
     LOG(INFO) << "Created " << num_checkpoints_created << " checkpoints after rounding error";
   }
 
-  BATT_CHECK_EQ(num_checkpoints_created, this->num_checkpoints_to_create);
+  BATT_CHECK_EQ(num_checkpoints_created, this->num_checkpoints_to_create) << "Did not take the "
+                << "correct number of checkponts. There is a bug in this test.";
 
   // Test recovering checkpoints after stress test
   //
@@ -455,7 +456,10 @@ TEST_P(CheckpointTest, CheckpointRecovery)
   batt::StatusOr<turtle_kv::Checkpoint> checkpoint =
       KVStore::recover_latest_checkpoint(**checkpoint_log_volume, test_kv_store_dir);
 
-  BATT_CHECK_OK(checkpoint);
+  if (!checkpoint.ok()) {
+    EXPECT_TRUE(checkpoint.ok());
+    return;
+  }
 
   // There is no checkpoint
   //
@@ -498,6 +502,6 @@ INSTANTIATE_TEST_SUITE_P(
                     CheckpointTestParams(1, 0),
                     CheckpointTestParams(0, 100),
                     CheckpointTestParams(5, 100000),
-                    CheckpointTestParams(10, 100000),
+                    CheckpointTestParams(10, 100000)
                     //  TODO: [Gabe Bornstein 11/6/25] Sporadic Failing. Likely cause by keys not being flushed before that last checkpoint is taken. Need fsync to resolve.
                     /*CheckpointTestParams(101, 100000)*/));
