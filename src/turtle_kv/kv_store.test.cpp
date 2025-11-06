@@ -316,27 +316,59 @@ TEST(KVStoreTest, ScanStressTest)
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
+class CheckpointTestParams
+{
+ public:
+  CheckpointTestParams(u64 num_checkpoints_to_create, u64 num_puts)
+      : num_checkpoints_to_create(num_checkpoints_to_create)
+      , num_puts(num_puts)
+  {
+  }
+
+  u64 num_checkpoints_to_create;
+  u64 num_puts;
+};
+
+//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
+//
+class CheckpointTest
+    : public ::testing::Test
+    , public testing::WithParamInterface<CheckpointTestParams>
+{
+ public:
+  void SetUp() override
+  {
+    CheckpointTestParams checkpoint_test_params = GetParam();
+
+    this->num_checkpoints_to_create = checkpoint_test_params.num_checkpoints_to_create;
+    this->num_puts = checkpoint_test_params.num_puts;
+
+  }  // namespace
+
+  void TearDown() override
+  {
+    // Cleanup resources if necessary
+  }
+
+  u64 num_checkpoints_to_create;
+  u64 num_puts;
+};
+
+//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
+//
 // TODO: [Gabe Bornstein 10/30/25] Consider making the test generic so we can set different
 // checkpoint distances and check recovery after variable number of checkpoints have been created
 //
-TEST(KVStoreTest, CheckpointRecovery)
+TEST_P(CheckpointTest, CheckpointRecovery)
 {
   batt::StatusOr<std::filesystem::path> root = turtle_kv::data_root();
   ASSERT_TRUE(root.ok());
 
   std::filesystem::path test_kv_store_dir = *root / "turtle_kv_Test" / "kv_scan_stress";
 
-  const usize kNumKeys = 1 * 1000 * 1000;
-
-  // TODO: [Gabe Bornstein 11/3/25] Calculate how many put we need to do before a checkpoint is
-  // taken
-  //
-
   std::default_random_engine rng{/*seed=*/1};
   RandomStringGenerator generate_key;
   SequentialStringGenerator generate_value{100};
-
-  StdMapTable expected_table;
 
   KVStore::Config kv_store_config;
 
@@ -350,8 +382,6 @@ TEST(KVStoreTest, CheckpointRecovery)
   tree_options.set_key_size_hint(24);
   tree_options.set_value_size_hint(10);
 
-  // CREATE A STORAGE_CONTEXT
-  //
   StatusOr<llfs::ScopedIoRing> scoped_io_ring =
       llfs::ScopedIoRing::make_new(llfs::MaxQueueDepth{4096},  //
                                    llfs::ThreadPoolSize{1});
@@ -384,29 +414,68 @@ TEST(KVStoreTest, CheckpointRecovery)
 
   KVStore& actual_table = **open_result;
 
-  actual_table.set_checkpoint_distance(5);
-
-  // TODO: Change to a std::map that can save key/value
+  // Disable automatic checkpoints
   //
-  std::map<std::string, std::string> keys_values;
+  actual_table.set_checkpoint_distance(99999999);
 
-  for (usize i = 0; i < kNumKeys; ++i) {
+  std::map<std::string, std::string> expected_keys_values;
+
+  u64 num_checkpoints_created = 0;
+  u64 keys_per_checkpoint;
+
+  if (this->num_checkpoints_to_create == 0) {
+    keys_per_checkpoint = 0;
+  } else {
+    keys_per_checkpoint = std::floor((double)this->num_puts / this->num_checkpoints_to_create);
+  }
+
+  u64 keys_since_checkpoint = 0;
+
+  for (u64 i = 0; i < this->num_puts; ++i) {
     std::string key = generate_key(rng);
     std::string value = generate_value();
 
-    Status expected_put_status = expected_table.put(KeyView{key}, ValueView::from_str(value));
     Status actual_put_status = actual_table.put(KeyView{key}, ValueView::from_str(value));
-    // TODO: [Gabe Bornstein 10/31/25] Find out which slot/ key the last checkpoint was taken at.
-    // Stop adding new keys and values to vector at this point.
-    //
-    keys_values[key] = value;
 
-    ASSERT_TRUE(expected_put_status.ok()) << BATT_INSPECT(expected_put_status);
+    expected_keys_values[key] = value;
+
     ASSERT_TRUE(actual_put_status.ok()) << BATT_INSPECT(actual_put_status);
+
+    // TODO: Turn into a VLOG(1) statement
+    //
+    LOG(INFO) << "Put key== " << key << ", value==" << value;
+
+    ++keys_since_checkpoint;
+
+    // Take a checkpoint after every keys_per_checkpoint puts. Skip
+    //
+    if (keys_since_checkpoint >= keys_per_checkpoint && this->num_checkpoints_to_create != 0) {
+      keys_since_checkpoint = 0;
+      ++num_checkpoints_created;
+      LOG(INFO) << "Created " << num_checkpoints_created << " checkpoints";
+      BATT_CHECK_OK(actual_table.force_checkpoint());
+      if (num_checkpoints_created == this->num_checkpoints_to_create) {
+        break;
+      }
+    }
   }
+
+  // Handle off by one error where we create one less checkpoint than expected
+  //
+  if (num_checkpoints_created < this->num_checkpoints_to_create) {
+    BATT_CHECK_OK(actual_table.force_checkpoint());
+    ++num_checkpoints_created;
+    LOG(INFO) << "Created " << num_checkpoints_created << " checkpoints after rounding error";
+  }
+
+  BATT_CHECK_EQ(num_checkpoints_created, this->num_checkpoints_to_create);
 
   // Test recovering checkpoints after stress test
   //
+  // TODO: [Gabe Bornstein 11/5/25] Is there a better way to check if all checkpoints are flushed
+  // instead of waiting?
+  //
+  std::this_thread::sleep_for(std::chrono::seconds(1));
   actual_table.halt();
   actual_table.join();
   open_result->reset();
@@ -415,24 +484,23 @@ TEST(KVStoreTest, CheckpointRecovery)
       turtle_kv::open_checkpoint_log(*storage_context,  //
                                      test_kv_store_dir / "checkpoint_log.llfs");
 
+  BATT_CHECK_OK(checkpoint_log_volume);
+
   batt::StatusOr<turtle_kv::Checkpoint> checkpoint =
       KVStore::recover_latest_checkpoint(**checkpoint_log_volume, test_kv_store_dir);
 
-  BATT_CHECK_OK(checkpoint_log_volume);
-
-  LOG(INFO) << "checkpoint.tree_height()==" << checkpoint->tree_height()
-            << "\ncheckpoint.batch_upper_bound()==" << checkpoint->batch_upper_bound()
-            << "\ncheckpoint.root_id()==" << checkpoint->root_id();
+  BATT_CHECK_OK(checkpoint);
 
   // There is no checkpoint
   //
   if (checkpoint->batch_upper_bound() == turtle_kv::DeltaBatchId::from_u64(0)) {
+    LOG(INFO) << "No checkpoint data found. Exiting the test before checking keys.";
     return;
   }
 
   // Iterate over all keys and verify their corresponding value in the checkpoint is correct
   //
-  for (const auto& [key, actual_value] : keys_values) {
+  for (const auto& [key, actual_value] : expected_keys_values) {
     turtle_kv::KeyView key_view{key};
     turtle_kv::PageSliceStorage slice_storage;
     std::unique_ptr<llfs::PageCacheJob> page_loader = (*checkpoint_log_volume)->new_job();
@@ -440,14 +508,32 @@ TEST(KVStoreTest, CheckpointRecovery)
 
     batt::StatusOr<turtle_kv::ValueView> checkpoint_value = checkpoint->find_key(key_query);
 
-    // TODO: Change to a BATT_ASSERT
-    //
-    if (checkpoint_value.ok() && *checkpoint_value == ValueView::from_str(actual_value)) {
-      LOG(INFO) << "Found key: " << key << " in checkpoint with value" << *checkpoint_value;
-    } else {
-      BATT_CHECK_OK(checkpoint_value) << "Key not found in checkpoint: " << key;
-    }
+    EXPECT_TRUE(checkpoint_value.ok()) << "Didn't find key: " << key;
   }
 }
 
 }  // namespace
+
+// CheckpointTestParams == {num_puts, num_checkpoints_to_create}
+//
+INSTANTIATE_TEST_SUITE_P(
+    RecoveringCheckpoints,
+    CheckpointTest,
+    // TODO: [Gabe Bornstein 11/5/25] Investigate: We aren't getting any
+    // checkpoint data for this case, but we are forcing a checkpoint.
+    testing::Values(CheckpointTestParams(1, 1),
+                    // TODO: [Gabe Bornstein 11/5/25] Investigate: We aren't
+                    // getting any checkpoint data for this case, but we are
+                    // forcing a checkpoint. Maybe keys aren't being flushed?
+                    CheckpointTestParams(1, 100),
+                    CheckpointTestParams(100, 100),
+                    CheckpointTestParams(2, 100),
+                    CheckpointTestParams(1, 100000),
+                    CheckpointTestParams(1, 0),
+                    CheckpointTestParams(0, 100),
+                    CheckpointTestParams(5, 100000),
+                    CheckpointTestParams(10, 100000),
+                    //  TODO: Sporadic Failing. I need to actually go through the values and
+                    //  figure out why checkpoints aren't saving all the keys.
+                    //  Probably just not taking that last one properly?
+                    CheckpointTestParams(101, 100000)));

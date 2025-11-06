@@ -20,17 +20,16 @@ namespace turtle_kv {
     llfs::SlotParse& slot,
     const PackedCheckpoint& packed_checkpoint) noexcept
 {
-  LOG(INFO) << "Entering Checkpoint::recover";
+  VLOG(1) << "Entering Checkpoint::recover";
+
+  // TODO: [Gabe Bornstein 11/4/25] Consider, error handling for invalid checkpoint
+  //
 
   const llfs::PageId tree_root_id = packed_checkpoint.new_tree_root.as_page_id();
 
   Subtree tree = Subtree::from_page_id(tree_root_id);
 
-  LOG(INFO) << "About to crash before getting tree.get_height?";
-
   batt::StatusOr<i32> height = tree.get_height(*(checkpoint_volume.new_job()));
-
-  LOG(INFO) << "If this prints, we didn't crash";
 
   BATT_REQUIRE_OK(height);
   BATT_ASSIGN_OK_RESULT(llfs::SlotReadLock slot_read_lock,
@@ -39,10 +38,7 @@ namespace turtle_kv {
                                                      llfs::LogReadMode::kDurable,
                                                      /*lock_holder=*/"Checkpoint::recover"));
 
-  // TODO: [Gabe Bornstein] 10/28/25 Handle case where there are no checkpoints in the volume
-  //
-
-  LOG(INFO) << "Exiting Checkpoint::recover";
+  VLOG(1) << "Exiting Checkpoint::recover";
   return Checkpoint{
       tree_root_id,
       std::make_shared<Subtree>(std::move(tree)),

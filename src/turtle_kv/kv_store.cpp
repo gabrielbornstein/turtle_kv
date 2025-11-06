@@ -869,7 +869,7 @@ using CheckpointEvent = llfs::PackedVariant<turtle_kv::PackedCheckpoint>;
 //
 batt::StatusOr<CheckpointSlotPairs> recover_packed_checkpoints(llfs::Volume& volume)
 {
-  LOG(INFO) << "Entering recover_packed_checkpoints";
+  VLOG(1) << "Entering recover_packed_checkpoints";
 
   llfs::StatusOr<llfs::TypedVolumeReader<CheckpointEvent>> reader =
       volume.typed_reader<CheckpointEvent>(
@@ -894,13 +894,13 @@ batt::StatusOr<CheckpointSlotPairs> recover_packed_checkpoints(llfs::Volume& vol
         });
 
     BATT_REQUIRE_OK(n_slots_visited);
-    LOG(INFO) << "Visited n_slots_visited= " << *n_slots_visited << " checkpoints";
+    VLOG(2) << "Visited n_slots_visited= " << *n_slots_visited << " checkpoints";
     if (*n_slots_visited == 0) {
       break;
     }
   }
 
-  LOG(INFO) << "Exiting recover_packed_checkpoints";
+  VLOG(1) << "Exiting recover_packed_checkpoints";
   return checkpoints;
 }
 
@@ -910,31 +910,20 @@ batt::StatusOr<CheckpointSlotPairs> recover_packed_checkpoints(llfs::Volume& vol
     llfs::Volume& checkpoint_log_volume,
     std::filesystem::path checkpoint_log_dir)
 {
-  // batt::StatusOr<std::unique_ptr<llfs::Volume>> checkpoint_log_volume =
-  //     turtle_kv::open_checkpoint_log(storage_context,  //
-  //                                    checkpoint_log_dir / checkpoint_log_file_name());
-
-  // BATT_REQUIRE_OK(checkpoint_log_volume);
-
   batt::StatusOr<CheckpointSlotPairs> packed_checkpoints =
       recover_packed_checkpoints(checkpoint_log_volume);
 
   BATT_REQUIRE_OK(packed_checkpoints);
 
   if (packed_checkpoints->size() == 0) {
-    // TODO: [Gabe Bornstein 10/28/25] Probably want to do something else here that denotes "no
-    // checkpoints"
-    //
-    return Checkpoint();
+    return Checkpoint::empty_at_batch(DeltaBatchId::from_u64(0));
   }
 
-  // Find the most recent checkpoint. Is it always just packed_checkpoints.back()?
+  // Validate that the checkpoints are in ascending order based on batch_upper_bound
   //
   std::pair<llfs::SlotParse, turtle_kv::PackedCheckpoint> prev_checkpoint =
       packed_checkpoints->front();
 
-  // Validate that the checkpoints are in ascending order based on batch_upper_bound
-  //
   for (auto checkpoint : *packed_checkpoints) {
     BATT_CHECK_GE(checkpoint.second.batch_upper_bound, prev_checkpoint.second.batch_upper_bound);
     prev_checkpoint = checkpoint;
@@ -1029,6 +1018,8 @@ void KVStore::checkpoint_update_thread_main()
 StatusOr<std::unique_ptr<CheckpointJob>> KVStore::apply_batch_to_checkpoint(
     std::unique_ptr<DeltaBatch>&& delta_batch)
 {
+  // A MemTable has filled up.
+  //
   if (delta_batch) {
     // Apply the finalized MemTable to the current checkpoint (in-memory).
     //
@@ -1044,7 +1035,7 @@ StatusOr<std::unique_ptr<CheckpointJob>> KVStore::apply_batch_to_checkpoint(
 
   // If the batch count is below the checkpoint distance, we are done.
   //
-  if (this->checkpoint_batch_count_ < this->checkpoint_distance_.load()) {
+  if (!this->should_create_checkpoint()) {
     return nullptr;
   }
 
