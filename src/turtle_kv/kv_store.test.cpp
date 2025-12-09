@@ -497,13 +497,13 @@ INSTANTIATE_TEST_SUITE_P(
         // CheckpointTestParams(1, 100),
         // TODO: [Gabe Bornstein 11/5/25] Investigate: We ARE
         // getting checkpoint data for this case. Does taking additional checkpoints flush keys?
-        CheckpointTestParams(2, 100),
-        CheckpointTestParams(100, 100),
-        CheckpointTestParams(1, 100000),
-        CheckpointTestParams(1, 0),
-        CheckpointTestParams(0, 100),
-        CheckpointTestParams(5, 100000),
-        CheckpointTestParams(10, 100000)
+        CheckpointTestParams(/* num_puts */ 2, /* num_checkpoints_to_create */ 100),
+        CheckpointTestParams(/* num_puts */ 100, /* num_checkpoints_to_create */ 100),
+        CheckpointTestParams(/* num_puts */ 1, /* num_checkpoints_to_create */ 100000),
+        CheckpointTestParams(/* num_puts */ 1, /* num_checkpoints_to_create */ 0),
+        CheckpointTestParams(/* num_puts */ 0, /* num_checkpoints_to_create */ 100),
+        CheckpointTestParams(/* num_puts */ 5, /* num_checkpoints_to_create */ 100000),
+        CheckpointTestParams(/* num_puts */ 10, /* num_checkpoints_to_create */ 100000)
         //  TODO: [Gabe Bornstein 11/6/25] Sporadic Failing. Likely cause by keys not
         //  being flushed before that last checkpoint is taken. Need fsync to resolve.
         /*CheckpointTestParams(101, 100000)*/));

@@ -879,15 +879,20 @@ using CheckpointEvent = llfs::PackedVariant<turtle_kv::PackedCheckpoint>;
 
   BATT_REQUIRE_OK(reader);
 
-  std::vector<std::pair<llfs::SlotParse, turtle_kv::PackedCheckpoint>> checkpoints;
+  std::pair<llfs::SlotParse, turtle_kv::PackedCheckpoint> prev_checkpoint;
+  prev_checkpoint.second.batch_upper_bound = 0;
 
   for (;;) {
     llfs::StatusOr<usize> n_slots_visited = reader->visit_typed_next(
         batt::WaitForResource::kFalse,
-        [&checkpoints](const llfs::SlotParse& slot,
-                       const turtle_kv::PackedCheckpoint& packed_checkpoint) {
-          std::pair<llfs::SlotParse, turtle_kv::PackedCheckpoint> pair(slot, packed_checkpoint);
-          checkpoints.push_back(pair);
+        [&prev_checkpoint](const llfs::SlotParse& slot,
+                           const turtle_kv::PackedCheckpoint& packed_checkpoint) {
+          // Validate that the checkpoints are in ascending order based on batch_upper_bound
+          //
+          BATT_CHECK_GE(packed_checkpoint.batch_upper_bound,
+                        prev_checkpoint.second.batch_upper_bound);
+          prev_checkpoint =
+              std::pair<llfs::SlotParse, turtle_kv::PackedCheckpoint>{slot, packed_checkpoint};
           return llfs::OkStatus();
         });
 
@@ -900,21 +905,13 @@ using CheckpointEvent = llfs::PackedVariant<turtle_kv::PackedCheckpoint>;
 
   // Return empty checkpoint if no checkpoints are found
   //
-  if (checkpoints.size() == 0) {
+  if (prev_checkpoint.second.batch_upper_bound == 0) {
     return Checkpoint::empty_at_batch(DeltaBatchId::from_u64(0));
   }
 
-  // Validate that the checkpoints are in ascending order based on batch_upper_bound
-  //
-  std::pair<llfs::SlotParse, turtle_kv::PackedCheckpoint> prev_checkpoint = checkpoints.front();
-  for (auto checkpoint : checkpoints) {
-    BATT_CHECK_GE(checkpoint.second.batch_upper_bound, prev_checkpoint.second.batch_upper_bound);
-    prev_checkpoint = checkpoint;
-  }
-
   return turtle_kv::Checkpoint::recover(checkpoint_log_volume,
-                                        checkpoints.back().first,
-                                        checkpoints.back().second);
+                                        prev_checkpoint.first,
+                                        prev_checkpoint.second);
 }
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -

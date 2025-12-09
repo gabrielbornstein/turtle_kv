@@ -173,14 +173,6 @@ class KVStore : public Table
     return this->checkpoint_distance_.load();
   }
 
-  bool should_create_checkpoint() const
-  {
-    // If the batch count is greater than or equal to the checkpoint distance, we need to create a
-    // checkpoint.
-    //
-    return this->checkpoint_batch_count_ >= this->checkpoint_distance_.load();
-  }
-
   Status force_checkpoint();
 
   std::function<void(std::ostream&)> debug_info() noexcept;
@@ -226,6 +218,14 @@ class KVStore : public Table
       std::unique_ptr<DeltaBatch>&& delta_batch);
 
   void checkpoint_update_thread_main();
+
+  bool should_create_checkpoint() const
+  {
+    // If the batch count is greater than or equal to the checkpoint distance, we need to create a
+    // checkpoint.
+    //
+    return this->checkpoint_batch_count_ >= this->checkpoint_distance_.load();
+  }
 
   Status commit_checkpoint(std::unique_ptr<CheckpointJob>&& checkpoint_job);
 
