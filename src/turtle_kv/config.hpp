@@ -45,7 +45,7 @@
 
 /** \brief Enable/disable explicit support for gperftools/tcmalloc.
  */
-#define TURTLE_KV_ENABLE_TCMALLOC 1
+#define TURTLE_KV_ENABLE_TCMALLOC 0
 
 /** \brief Enable/disable heap profiling support for gperftools/tcmalloc.  Only has an effect if
  * TURTLE_KV_ENABLE_TCMALLOC is 1.
