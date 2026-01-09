@@ -107,22 +107,4 @@ inline bool compacting_levels_might_fix(const SubtreeViability& viability)
                !needs_split.too_many_pivots;
       });
 }
-
-//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
-//
-inline bool is_root_viable(const SubtreeViability& viability)
-{
-  return batt::case_of(
-      viability,
-      [](const Viable&) {
-        return true;
-      },
-      [](const NeedsSplit&) {
-        return false;
-      },
-      [](const NeedsMerge& needs_merge) {
-        return !needs_merge.single_pivot;
-      });
-}
-
 }  // namespace turtle_kv

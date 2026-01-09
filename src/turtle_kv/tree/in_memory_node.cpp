@@ -352,10 +352,6 @@ Status InMemoryNode::flush_if_necessary(BatchUpdateContext& context, bool force_
   //
   const MaxPendingBytes max_pending = this->find_max_pending();
 
-  if (!max_pending.byte_count) {
-    return {batt::StatusCode::kUnavailable};
-  }
-
   const bool flush_needed = force_flush ||                                                      //
                             (max_pending.byte_count >= this->tree_options.min_flush_size()) ||  //
                             this->has_too_many_tiers();
