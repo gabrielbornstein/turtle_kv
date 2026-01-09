@@ -29,17 +29,18 @@ struct BatchUpdateContext {
   /** \brief Uses the worker_pool to perform a parallel merge-compaction of the lines
    * produced by the passed `generator_fn`, up to and including (but stopping at) `max_key`.
    */
-  template <typename GeneratorFn>
-  StatusOr<MergeCompactor::ResultSet</*decay_to_items=*/false>> merge_compact_edits(
+  template <bool kDecayToItems, typename GeneratorFn>
+  StatusOr<MergeCompactor::ResultSet<kDecayToItems>> merge_compact_edits(
       const KeyView& max_key,
       GeneratorFn&& generator_fn);
 
   /** \brief Computes and returns the running total (prefix sum) of the edit sizes in result_set.
    */
+  template <bool kDecayToItems>
   batt::RunningTotal compute_running_total(
-      const MergeCompactor::ResultSet</*decay_to_items=*/false>& result_set) const
+      const MergeCompactor::ResultSet<kDecayToItems>& result_set) const
   {
-    return ::turtle_kv::compute_running_total(this->worker_pool, result_set);
+    return ::turtle_kv::compute_running_total<kDecayToItems>(this->worker_pool, result_set);
   }
 };
 
@@ -90,9 +91,10 @@ std::ostream& operator<<(std::ostream& out, const BatchUpdate::TrimResult& t);
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-template <typename GeneratorFn>
-inline StatusOr<MergeCompactor::ResultSet</*decay_to_items=*/false>>
-BatchUpdateContext::merge_compact_edits(const KeyView& max_key, GeneratorFn&& generator_fn)
+template <bool kDecayToItems, typename GeneratorFn>
+inline StatusOr<MergeCompactor::ResultSet<kDecayToItems>> BatchUpdateContext::merge_compact_edits(
+    const KeyView& max_key,
+    GeneratorFn&& generator_fn)
 {
   MergeCompactor compactor{this->worker_pool};
 
@@ -100,7 +102,7 @@ BatchUpdateContext::merge_compact_edits(const KeyView& max_key, GeneratorFn&& ge
   BATT_REQUIRE_OK(BATT_FORWARD(generator_fn)(compactor));
   compactor.finish_push_levels();
 
-  MergeCompactor::EditBuffer edit_buffer;
+  MergeCompactor::OutputBuffer<kDecayToItems> edit_buffer;
 
   this->worker_pool.reset();
   return compactor.read(edit_buffer, max_key);

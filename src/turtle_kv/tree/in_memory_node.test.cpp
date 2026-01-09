@@ -373,7 +373,7 @@ void SubtreeBatchUpdateScenario::run()
                 .page_loader = *page_loader,
                 .cancel_token = batt::CancelToken{},
             },
-        .result_set = result_set_generator(DecayToItem<false>{}, rng, strings),
+        .result_set = result_set_generator(DecayToItem<false>{}, rng, strings, {}),
         .edit_size_totals = None,
     };
     update.update_edit_size_totals();
