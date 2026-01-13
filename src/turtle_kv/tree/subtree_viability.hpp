@@ -107,4 +107,5 @@ inline bool compacting_levels_might_fix(const SubtreeViability& viability)
                !needs_split.too_many_pivots;
       });
 }
+
 }  // namespace turtle_kv

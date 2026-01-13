@@ -154,32 +154,32 @@ auto InMemoryLeaf::make_split_plan() const -> StatusOr<SplitPlan>
 //
 Status InMemoryLeaf::apply_batch_update(BatchUpdate& update) noexcept
 {
-  Optional<BoxedSeq<EditSlice>> current_result_set = None;
+  Optional<BoxedSeq<EditSlice>> current_edits = None;
   if (this->pinned_leaf_page_ && !this->result_set) {
     // In this case, we have initialized a new InMemoryLeaf from a PackedLeaf. Use the
     // items from the PackedLeaf to merge with the incoming update.
     //
     const PackedLeafPage& packed_leaf = PackedLeafPage::view_of(this->pinned_leaf_page_);
-    current_result_set = packed_leaf.as_edit_slice_seq();
+    current_edits = packed_leaf.as_edit_slice_seq();
   } else if (this->result_set) {
     // In this case, we have an existing InMemoryLeaf that we are applying updates to.
     // Use the existing ResultSet to merge with the incoming update.
     //
-    current_result_set = this->result_set->live_edit_slices();
+    current_edits = this->result_set->live_edit_slices();
   }
 
   // If we didn't enter either of the above two cases, we must have an empty tree that we are
   // applying updates to.
   //
-  BATT_CHECK_IMPLIES(!current_result_set, !this->pinned_leaf_page_ && !this->result_set);
+  BATT_CHECK_IMPLIES(!current_edits, !this->pinned_leaf_page_ && !this->result_set);
 
   BATT_ASSIGN_OK_RESULT(this->result_set,
                         update.context.merge_compact_edits</*decay_to_items=*/true>(
                             global_max_key(),
                             [&](MergeCompactor& compactor) -> Status {
                               compactor.push_level(update.result_set.live_edit_slices());
-                              if (current_result_set) {
-                                compactor.push_level(std::move(*current_result_set));
+                              if (current_edits) {
+                                compactor.push_level(std::move(*current_edits));
                               }
                               return OkStatus();
                             }));
