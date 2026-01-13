@@ -12,6 +12,7 @@
 #include <random>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 #include <vector>
 
 namespace turtle_kv {
@@ -184,8 +185,11 @@ class RandomResultSetGenerator : public MinMaxSize<usize{1} << 24>
   }
 
   template <bool kDecayToItems, typename Rng>
-  MergeCompactor::ResultSet</*kDecayToItems=*/kDecayToItems>
-  operator()(DecayToItem<kDecayToItems>, Rng& rng, llfs::StableStringStore& store)
+  MergeCompactor::ResultSet</*kDecayToItems=*/kDecayToItems> operator()(
+      DecayToItem<kDecayToItems>,
+      Rng& rng,
+      llfs::StableStringStore& store,
+      const std::vector<KeyView>& to_delete)
   {
     using ResultSet = MergeCompactor::ResultSet</*kDecayToItems=*/kDecayToItems>;
     using Item = typename ResultSet::value_type;
@@ -193,12 +197,23 @@ class RandomResultSetGenerator : public MinMaxSize<usize{1} << 24>
     const usize n = this->Super::pick_size(rng);
     std::vector<EditView> items;
 
+    for (const KeyView& delete_key : to_delete) {
+      items.emplace_back(delete_key, ValueView::deleted());
+    }
+
+    std::unordered_set<KeyView> deleted_items_set{to_delete.begin(), to_delete.end()};
     while (items.size() < n) {
-      for (usize i = items.size(); i < n; ++i) {
+      for (usize i = items.size(); i < n;) {
         char ch = '_' + (i & 31);
-        items.emplace_back(this->key_generator_(rng, store),
+        KeyView key = this->key_generator_(rng, store);
+        if (deleted_items_set.count(key)) {
+          continue;
+        }
+        items.emplace_back(key,
                            ValueView::from_str(store.store(std::string(this->value_size_, ch))));
+        ++i;
       }
+
       std::sort(items.begin(), items.end(), KeyOrder{});
       items.erase(std::unique(items.begin(),
                               items.end(),

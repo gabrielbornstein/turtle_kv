@@ -288,7 +288,7 @@ Status InMemoryNode::update_buffer_insert(BatchUpdate& update)
 
   BATT_ASSIGN_OK_RESULT(  //
       new_merged_level.result_set,
-      update.context.merge_compact_edits(  //
+      update.context.merge_compact_edits</*decay_to_items=*/false>(  //
           global_max_key(),
           [&](MergeCompactor& compactor) -> Status {
             compactor.push_level(update.result_set.live_edit_slices());
@@ -402,7 +402,7 @@ Status InMemoryNode::compact_update_buffer_levels(BatchUpdateContext& update_con
   Status segment_load_status;
 
   BATT_ASSIGN_OK_RESULT(new_merged_level.result_set,
-                        update_context.merge_compact_edits(
+                        update_context.merge_compact_edits</*decay_to_items=*/false>(
                             global_max_key(),
                             [&](MergeCompactor& compactor) -> Status {
                               this->push_levels_to_merge(compactor,
@@ -447,10 +447,10 @@ StatusOr<BatchUpdate> InMemoryNode::collect_pivot_batch(BatchUpdateContext& upda
 
   // Merge/compact all pending edits for the specified pivot.
   //
-  BATT_ASSIGN_OK_RESULT(                            //
-      pivot_batch.result_set,                       //
-      update_context.merge_compact_edits(           //
-          /*max_key=*/pivot_key_range.upper_bound,  //
+  BATT_ASSIGN_OK_RESULT(                                             //
+      pivot_batch.result_set,                                        //
+      update_context.merge_compact_edits</*decay_to_items=*/false>(  //
+          /*max_key=*/pivot_key_range.upper_bound,                   //
           [&](MergeCompactor& compactor) -> Status {
             this->push_levels_to_merge(compactor,
                                        update_context.page_loader,
