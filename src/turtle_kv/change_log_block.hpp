@@ -278,9 +278,11 @@ class ChangeLogBlock
    */
   std::atomic<i32> ref_count_;
 
-  // Pad the next field (this->next_) out to (void*) this + 32 bytes;
-  //
-  u8 padding1_[4];
+  /* \brief The number of slots in the previous MemTable (used for recovery). This change log block
+   * is part of a MemTable currently being written to disk. prev_mem_table_num_slots_ corresponds to
+   * the MemTable written to disk prior to the MemTable currently being written.
+   */
+  u32 prev_mem_table_num_slots_;
 
   /** \brief The next ChangeLogBlock in the current stack.
    */

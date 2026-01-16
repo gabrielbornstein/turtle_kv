@@ -231,6 +231,69 @@ StatusOr<batt::Grant> ChangeLogFile::reserve_blocks(
   return grant;
 }
 
+// TODO: [Gabe Bornstein 1/16/26] Consider not returning vector, or just returning ChangeLogBlock*
+// as head of linked list.
+// TODO: [Gabe Bornstein 1/16/26] Function could take a buffer, like vector<u8>, as a parameter.
+// User is responsible for keeping it in scope instead of the ChangeLogFile class.
+// TODO: [Gabe Bornstein 1/16/26] Do I need to update other ChangeLogFile member data? Like lower,
+// upper bound?
+//
+//
+std::vector<ChangeLogBlock*> ChangeLogFile::read_blocks()
+{
+  LOG(INFO) << "Entering ChangeLogFile::start()";
+
+  LOG(INFO) << "Active Block Count == " << this->active_block_count()
+            << ", Change Log Size == " << this->size();
+  LOG(INFO) << "upper bound == " << this->upper_bound_.load()
+            << ", lower bound == " << this->lower_bound_.load();
+
+  // TODO: [gbornste 1/15/26] Is it possible to get # of active blocks instead total # blocks? Right
+  // now, we're allocating memory for the whole change log, not just active blocks.
+  //
+  this->change_log_blocks.resize(this->config_.block_size * this->config_.block_count);
+
+  batt::Status status = batt::OkStatus();
+  i64 blocks_read = 0;
+  while (status.ok()) {
+    // The offset of where we are writing to our buffer.
+    //
+    i64 curr_block_offset = blocks_read * this->config_.block_size;
+
+    // The offset of where we are reading from the Change Log File.
+    //
+    i64 curr_file_offset = this->config_.block0_offset + curr_block_offset;
+
+    // This buffer is the size of a single block. It is where we will write the block we are about
+    // to read from the Change Log File. It is a specific offset of our change_log_blocks.
+    //
+    this->block_buffer = batt::MutableBuffer{this->change_log_blocks.data() + curr_block_offset,
+                                             static_cast<size_t>(this->config_.block_size)};
+
+    status = this->file_.read_all(curr_file_offset, this->block_buffer);
+
+    this->blocks.push_back(
+        reinterpret_cast<ChangeLogBlock*>(this->change_log_blocks.data() + curr_block_offset));
+
+    LOG(INFO) << "Read ChangeLogBlock #" << blocks_read;
+
+    LOG(INFO) << "ChangeLogBlock->block_size() == " << this->blocks[blocks_read]->block_size()
+              << " owner_id() == " << this->blocks[blocks_read]->owner_id()
+              << ", status.ok() == " << status.ok();
+
+    // TODO: [Gabe Bornstein 1/15/26] Improve this check and move it to the while statement
+    //
+    if (this->blocks[blocks_read]->block_size() == 0) {
+      break;
+    }
+
+    ++blocks_read;
+  }
+  LOG(INFO) << "In read_blocks, blocks.begin()->owner_id() == " << (*blocks.begin())->owner_id();
+
+  return this->blocks;
+}
+
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
 auto ChangeLogFile::append(batt::Grant& grant, batt::SmallVecBase<ConstBuffer>& data) noexcept
@@ -299,6 +362,9 @@ auto ChangeLogFile::append(batt::Grant& grant, batt::SmallVecBase<ConstBuffer>& 
 
     BATT_CHECK_EQ(grant.size(), 0);
   }
+
+  LOG(INFO) << "In ChangeLogFile::append, lower_bound_ == " << this->lower_bound_.load()
+            << ", upper_bound_ == " << this->upper_bound_.load();
 
   return {ReadLock{this, block_range}};
 }

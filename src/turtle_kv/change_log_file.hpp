@@ -1,6 +1,7 @@
 #pragma once
 
 #include <turtle_kv/api_types.hpp>
+#include <turtle_kv/change_log_block.hpp>
 #include <turtle_kv/change_log_file_metrics.hpp>
 #include <turtle_kv/change_log_read_lock.hpp>
 #include <turtle_kv/file_utils.hpp>
@@ -119,6 +120,8 @@ class ChangeLogFile
   StatusOr<batt::Grant> reserve_blocks(BlockCount block_count,
                                        batt::WaitForResource wait_for_resource) noexcept;
 
+  std::vector<ChangeLogBlock*> read_blocks();
+
   StatusOr<ReadLock> append(batt::Grant& grant, batt::SmallVecBase<ConstBuffer>& data) noexcept;
 
   Interval<i64> active_blocks() noexcept
@@ -208,6 +211,12 @@ class ChangeLogFile
   u64 total_bytes_written_ = 0;
 
   batt::RateMetric<u64, /*seconds=*/100> write_throughput_;
+
+  std::vector<u8> change_log_blocks;
+
+  batt::MutableBuffer block_buffer;
+
+  std::vector<ChangeLogBlock*> blocks;
 };
 
 // #=##=##=#==#=#==#===#+==#+==========+==+=+=+=+=+=++=+++=+++++=-++++=-+++++++++++

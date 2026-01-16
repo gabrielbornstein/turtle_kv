@@ -5,6 +5,8 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
+#include <batteries/segv.hpp>
+
 #include "data_root.test.hpp"
 
 #include <turtle_kv/core/testing/generate.hpp>
@@ -480,6 +482,95 @@ TEST_P(CheckpointTest, CheckpointRecovery)
   }
 }
 
+//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
+//
+TEST(ExplorationTest, PutExploration)
+{
+  u64 num_puts = 100000;
+
+  batt::StatusOr<std::filesystem::path> root = turtle_kv::data_root();
+  ASSERT_TRUE(root.ok());
+
+  std::filesystem::path test_kv_store_dir = *root / "turtle_kv_Test" / "kv_scan_stress";
+
+  std::default_random_engine rng{/*seed=*/1};
+  RandomStringGenerator generate_key;
+  SequentialStringGenerator generate_value{100};
+
+  KVStore::Config kv_store_config;
+
+  kv_store_config.initial_capacity_bytes = 0 * kMiB;
+  kv_store_config.change_log_size_bytes = 512 * kMiB * 10;
+
+  TreeOptions& tree_options = kv_store_config.tree_options;
+
+  tree_options.set_node_size(4 * kKiB);
+  tree_options.set_leaf_size(1 * kMiB);
+  tree_options.set_key_size_hint(24);
+  tree_options.set_value_size_hint(10);
+
+  StatusOr<llfs::ScopedIoRing> scoped_io_ring =
+      llfs::ScopedIoRing::make_new(llfs::MaxQueueDepth{4096},  //
+                                   llfs::ThreadPoolSize{1});
+
+  ASSERT_TRUE(scoped_io_ring.ok()) << BATT_INSPECT(scoped_io_ring.status());
+
+  auto storage_context =
+      llfs::StorageContext::make_shared(batt::Runtime::instance().default_scheduler(),  //
+                                        scoped_io_ring->get_io_ring());
+
+  auto runtime_options = KVStore::RuntimeOptions::with_default_values();
+
+  BATT_CHECK_OK(
+      KVStore::configure_storage_context(*storage_context, tree_options, runtime_options));
+
+  Status create_status =
+      KVStore::create(*storage_context, test_kv_store_dir, kv_store_config, RemoveExisting{true});
+
+  ASSERT_TRUE(create_status.ok()) << BATT_INSPECT(create_status);
+
+  StatusOr<std::unique_ptr<KVStore>> open_result =
+      KVStore::open(batt::Runtime::instance().default_scheduler(),
+                    batt::WorkerPool::default_pool(),
+                    *storage_context,
+                    test_kv_store_dir,
+                    tree_options,
+                    runtime_options);
+
+  ASSERT_TRUE(open_result.ok()) << BATT_INSPECT(open_result.status());
+
+  KVStore& actual_table = **open_result;
+
+  // Disable automatic checkpoints
+  //
+  actual_table.set_checkpoint_distance(5);
+
+  std::map<std::string, std::string> expected_keys_values;
+
+  for (u64 i = 0; i < num_puts; ++i) {
+    std::string key = generate_key(rng);
+    std::string value = generate_value();
+
+    Status actual_put_status = actual_table.put(KeyView{key}, ValueView::from_str(value));
+
+    ASSERT_TRUE(actual_put_status.ok()) << BATT_INSPECT(actual_put_status);
+
+    VLOG(3) << "Put key== " << key << ", value==" << value;
+  }
+
+  std::this_thread::sleep_for(std::chrono::seconds(1));
+  actual_table.halt();
+  actual_table.join();
+  open_result->reset();
+
+  batt::StatusOr<std::unique_ptr<turtle_kv::ChangeLogFile>> change_log_file =
+      turtle_kv::ChangeLogFile::open(test_kv_store_dir / "change_log.turtle_kv");
+
+  BATT_CHECK_OK(change_log_file);
+  std::vector<turtle_kv::ChangeLogBlock*> blocks = (*change_log_file)->read_blocks();
+  LOG(INFO) << "blocks.begin()->owner_id() == " << (*blocks.begin())->owner_id();
+}
+
 }  // namespace
 
 // CheckpointTestParams == {num_puts, num_checkpoints_to_create}
@@ -497,13 +588,13 @@ INSTANTIATE_TEST_SUITE_P(
         // CheckpointTestParams(1, 100),
         // TODO: [Gabe Bornstein 11/5/25] Investigate: We ARE
         // getting checkpoint data for this case. Does taking additional checkpoints flush keys?
-        CheckpointTestParams(/* num_puts */ 2, /* num_checkpoints_to_create */ 100),
-        CheckpointTestParams(/* num_puts */ 100, /* num_checkpoints_to_create */ 100),
-        CheckpointTestParams(/* num_puts */ 1, /* num_checkpoints_to_create */ 100000),
-        CheckpointTestParams(/* num_puts */ 1, /* num_checkpoints_to_create */ 0),
-        CheckpointTestParams(/* num_puts */ 0, /* num_checkpoints_to_create */ 100),
-        CheckpointTestParams(/* num_puts */ 5, /* num_checkpoints_to_create */ 100000),
-        CheckpointTestParams(/* num_puts */ 10, /* num_checkpoints_to_create */ 100000)
+        CheckpointTestParams(/* num_checkpoints_to_create */ 2, /* num_puts */ 100),
+        CheckpointTestParams(/* num_checkpoints_to_create */ 100, /* num_puts */ 100),
+        CheckpointTestParams(/* num_checkpoints_to_create */ 1, /* num_puts */ 100000),
+        CheckpointTestParams(/* num_checkpoints_to_create */ 1, /* num_puts */ 0),
+        CheckpointTestParams(/* num_checkpoints_to_create */ 0, /* num_puts */ 100),
+        CheckpointTestParams(/* num_checkpoints_to_create */ 5, /* num_puts */ 100000),
+        CheckpointTestParams(/* num_checkpoints_to_create */ 10, /* num_puts */ 100000)
         //  TODO: [Gabe Bornstein 11/6/25] Sporadic Failing. Likely cause by keys not
         //  being flushed before that last checkpoint is taken. Need fsync to resolve.
         /*CheckpointTestParams(101, 100000)*/));
