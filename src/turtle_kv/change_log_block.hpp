@@ -53,6 +53,11 @@ class ChangeLogBlock
    */
   void operator delete(void* ptr) noexcept = delete;
 
+  /** \brief Allocates and returns a pointer of the specifed size aligned to the ChangeLogBlock
+   * default by alignment.
+   */
+  static void* allocate_aligned(usize n_bytes) noexcept;
+
   /** \brief Allocates and returns a buffer of the specifed size.
    */
   static ChangeLogBlock* allocate(u64 owner_id, batt::Grant&& grant, usize n_bytes) noexcept;

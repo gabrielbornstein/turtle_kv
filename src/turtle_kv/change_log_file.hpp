@@ -120,7 +120,13 @@ class ChangeLogFile
   StatusOr<batt::Grant> reserve_blocks(BlockCount block_count,
                                        batt::WaitForResource wait_for_resource) noexcept;
 
-  std::vector<ChangeLogBlock*> read_blocks();
+  std::vector<ChangeLogBlock*> read_blocks_into_vector();
+
+  // TODO: [Gabe Bornstein 1/20/26] Can we use concepts here to define required parameters and
+  // return types?
+  //
+  template <typename SerializeFn = void(batt::MutableBuffer)>
+  void read_blocks(SerializeFn write_block);
 
   StatusOr<ReadLock> append(batt::Grant& grant, batt::SmallVecBase<ConstBuffer>& data) noexcept;
 
@@ -211,13 +217,46 @@ class ChangeLogFile
   u64 total_bytes_written_ = 0;
 
   batt::RateMetric<u64, /*seconds=*/100> write_throughput_;
-
-  std::vector<u8> change_log_blocks;
-
-  batt::MutableBuffer block_buffer;
-
-  std::vector<ChangeLogBlock*> blocks;
 };
+
+// TODO: [Gabe Bornstein 1/16/26] Do I need to update other ChangeLogFile member data? Like lower,
+// upper bound? They aren;t recovered from ::open.
+//
+template <typename SerializeFn>
+void ChangeLogFile::read_blocks(SerializeFn write_block)
+{
+  batt::Status status = batt::OkStatus();
+  i64 blocks_read = 0;
+  while (status.ok()) {
+    // The offset of where we are writing to our buffer.
+    //
+    i64 curr_block_offset = blocks_read * this->config_.block_size;
+
+    // The offset of where we are reading from the Change Log File.
+    //
+    i64 curr_file_offset = this->config_.block0_offset + curr_block_offset;
+
+    // TODO: [Gabe Bornstein 1/20/26] Make sure this stays in scope for lifetime of container it's
+    // written to. When do we deallocate?
+    //
+    void* block_memory = ChangeLogBlock::allocate_aligned(this->config_.block_size);
+
+    batt::MutableBuffer block_buffer{block_memory, static_cast<size_t>(this->config_.block_size)};
+
+    status = this->file_.read_all(curr_file_offset, block_buffer);
+
+    LOG(INFO) << "Read ChangeLogBlock #" << blocks_read;
+
+    // TODO: [Gabe Bornstein 1/20/26] Consider just passing ChangeLogBlock* instead of
+    // MutableBuffer.
+    //
+    if (!write_block(block_buffer).ok()) {
+      break;
+    }
+
+    ++blocks_read;
+  }
+}
 
 // #=##=##=#==#=#==#===#+==#+==========+==+=+=+=+=+=++=+++=+++++=-++++=-+++++++++++
 

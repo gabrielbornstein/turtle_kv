@@ -567,7 +567,7 @@ TEST(ExplorationTest, PutExploration)
       turtle_kv::ChangeLogFile::open(test_kv_store_dir / "change_log.turtle_kv");
 
   BATT_CHECK_OK(change_log_file);
-  std::vector<turtle_kv::ChangeLogBlock*> blocks = (*change_log_file)->read_blocks();
+  std::vector<turtle_kv::ChangeLogBlock*> blocks = (*change_log_file)->read_blocks_into_vector();
   LOG(INFO) << "blocks.begin()->owner_id() == " << (*blocks.begin())->owner_id();
 }
 
