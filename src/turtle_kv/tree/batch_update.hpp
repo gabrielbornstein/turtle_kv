@@ -119,7 +119,7 @@ inline StatusOr<MergeCompactor::ResultSet<kDecayToItems>> BatchUpdateContext::me
   MergeCompactor::OutputBuffer<kDecayToItems> edit_buffer;
 
   this->worker_pool.reset();
-  StatusOr<MergeCompactor::ResultSet</*decay_to_items=*/false>> result_set =
+  StatusOr<MergeCompactor::ResultSet<kDecayToItems>> result_set =
       compactor.read(edit_buffer, max_key);
 
 #if TURTLE_KV_PROFILE_UPDATES
