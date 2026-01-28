@@ -82,9 +82,9 @@ class ChangeLogBlock
    */
   void remove_ref(i32 count) noexcept;
 
-  i32 ref_count() const noexcept
+  i32 ref_count() noexcept
   {
-    return this->ref_count_;
+    return this->ephemeral_state_ptr()->ref_count_;
   }
 
   usize slot_count() const noexcept
@@ -188,10 +188,25 @@ class ChangeLogBlock
   /** \brief The members of this object which live outside the block buffer.
    */
   struct EphemeralState {
+    // TODO: [Gabe Bornstein 1/21/26] Is it ever the case ref_count_ does not start at 1? Does it
+    // need to be a member of ChangeLogBlock so it can persist between shutdowns?
+    //
+    /** \brief Atomic reference counter to manage the lifetime of the buffer.
+     */
+    std::atomic<i32> ref_count_;
+
+    // TODO: [Gabe Bornstein 1/21/26] Needs post recovery initialization. After reading block from
+    // disk, needs to be initialized.
+    //
+
+    // TODO: [Gabe Bornstein 1/21/26] Where do I acquire a read_lock from? ChangeLogFile somewhere
+    //
     /** \brief Used to track whether this block has been flushed.
      */
     batt::Latch<boost::intrusive_ptr<ChangeLogReadLock>> read_lock_;
 
+    // TODO: [Gabe Bornstein 1/21/26] Where do I acquire a grant_ from?
+    //
     /** \brief The Volume root log Grant passed in at construction time; a pre-reservation of
      * space in the Volume root log for the slot data that will be appended to this buffer.
      */
@@ -275,13 +290,7 @@ class ChangeLogBlock
    */
   u16 space_;
 
-  // Pad the next field (this->ref_count_) out to (void*) this + 24 bytes;
-  //
-  u8 padding0_[2];
-
-  /** \brief Atomic reference counter to manage the lifetime of the buffer.
-   */
-  std::atomic<i32> ref_count_;
+  u8 padding0_[6];
 
   /* \brief The number of slots in the previous MemTable (used for recovery). This change log block
    * is part of a MemTable currently being written to disk. prev_mem_table_num_slots_ corresponds to

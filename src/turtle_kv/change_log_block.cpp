@@ -45,12 +45,13 @@ namespace turtle_kv {
     , slot_count_{0}
     , space_{BATT_CHECKED_CAST(u16,
                                this->block_size_ - (sizeof(ChangeLogBlock) + sizeof(SlotInfo)))}
-    , ref_count_{1}
     , next_{nullptr}
     , xxh3_checksum_{0}
     , xxh3_seed_{0}
 {
   new (&this->ephemeral_state_storage_) EphemeralStatePtr{new EphemeralState{std::move(grant)}};
+
+  this->ephemeral_state_ptr()->ref_count_.store(1);
 
   BATT_CHECK_EQ(this->ephemeral_state().grant_.size(), 1);
 
@@ -75,7 +76,7 @@ ChangeLogBlock::~ChangeLogBlock() noexcept
 //
 void ChangeLogBlock::add_ref(i32 count) noexcept
 {
-  this->ref_count_.fetch_add(count, std::memory_order_relaxed);
+  this->ephemeral_state_ptr()->ref_count_.fetch_add(count, std::memory_order_relaxed);
 }
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
@@ -84,11 +85,12 @@ void ChangeLogBlock::remove_ref(i32 count) noexcept
 {
   BATT_CHECK_GE(count, 0);
 
-  const i32 old_count = this->ref_count_.fetch_sub(count, std::memory_order_release);
+  const i32 old_count =
+      this->ephemeral_state_ptr()->ref_count_.fetch_sub(count, std::memory_order_release);
   if (old_count == count) {
     // Load the ref count as a sanity check and with acquire order to complete the fence.
     //
-    BATT_CHECK_EQ(0, this->ref_count_.load(std::memory_order_acquire));
+    BATT_CHECK_EQ(0, this->ephemeral_state_ptr()->ref_count_.load(std::memory_order_acquire));
     this->~ChangeLogBlock();
     free(this);
   }

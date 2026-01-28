@@ -233,12 +233,16 @@ StatusOr<batt::Grant> ChangeLogFile::reserve_blocks(
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-// TODO: [Gabe Bornstein 1/20/26] Consider using a shared pointer in the container.
+// TODO: [Gabe Bornstein 1/20/26] Consider using a boost::instrusive_ptr in the container.
 // TODO: [Gabe Bornstein 1/20/26] Consider using a non-vector container.
 // TODO: [Gabe Bornstein 1/20/26] Only read in blocks that are written after most recent checkpoint.
 //
 std::vector<ChangeLogBlock*> ChangeLogFile::read_blocks_into_vector()
 {
+  // TODO: [Gabe Bornstein 1/21/26] Assumes EphemeralState::ref_count is passed as 1, needs to
+  // calculate actual ref count. read_blocks_into_vector is responsible for calling remove_ref and
+  // freeing mem of ChangeLogBlock if we aren't saving it.
+  //
   std::vector<ChangeLogBlock*> blocks;
   this->read_blocks([&](batt::MutableBuffer& block) -> batt::Status {
     blocks.push_back(reinterpret_cast<ChangeLogBlock*>(block.data()));
@@ -325,9 +329,6 @@ auto ChangeLogFile::append(batt::Grant& grant, batt::SmallVecBase<ConstBuffer>& 
 
     BATT_CHECK_EQ(grant.size(), 0);
   }
-
-  LOG(INFO) << "In ChangeLogFile::append, lower_bound_ == " << this->lower_bound_.load()
-            << ", upper_bound_ == " << this->upper_bound_.load();
 
   return {ReadLock{this, block_range}};
 }

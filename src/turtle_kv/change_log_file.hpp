@@ -181,6 +181,8 @@ class ChangeLogFile
   template <typename Fn = void(i64 block_i, ReadLockCounter& counter)>
   void for_block_range(const Interval<i64>& block_range, Fn&& fn) noexcept;
 
+  // TODO: Grab read locks from here?
+  //
   void lock_for_read(const Interval<i64>& block_range) noexcept;
 
   void unlock_for_read(const Interval<i64>& block_range) noexcept;
@@ -201,6 +203,8 @@ class ChangeLogFile
 
   const usize max_batch_size_ = (16 * 1024 * 1024) / this->config_.block_size;
 
+  // TODO: Grab grants from here
+  //
   batt::Grant::Issuer free_block_tokens_{BATT_CHECKED_CAST(u64, this->config_.block_count.value())};
 
   batt::Grant in_use_block_tokens_{BATT_OK_RESULT_OR_PANIC(
@@ -209,6 +213,8 @@ class ChangeLogFile
   std::atomic<i64> lower_bound_{0};
   std::atomic<i64> upper_bound_{0};
 
+  // TODO: Grab read locks from here?
+  //
   std::unique_ptr<ReadLockCounter[]> read_lock_counter_per_block_{
       new ReadLockCounter[this->config_.block_count]};
 
