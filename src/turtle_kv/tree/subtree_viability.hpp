@@ -116,6 +116,9 @@ inline bool compacting_levels_might_fix(const SubtreeViability& viability)
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
+/** \brief If a node at height == 2 needs to be split (i.e., too large), and the reason is that the
+ * update buffer is too large
+ */
 inline bool normal_flush_might_fix(const SubtreeViability& viability)
 {
   return batt::case_of(
@@ -133,6 +136,25 @@ inline bool normal_flush_might_fix(const SubtreeViability& viability)
                !needs_split.items_too_large &&             //
                !needs_split.keys_too_large &&              //
                !needs_split.too_many_pivots;
+      });
+}
+
+//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
+//
+inline bool normal_flush_might_fix_root(const SubtreeViability& viability)
+{
+  return batt::case_of(
+      viability,
+      [](const Viable&) {
+        return false;
+      },
+      [](const NeedsMerge&) {
+        return false;
+      },
+      [](const NeedsSplit& needs_split) {
+        return needs_split.too_many_segments &&  //
+               !needs_split.too_many_pivots &&   //
+               !needs_split.keys_too_large;
       });
 }
 

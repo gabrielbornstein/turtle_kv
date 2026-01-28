@@ -9,8 +9,11 @@ namespace turtle_kv {
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
 void on_page_cache_overcommit(const std::function<void(std::ostream& out)>& context_fn,
-                              llfs::PageCache& cache)
+                              llfs::PageCache& cache,
+                              OvercommitMetrics& metrics)
 {
+  metrics.trigger_count.add(1);
+
   auto& cache_slots = llfs::PageCacheSlot::Pool::Metrics::instance();
 
   const auto print_page_alloc_info = [&](std::ostream& out) {
