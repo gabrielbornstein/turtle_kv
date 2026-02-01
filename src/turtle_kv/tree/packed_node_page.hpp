@@ -4,9 +4,11 @@
 #include <turtle_kv/tree/packed_node_page_key.hpp>
 
 #include <turtle_kv/core/key_view.hpp>
+#include <turtle_kv/core/packed_key_value.hpp>
 #include <turtle_kv/core/value_view.hpp>
 
 #include <turtle_kv/util/page_buffers.hpp>
+#include <turtle_kv/util/piecewise_filter.hpp>
 #include <turtle_kv/util/placement.hpp>
 
 #include <turtle_kv/import/bit_ops.hpp>
@@ -50,7 +52,7 @@ struct PackedNodePage {
   static constexpr u8 kPivotCountMask = 0x3f;
 
   using Key = PackedNodePageKey;
-  using FlushedItemUpperBoundPointer = llfs::PackedPointer<little_u32, little_u16>;
+  using SegmentFilters = llfs::PackedPointer<llfs::PackedArray<little_u32>, little_u16>;
 
   class KeyIterator
       : public boost::iterator_facade<        //
@@ -118,10 +120,15 @@ struct PackedNodePage {
   struct UpdateBuffer {
     struct SegmentedLevel;
 
+    struct SegmentFilterData {
+      Slice<const little_u32> values;
+      bool start_is_filtered;
+    };
+
     struct Segment {
       llfs::PackedPageId leaf_page_id;  // +8 -> 8
       little_u64 active_pivots;         // +8 -> 16
-      little_u64 flushed_pivots;        // +8 -> 24
+      little_u16 filter_start;          // +2 -> 18
 
       //+++++++++++-+-+--+----- --- -- -  -  -   -
 
@@ -135,11 +142,6 @@ struct PackedNodePage {
         return this->active_pivots;
       }
 
-      u64 get_flushed_pivots() const
-      {
-        return this->flushed_pivots;
-      }
-
       llfs::PageId get_leaf_page_id() const
       {
         return this->leaf_page_id.unpack();
@@ -148,7 +150,15 @@ struct PackedNodePage {
       StatusOr<llfs::PinnedPage> load_leaf_page(llfs::PageLoader& page_loader,
                                                 llfs::PinPageToJob pin_page_to_job) const;
 
-      usize get_flushed_item_upper_bound(const SegmentedLevel& level, i32 pivot_i) const;
+      bool is_index_filtered(const SegmentedLevel& level, u32 total_segment_items, u32 index) const;
+
+      Optional<u32> next_live_item(const SegmentedLevel& level,
+                                   u32 total_segment_items,
+                                   u32 item_i) const;
+
+      Optional<Interval<u32>> get_live_item_range(const SegmentedLevel& level,
+                                                  u32 total_segment_items,
+                                                  u32 start_item_i) const;
     };
 
     struct SegmentedLevel {
@@ -181,11 +191,10 @@ struct PackedNodePage {
 
     //+++++++++++-+-+--+----- --- -- -  -  -   -
 
-    std::array<Segment, kMaxSegments> segments;             //    +(24*63) -> 1512
-    std::array<FlushedItemUpperBoundPointer, kMaxSegments>  //
-        flushed_item_upper_bound;                           // +(2*63=126) -> 1638
-    std::array<little_u8, kMaxLevels + 1> level_start;      //      +(1*7) -> 1645
-    std::array<u8, 3> pad_;                                 // +3 -> 1648 (=8*206)
+    std::array<Segment, kMaxSegments> segments;         // +(18*63) -> 1134
+    SegmentFilters segment_filters;                     // +2       -> 1136
+    std::array<little_u8, kMaxLevels + 1> level_start;  // +(1*7)   -> 1143                
+    std::array<u8, 1> pad_;                             // +1       -> 1144
 
     //+++++++++++-+-+--+----- --- -- -  -  -   -
 
@@ -219,8 +228,8 @@ struct PackedNodePage {
   std::array<Key, kPivotKeysSize> pivot_keys_;          // +(2*67=134) -> 136 (=4*34)
   std::array<little_u32, kMaxPivots> pending_bytes;     // +(4*64=256) -> 392 (=8*49)
   std::array<llfs::PackedPageId, kMaxPivots> children;  // +(8*64=512) -> 904 (=8/113)
-  UpdateBuffer update_buffer;                           //       +1648 -> 2552
-  std::array<u8, (4096 - 64 - 2552)> key_and_flushed_item_data_;
+  UpdateBuffer update_buffer;                           //       +1144 -> 2048
+  std::array<u8, (4096 - 64 - 2048)> key_and_flushed_item_data_;
 
   //----- --- -- -  -  -   -
   // (char data: pivot_keys)
@@ -375,6 +384,12 @@ struct PackedNodePage {
 
   StatusOr<ValueView> find_key_in_level(usize level_i, KeyQuery& query, i32 key_pivot_i) const;
 
+  UpdateBuffer::SegmentFilterData get_segment_filter_values(usize level_i, usize segment_i) const;
+
+  StatusOr<PiecewiseFilter<const PackedKeyValue, u32>> create_piecewise_filter(
+      usize level_i,
+      usize segment_i) const;
+
   //----- --- -- -  -  -   -
 
   UpdateBuffer::SegmentedLevel get_level(usize level_i) const
@@ -407,32 +422,6 @@ struct PackedNodePage {
     };
   }
 
-  Slice<const little_u32> get_flushed_item_upper_bounds(usize level_i, usize segment_i) const
-  {
-    const usize i = [&]() -> usize {
-      if (this->is_size_tiered()) {
-        BATT_CHECK_LT(level_i, this->update_buffer.segment_count());
-        BATT_CHECK_EQ(segment_i, 0);
-        return level_i;
-      }
-      BATT_CHECK_LT(level_i, kMaxLevels);
-      const usize i = this->update_buffer.level_start[level_i] + segment_i;
-      BATT_CHECK_LT(i, this->update_buffer.level_start[level_i + 1]);
-      return i;
-    }();
-
-    const UpdateBuffer::Segment& segment = this->update_buffer.segments[i];
-    const usize flushed_pivots_count = bit_count(segment.flushed_pivots);
-
-    const little_u32* const flushed_items_begin =  //
-        this->update_buffer.flushed_item_upper_bound[i].get();
-
-    const little_u32* const flushed_items_end =  //
-        flushed_items_begin + flushed_pivots_count;
-
-    return as_const_slice(flushed_items_begin, flushed_items_end);
-  }
-
   //----- --- -- -  -  -   -
 
   std::function<void(std::ostream&)> dump() const;
@@ -442,20 +431,16 @@ struct PackedNodePage {
 //
 TURTLE_KV_ASSERT_PLACEMENT(PackedNodePage::UpdateBuffer::Segment, leaf_page_id, 0, 8, 8);
 TURTLE_KV_ASSERT_PLACEMENT(PackedNodePage::UpdateBuffer::Segment, active_pivots, 8, 16, 8);
-TURTLE_KV_ASSERT_PLACEMENT(PackedNodePage::UpdateBuffer::Segment, flushed_pivots, 16, 24, 8);
-BATT_STATIC_ASSERT_EQ(sizeof(PackedNodePage::UpdateBuffer::Segment), 24);
-
-// Verify the packed structure of PackedNodePage::FlushedItemUpperBoundPointer.
-//
-BATT_STATIC_ASSERT_EQ(sizeof(PackedNodePage::FlushedItemUpperBoundPointer), 2);
+TURTLE_KV_ASSERT_PLACEMENT(PackedNodePage::UpdateBuffer::Segment, filter_start, 16, 18, 2);
+BATT_STATIC_ASSERT_EQ(sizeof(PackedNodePage::UpdateBuffer::Segment), 18);
 
 // Verify the packed structure of PackedNodePage::UpdateBuffer.
 //
-TURTLE_KV_ASSERT_PLACEMENT(PackedNodePage::UpdateBuffer, segments, 0, 1512, 8);
-TURTLE_KV_ASSERT_PLACEMENT(PackedNodePage::UpdateBuffer, flushed_item_upper_bound, 1512, 1638, 4);
-TURTLE_KV_ASSERT_PLACEMENT(PackedNodePage::UpdateBuffer, level_start, 1638, 1645, 1);
-TURTLE_KV_ASSERT_PLACEMENT(PackedNodePage::UpdateBuffer, pad_, 1645, 1648, 1);
-BATT_STATIC_ASSERT_EQ(sizeof(PackedNodePage::UpdateBuffer), 1648);
+TURTLE_KV_ASSERT_PLACEMENT(PackedNodePage::UpdateBuffer, segments, 0, 1134, 8);
+TURTLE_KV_ASSERT_PLACEMENT(PackedNodePage::UpdateBuffer, segment_filters, 1134, 1136, 2);
+TURTLE_KV_ASSERT_PLACEMENT(PackedNodePage::UpdateBuffer, level_start, 1136, 1143, 1);
+TURTLE_KV_ASSERT_PLACEMENT(PackedNodePage::UpdateBuffer, pad_, 1143, 1144, 1);
+BATT_STATIC_ASSERT_EQ(sizeof(PackedNodePage::UpdateBuffer), 1144);
 
 // Verify the packed structure of PackedNodePage.
 //
@@ -464,8 +449,8 @@ TURTLE_KV_ASSERT_PLACEMENT(PackedNodePage, pivot_count_and_flags, 1, 2, 1);
 TURTLE_KV_ASSERT_PLACEMENT(PackedNodePage, pivot_keys_, 2, 136, 2);
 TURTLE_KV_ASSERT_PLACEMENT(PackedNodePage, pending_bytes, 136, 392, 4);
 TURTLE_KV_ASSERT_PLACEMENT(PackedNodePage, children, 392, 904, 8);
-TURTLE_KV_ASSERT_PLACEMENT(PackedNodePage, update_buffer, 904, 2552, 8);
-TURTLE_KV_ASSERT_PLACEMENT(PackedNodePage, key_and_flushed_item_data_, 2552, 4032, 1);
+TURTLE_KV_ASSERT_PLACEMENT(PackedNodePage, update_buffer, 904, 2048, 8);
+TURTLE_KV_ASSERT_PLACEMENT(PackedNodePage, key_and_flushed_item_data_, 2048, 4032, 1);
 
 // PackedNodePage plus the page header should exactly fit a 4kb page.
 //

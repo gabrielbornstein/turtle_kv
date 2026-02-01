@@ -38,6 +38,7 @@ struct SegmentAlgorithms {
   template <typename LevelT>
   [[nodiscard]] bool split_pivot(i32 pivot_i,
                                  Optional<usize> split_offset_in_leaf,
+                                 Optional<u32> total_segment_items,
                                  const LevelT& level) const
   {
     using batt::BoolStatus;
@@ -49,39 +50,37 @@ struct SegmentAlgorithms {
 
     BATT_CHECK_LT(pivot_i, 63);
 
-    const usize pivot_flush_upper_bound =
-        this->segment_.get_flushed_item_upper_bound(level, pivot_i);
-
     // Simplest case: pivot not active for this segment.
     //
     if (!this->segment_.is_pivot_active(pivot_i)) {
-      BATT_CHECK_EQ(pivot_flush_upper_bound, 0)
-          << "Sanity check failed: segment can not be inactive for a given pivot and also have a "
-             "nonzero flushed item upper bound!";
-
       this->segment_.insert_pivot(pivot_i + 1, false);
       return true;
     }
 
     const BoolStatus old_pivot_becomes_inactive = [&] {
-      if (pivot_flush_upper_bound == 0) {
-        return BoolStatus::kFalse;
-      }
       if (!split_offset_in_leaf) {
         return BoolStatus::kUnknown;
       }
-      return batt::bool_status_from(*split_offset_in_leaf <= pivot_flush_upper_bound);
+
+      if (*split_offset_in_leaf == 0) {
+        return BoolStatus::kTrue;
+      }
+
+      return batt::bool_status_from(
+          this->segment_.is_index_filtered(level, *total_segment_items, *split_offset_in_leaf - 1));
     }();
 
     const BoolStatus new_pivot_has_flushed_items = [&] {
       if (old_pivot_becomes_inactive == BoolStatus::kUnknown) {
         return BoolStatus::kUnknown;
       }
-      return batt::bool_status_from(old_pivot_becomes_inactive == BoolStatus::kTrue &&
-                                    *split_offset_in_leaf < pivot_flush_upper_bound);
+
+      return batt::bool_status_from(
+          old_pivot_becomes_inactive == BoolStatus::kTrue &&
+          this->segment_.is_index_filtered(level, *total_segment_items, *split_offset_in_leaf));
     }();
 
-    // Next simplest: pivot active, but flush count is zero for pivot; flush counts stay the same.
+    // Next simplest: pivot active, but flush count is zero for pivot.
     //
     if (old_pivot_becomes_inactive == BoolStatus::kFalse) {
       BATT_CHECK_EQ(new_pivot_has_flushed_items, BoolStatus::kFalse);
@@ -99,20 +98,14 @@ struct SegmentAlgorithms {
 
     BATT_CHECK_EQ(old_pivot_becomes_inactive, BoolStatus::kTrue);
     BATT_CHECK(split_offset_in_leaf);
-    BATT_CHECK_GE(pivot_flush_upper_bound, *split_offset_in_leaf);
+    BATT_CHECK(total_segment_items);
 
     // If the split is not after the last flushed item, then the lower pivot (in the split) is now
     // inactive and the upper one is active, possibly with some flushed items.
     //
-    this->segment_.set_flushed_item_upper_bound(pivot_i, 0);
     this->segment_.set_pivot_active(pivot_i, false);
     this->segment_.insert_pivot(pivot_i + 1, true);
 
-    if (new_pivot_has_flushed_items == BoolStatus::kTrue) {
-      this->segment_.set_flushed_item_upper_bound(pivot_i + 1, pivot_flush_upper_bound);
-    } else {
-      this->segment_.set_flushed_item_upper_bound(pivot_i + 1, 0);
-    }
     return true;
   }
 
@@ -151,45 +144,71 @@ struct SegmentAlgorithms {
   /** \brief Drops all pivots within the specified `drop_range` from the segment.
    */
   // TODO [tastolfi 2025-03-26] rename deactivate_pivot_range.
-  void drop_pivot_range(const Interval<i32>& drop_range)
+  Status drop_pivot_range(const Interval<i32>& drop_i_range,
+                          const Interval<KeyView>& drop_key_range,
+                          llfs::PageLoader& page_loader,
+                          const TreeOptions& tree_options)
   {
-    this->for_each_active_pivot_in(  //
-        drop_range,                  //
-        [&drop_range](SegmentT& segment, i32 pivot_i) {
-          BATT_CHECK(drop_range.contains(pivot_i));
+    // First, drop the key range from the segment corresponding to the pivot range. To do this,
+    // use sharded queries to find item indexes for the lower and upper bound of the pivot range.
+    //
+    PageSliceStorage page_slice_storage;
 
-          segment.set_flushed_item_upper_bound(pivot_i, 0);
+    u32 total_leaf_items = 0;
+
+    KeyQuery key_query{page_loader, page_slice_storage, tree_options, drop_key_range.lower_bound};
+
+    BATT_ASSIGN_OK_RESULT(
+        u32 start_item_index,
+        find_key_lower_bound_index(this->segment_.get_leaf_page_id(), key_query, total_leaf_items));
+
+    key_query = KeyQuery{page_loader, page_slice_storage, tree_options, drop_key_range.upper_bound};
+
+    BATT_ASSIGN_OK_RESULT(
+        u32 end_item_index,
+        find_key_lower_bound_index(this->segment_.get_leaf_page_id(), key_query, total_leaf_items));
+
+    this->segment_.drop_index_range(total_leaf_items,
+                                    Interval<u32>{start_item_index, end_item_index});
+
+    // Then, iterate through the pivots to set the active bit per pivot to 0.
+    //
+    this->for_each_active_pivot_in(  //
+        drop_i_range,                //
+        [&drop_i_range](SegmentT& segment, i32 pivot_i) {
+          BATT_CHECK(drop_i_range.contains(pivot_i));
           segment.set_pivot_active(pivot_i, false);
         });
+
+    return OkStatus();
   }
 
   /** \brief Searches the segment for the given key, returning its value if found.
    */
   template <typename LevelT>
   batt::seq::LoopControl find_key(LevelT& level,
-                                  i32 key_pivot_i,
                                   KeyQuery& query,
                                   StatusOr<ValueView>* value_out)
   {
     usize key_index_in_leaf = ~usize{0};
+    u32 total_leaf_items = 0;
 
-    StatusOr<ValueView> found =
-        find_key_in_leaf(this->segment_.get_leaf_page_id(), query, key_index_in_leaf);
+    StatusOr<ValueView> found = find_key_in_leaf(this->segment_.get_leaf_page_id(),
+                                                 query,
+                                                 key_index_in_leaf,
+                                                 total_leaf_items);
 
     if (!found.ok()) {
       return batt::seq::LoopControl::kContinue;
     }
 
     BATT_CHECK_NE(key_index_in_leaf, ~usize{0});
+    BATT_CHECK_NE(total_leaf_items, 0);
 
     // At this point we know the key *is* present in this segment, but it may have
-    // been flushed out of the level.  Calculate the found key index and compare
-    // against the flushed item upper bound for our pivot.
+    // been flushed out of the level. Check the segment filter to see if it has been flushed.
     //
-    const usize flushed_upper_bound =
-        this->segment_.get_flushed_item_upper_bound(level, key_pivot_i);
-
-    if (key_index_in_leaf < flushed_upper_bound) {
+    if (this->segment_.is_index_filtered(level, total_leaf_items, key_index_in_leaf)) {
       //
       // Key was found, but it has been flushed from this segment.  Since keys are
       // unique within a level, we can stop at this point and return kNotFound.

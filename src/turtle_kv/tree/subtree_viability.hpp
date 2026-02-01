@@ -48,7 +48,7 @@ struct NeedsSplit {
   bool keys_too_large : 1 = false;
   bool too_many_pivots : 1 = false;
   bool too_many_segments : 1 = false;
-  bool flushed_item_counts_too_large : 1 = false;
+  bool segment_filters_too_large : 1 = false;
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
 
@@ -58,7 +58,7 @@ struct NeedsSplit {
            this->keys_too_large ||     //
            this->too_many_pivots ||    //
            this->too_many_segments ||  //
-           this->flushed_item_counts_too_large;
+           this->segment_filters_too_large;
   }
 };
 
@@ -70,7 +70,7 @@ inline std::ostream& operator<<(std::ostream& out, const NeedsSplit& t)
              << ", .keys_too_large=" << t.keys_too_large
              << ", .too_many_pivots=" << t.too_many_pivots
              << ", .too_many_segments=" << t.too_many_segments
-             << ", .flushed_item_counts_too_large=" << t.flushed_item_counts_too_large << ",}";
+             << ", .segment_filters_too_large=" << t.segment_filters_too_large << ",}";
 }
 
 //=#=#==#==#===============+=+=+=+=++=++++++++++++++-++-+--+-+----+---------------
@@ -100,7 +100,7 @@ inline bool compacting_levels_might_fix(const SubtreeViability& viability)
         return false;
       },
       [](const NeedsSplit& needs_split) {
-        return (needs_split.flushed_item_counts_too_large ||  //
+        return (needs_split.segment_filters_too_large ||  //
                 needs_split.too_many_segments) &&             //
                !needs_split.items_too_large &&                //
                !needs_split.keys_too_large &&                 //

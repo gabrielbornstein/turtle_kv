@@ -16,11 +16,13 @@ bool require_sharded_views();
 
 StatusOr<ValueView> find_key_in_pinned_leaf(llfs::PinnedPage& pinned_leaf,
                                             KeyQuery& query,
-                                            usize& item_index_out);
+                                            usize& item_index_out,
+                                            u32& total_items_out);
 
 StatusOr<ValueView> find_key_in_leaf_using_sharded_views(llfs::PageId leaf_page_id,
                                                          KeyQuery& query,
-                                                         usize& item_index_out);
+                                                         usize& item_index_out,
+                                                         u32& total_items_out);
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
@@ -28,6 +30,7 @@ template <typename PageIdT, typename TryPinFullLeafFn, typename LoadFullLeafFn>
 StatusOr<ValueView> find_key_in_leaf_impl(const PageIdT& leaf_page_id,
                                           KeyQuery& query,
                                           usize& item_index_out,
+                                          u32& total_items_out,
                                           TryPinFullLeafFn&& try_pin_full_leaf_fn,
                                           LoadFullLeafFn&& load_full_leaf_fn)
 {
@@ -50,20 +53,20 @@ StatusOr<ValueView> find_key_in_leaf_impl(const PageIdT& leaf_page_id,
 
       if (full_leaf_page.ok()) {
         KeyQuery::metrics().try_pin_leaf_success_count.add(1);
-        return find_key_in_pinned_leaf(*full_leaf_page, query, item_index_out);
+        return find_key_in_pinned_leaf(*full_leaf_page, query, item_index_out, total_items_out);
       }
     }
 
     KeyQuery::metrics().sharded_view_find_count.add(1);
 
     StatusOr<ValueView> result =
-        find_key_in_leaf_using_sharded_views(leaf_page_id, query, item_index_out);
+        find_key_in_leaf_using_sharded_views(leaf_page_id, query, item_index_out, total_items_out);
 
     if (!require_sharded_views() && result.status() == batt::StatusCode::kUnavailable) {
       BATT_ASSIGN_OK_RESULT(llfs::PinnedPage full_leaf_page,
                             BATT_FORWARD(load_full_leaf_fn)(leaf_page_id, query));
 
-      return find_key_in_pinned_leaf(full_leaf_page, query, item_index_out);
+      return find_key_in_pinned_leaf(full_leaf_page, query, item_index_out, total_items_out);
     }
 
     if (result.ok()) {
@@ -86,12 +89,14 @@ StatusOr<ValueView> find_key_in_leaf_impl(const PageIdT& leaf_page_id,
 //
 StatusOr<ValueView> find_key_in_leaf(llfs::PageId leaf_page_id,
                                      KeyQuery& query,
-                                     usize& item_index_out)
+                                     usize& item_index_out,
+                                     u32& total_items_out)
 {
   return find_key_in_leaf_impl(
       leaf_page_id,
       query,
       item_index_out,
+      total_items_out,
       [](const llfs::PageId& leaf_page_id, KeyQuery& query) {
         return query.page_loader->try_pin_cached_page(  //
             leaf_page_id,
@@ -117,12 +122,14 @@ StatusOr<ValueView> find_key_in_leaf(llfs::PageId leaf_page_id,
 //
 StatusOr<ValueView> find_key_in_leaf(const llfs::PageIdSlot& leaf_page_id_slot,
                                      KeyQuery& query,
-                                     usize& item_index_out)
+                                     usize& item_index_out,
+                                     u32& total_items_out)
 {
   return find_key_in_leaf_impl(
       leaf_page_id_slot,
       query,
       item_index_out,
+      total_items_out,
       [](const llfs::PageIdSlot& leaf_page_id_slot, KeyQuery& query) {
         return leaf_page_id_slot.try_pin_through(  //
             *query.page_loader,
@@ -142,6 +149,81 @@ StatusOr<ValueView> find_key_in_leaf(const llfs::PageIdSlot& leaf_page_id_slot,
                 llfs::LruPriority{kLeafLruPriority},
             });
       });
+}
+
+//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
+//
+StatusOr<u32> find_key_lower_bound_index(llfs::PageId leaf_page_id,
+                                         KeyQuery& query,
+                                         u32& total_items_out)
+{
+  const auto default_shard_size = llfs::PageSize{kDefaultLeafShardedViewSize};
+
+  PageSliceReader slice_reader{*query.page_loader, leaf_page_id, default_shard_size};
+
+  const llfs::PageSize head_shard_size = query.tree_options->trie_index_sharded_view_size();
+
+  PageSliceStorage head_storage;
+  BATT_ASSIGN_OK_RESULT(ConstBuffer head_buffer,
+                        slice_reader.read_slice(head_shard_size,
+                                                Interval<usize>{0, head_shard_size},
+                                                head_storage,
+                                                llfs::PinPageToJob::kDefault,
+                                                llfs::LruPriority{kTrieIndexLruPriority}));
+
+  const void* page_start = head_buffer.data();
+  const void* payload_start = advance_pointer(page_start, sizeof(llfs::PackedPageHeader));
+  const auto& packed_leaf_page = *static_cast<const PackedLeafPage*>(payload_start);
+
+  total_items_out = packed_leaf_page.key_count;
+
+  packed_leaf_page.check_magic();
+
+  const void* trie_begin = packed_leaf_page.trie_index.get();
+  const void* trie_end = advance_pointer(trie_begin, packed_leaf_page.trie_index_size);
+  BATT_CHECK_LE(byte_distance(page_start, trie_end), head_shard_size);
+
+  const Interval<usize> search_range = packed_leaf_page.calculate_search_range(query.key());
+  BATT_CHECK_NE(search_range.size(), 0);
+
+  const PackedKeyValue* head_items = packed_leaf_page.items->data();
+  const Interval<usize> items_slice{
+      (usize)byte_distance(page_start, head_items + search_range.lower_bound),
+      (usize)byte_distance(page_start, head_items + (search_range.upper_bound + 2)),
+  };
+
+  PageSliceStorage items_storage;
+  BATT_ASSIGN_OK_RESULT(ConstBuffer items_buffer,
+                        slice_reader.read_slice(items_slice,
+                                                items_storage,
+                                                llfs::PinPageToJob::kDefault,
+                                                llfs::LruPriority{kLeafItemsShardLruPriority}));
+
+  const auto items_begin = (const PackedKeyValue*)items_buffer.data();
+  const auto items_end = items_begin + search_range.size();
+
+  Interval<usize> key_data_slice{
+      (usize)(items_slice.lower_bound + items_begin->key_offset),
+      (usize)(items_slice.upper_bound + (items_end + 1)->key_offset),
+  };
+
+  PageSliceStorage key_data_storage;
+  BATT_ASSIGN_OK_RESULT(ConstBuffer key_data_buffer,
+                        slice_reader.read_slice(key_data_slice,
+                                                key_data_storage,
+                                                llfs::PinPageToJob::kDefault,
+                                                llfs::LruPriority{kLeafKeyDataShardLruPriority}));
+
+  const isize offset_base = items_begin->key_offset;
+  const isize offset_target = byte_distance(items_begin, key_data_buffer.data());
+  const isize offset_delta = offset_target - offset_base;
+
+  const PackedKeyValue* found_item = std::lower_bound(items_begin,  //
+                                                      items_end,
+                                                      query.key(),
+                                                      ShiftedPackedKeyOrder{offset_delta});
+
+  return search_range.lower_bound + std::distance(items_begin, found_item);
 }
 
 namespace {
@@ -182,7 +264,8 @@ bool try_full_page_query_first()
 //
 StatusOr<ValueView> find_key_in_pinned_leaf(llfs::PinnedPage& pinned_leaf,
                                             KeyQuery& query,
-                                            usize& item_index_out)
+                                            usize& item_index_out,
+                                            u32& total_items_out)
 {
   auto& packed_leaf = PackedLeafPage::view_of(pinned_leaf);
 
@@ -195,6 +278,8 @@ StatusOr<ValueView> find_key_in_pinned_leaf(llfs::PinnedPage& pinned_leaf,
 
   item_index_out = std::distance(packed_leaf.items_begin(), found);
 
+  total_items_out = packed_leaf.key_count;
+
   VLOG(1) << "Found key " << batt::c_str_literal(query.key()) << BATT_INSPECT(item_index_out)
           << " Reading value";
 
@@ -205,7 +290,8 @@ StatusOr<ValueView> find_key_in_pinned_leaf(llfs::PinnedPage& pinned_leaf,
 //
 StatusOr<ValueView> find_key_in_leaf_using_sharded_views(llfs::PageId leaf_page_id,
                                                          KeyQuery& query,
-                                                         usize& item_index_out)
+                                                         usize& item_index_out,
+                                                         u32& total_items_out)
 {
   const auto default_shard_size = llfs::PageSize{kDefaultLeafShardedViewSize};
 
@@ -224,6 +310,8 @@ StatusOr<ValueView> find_key_in_leaf_using_sharded_views(llfs::PageId leaf_page_
   const void* page_start = head_buffer.data();
   const void* payload_start = advance_pointer(page_start, sizeof(llfs::PackedPageHeader));
   const auto& packed_leaf_page = *static_cast<const PackedLeafPage*>(payload_start);
+
+  total_items_out = packed_leaf_page.key_count;
 
   // Sanity check; make sure this is a leaf!
   //

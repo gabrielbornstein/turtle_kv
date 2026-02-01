@@ -23,13 +23,13 @@ class PiecewiseFilter
 
   PiecewiseFilter() noexcept;
 
-  void drop_index_range(Interval<OffsetT> i);
+  void drop_index_range(Interval<OffsetT> i, OffsetT total_items);
 
-  bool live_at_index(OffsetT i) const;
+  bool live_at_index(OffsetT i, OffsetT total_items) const;
 
-  Optional<OffsetT> next_live_index(OffsetT i) const;
+  Optional<OffsetT> next_live_index(OffsetT i, OffsetT total_items) const;
 
-  Interval<OffsetT> next_live_interval(OffsetT start_i) const;
+  Optional<Interval<OffsetT>> next_live_interval(OffsetT start_i, OffsetT total_items) const;
 
   void set_items(const Slice<ItemT>& items);
 
@@ -42,22 +42,23 @@ class PiecewiseFilter
 
     OffsetT start_i = static_cast<OffsetT>(std::distance(this->items_->begin(), iters.first));
     OffsetT end_i = static_cast<OffsetT>(std::distance(this->items_->begin(), iters.second));
-    this->drop_index_range(Interval<OffsetT>{start_i, end_i});
+
+    OffsetT total_items = BATT_CHECKED_CAST(OffsetT, this->items_->size());
+
+    this->drop_index_range(Interval<OffsetT>{start_i, end_i}, total_items);
   }
 
-  bool empty() const;
+  Slice<const Interval<OffsetT>> dropped() const;
 
-  bool is_unfiltered() const;
+  usize cut_points_size() const;
+
+  bool empty() const;
 
   OffsetT full_size() const;
 
   OffsetT size() const;
 
   OffsetT dropped_total() const;
-
-  Slice<Interval<OffsetT>> dropped() const;
-
-  usize cut_points_size() const;
 
  private:
   Optional<Slice<ItemT>> items_;

@@ -41,13 +41,13 @@ PiecewiseFilter<ItemT, OffsetT>::PiecewiseFilter() noexcept
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
 template <typename ItemT, typename OffsetT>
-void PiecewiseFilter<ItemT, OffsetT>::drop_index_range(Interval<OffsetT> i)
+void PiecewiseFilter<ItemT, OffsetT>::drop_index_range(Interval<OffsetT> i, OffsetT total_items)
 {
   if (i.empty()) {
     return;
   }
 
-  i.upper_bound = std::min(i.upper_bound, this->full_size());
+  i.upper_bound = std::min(i.upper_bound, total_items);
 
   // Find the position to insert `i` or begin merging with other intervals.
   //
@@ -111,6 +111,7 @@ void PiecewiseFilter<ItemT, OffsetT>::set_items(const Slice<ItemT>& items)
 template <typename ItemT, typename OffsetT>
 OffsetT PiecewiseFilter<ItemT, OffsetT>::full_size() const
 {
+  BATT_CHECK(this->items_);
   return this->items_size_;
 }
 
@@ -136,9 +137,9 @@ OffsetT PiecewiseFilter<ItemT, OffsetT>::dropped_total() const
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
 template <typename ItemT, typename OffsetT>
-Slice<Interval<OffsetT>> PiecewiseFilter<ItemT, OffsetT>::dropped() const
+Slice<const Interval<OffsetT>> PiecewiseFilter<ItemT, OffsetT>::dropped() const
 {
-  return as_slice(this->dropped_);
+  return as_const_slice(this->dropped_);
 }
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
@@ -160,17 +161,9 @@ bool PiecewiseFilter<ItemT, OffsetT>::empty() const
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
 template <typename ItemT, typename OffsetT>
-bool PiecewiseFilter<ItemT, OffsetT>::is_unfiltered() const
+bool PiecewiseFilter<ItemT, OffsetT>::live_at_index(OffsetT i, OffsetT total_items) const
 {
-  return this->dropped_.empty();
-}
-
-//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
-//
-template <typename ItemT, typename OffsetT>
-bool PiecewiseFilter<ItemT, OffsetT>::live_at_index(OffsetT i) const
-{
-  BATT_CHECK(this->items_);
+  BATT_CHECK_LT(i, total_items);
 
   auto iter = std::lower_bound(this->dropped_.begin(),
                                this->dropped_.end(),
@@ -179,17 +172,16 @@ bool PiecewiseFilter<ItemT, OffsetT>::live_at_index(OffsetT i) const
   if (iter != this->dropped_.end() && iter->contains(i)) {
     return false;
   }
-  return i < this->full_size();
+  return i < total_items;
 }
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
 template <typename ItemT, typename OffsetT>
-Optional<OffsetT> PiecewiseFilter<ItemT, OffsetT>::next_live_index(OffsetT i) const
+Optional<OffsetT> PiecewiseFilter<ItemT, OffsetT>::next_live_index(OffsetT i,
+                                                                   OffsetT total_items) const
 {
-  BATT_CHECK(this->items_);
-
-  if (i >= this->full_size()) {
+  if (i >= total_items) {
     return None;
   }
 
@@ -202,7 +194,7 @@ Optional<OffsetT> PiecewiseFilter<ItemT, OffsetT>::next_live_index(OffsetT i) co
 
   if (iter != this->dropped_.end() && iter->contains(i)) {
     i = iter->upper_bound;
-    if (i >= this->full_size()) {
+    if (i >= total_items) {
       return None;
     }
   }
@@ -213,11 +205,11 @@ Optional<OffsetT> PiecewiseFilter<ItemT, OffsetT>::next_live_index(OffsetT i) co
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
 template <typename ItemT, typename OffsetT>
-Interval<OffsetT> PiecewiseFilter<ItemT, OffsetT>::next_live_interval(OffsetT start_i) const
+Optional<Interval<OffsetT>> PiecewiseFilter<ItemT, OffsetT>::next_live_interval(
+    OffsetT start_i,
+    OffsetT total_items) const
 {
-  BATT_CHECK(this->items_);
-
-  OffsetT end_i = this->full_size();
+  OffsetT end_i = total_items;
 
   auto iter = std::upper_bound(this->dropped_.begin(),
                                this->dropped_.end(),
@@ -227,7 +219,7 @@ Interval<OffsetT> PiecewiseFilter<ItemT, OffsetT>::next_live_interval(OffsetT st
   if (iter != this->dropped_.begin()) {
     auto prev = std::prev(iter);
     if (prev->contains(start_i)) {
-      return Interval<OffsetT>{start_i, start_i};
+      return None;
     }
   }
 

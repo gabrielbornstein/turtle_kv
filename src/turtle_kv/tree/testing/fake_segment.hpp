@@ -2,6 +2,10 @@
 
 #include <turtle_kv/tree/testing/fake_page_loader.hpp>
 
+#include <turtle_kv/core/packed_key_value.hpp>
+
+#include <turtle_kv/util/piecewise_filter.hpp>
+
 #include <turtle_kv/import/bit_ops.hpp>
 #include <turtle_kv/import/int_types.hpp>
 
@@ -19,8 +23,7 @@ struct FakeLevel;
 struct FakeSegment {
   llfs::PageId page_id_;
   u64 active_pivots_ = 0;
-  u64 flushed_pivots_ = 0;
-  std::map<usize, usize> flushed_item_upper_bound_;
+  PiecewiseFilter<const PackedKeyValue, u32> filter;
   std::map<usize, usize> pivot_items_count_;
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
@@ -52,30 +55,6 @@ struct FakeSegment {
     this->active_pivots_ = insert_bit(this->active_pivots_, pivot_i, is_active);
   }
 
-  u64 get_flushed_pivots() const
-  {
-    return this->flushed_pivots_;
-  }
-
-  usize get_flushed_item_upper_bound(const FakeLevel&, usize pivot_i) const
-  {
-    auto iter = this->flushed_item_upper_bound_.find(pivot_i);
-    if (iter == this->flushed_item_upper_bound_.end()) {
-      return 0;
-    }
-    return iter->second;
-  }
-
-  void set_flushed_item_upper_bound(usize pivot_i, usize upper_bound)
-  {
-    this->flushed_pivots_ = set_bit(this->flushed_pivots_, pivot_i, (upper_bound != 0));
-    if (upper_bound != 0) {
-      this->flushed_item_upper_bound_[pivot_i] = upper_bound;
-    } else {
-      this->flushed_item_upper_bound_.erase(pivot_i);
-    }
-  }
-
   void set_pivot_items_count(usize pivot_i, usize count)
   {
     this->active_pivots_ = set_bit(this->active_pivots_, pivot_i, (count > 0));
@@ -84,24 +63,6 @@ struct FakeSegment {
     } else {
       this->pivot_items_count_.erase(pivot_i);
     }
-  }
-
-  void insert_flushed_item_upper_bound(usize pivot_i, usize new_upper_bound)
-  {
-    this->flushed_pivots_ = insert_bit(this->flushed_pivots_, pivot_i, (new_upper_bound != 0));
-
-    std::map<usize, usize> new_flushed_item_upper_bound;
-    for (const auto& [index, upper_bound] : this->flushed_item_upper_bound_) {
-      if (index < pivot_i) {
-        new_flushed_item_upper_bound[index] = upper_bound;
-      } else if (index == pivot_i) {
-        new_flushed_item_upper_bound[index] = new_upper_bound;
-      } else {
-        BATT_CHECK_GT(index, pivot_i);
-        new_flushed_item_upper_bound[index + 1] = upper_bound;
-      }
-    }
-    std::swap(this->flushed_item_upper_bound_, new_flushed_item_upper_bound);
   }
 
   void set_page_id(llfs::PageId page_id)
@@ -120,10 +81,42 @@ struct FakeSegment {
     this->pivot_items_count_.clear();
   }
 
-  void clear_flushed_pivots()
+  void set_filter_items(const Slice<const PackedKeyValue>& items)
   {
-    this->flushed_pivots_ = 0;
-    this->flushed_item_upper_bound_.clear();
+    this->filter.set_items(items);
+  }
+
+  template <typename Traits>
+  void drop_key_range(const BasicInterval<Traits>& range)
+  {
+    this->filter.drop_item_range(range, llfs::KeyRangeOrder{});
+  }
+
+  void drop_index_range(u32 total_items, Interval<u32> i)
+  {
+    this->filter.drop_index_range(i, total_items);
+  }
+
+  bool is_index_filtered(const FakeLevel&, u32 total_items, u32 index) const
+  {
+    return !this->filter.live_at_index(index, total_items);
+  }
+
+  bool is_unfiltered() const
+  {
+    return this->filter.dropped().empty();
+  }
+
+  Optional<u32> next_live_item(const FakeLevel&, u32 total_items, u32 item_i) const
+  {
+    return this->filter.next_live_index(item_i, total_items);
+  }
+
+  Optional<Interval<u32>> get_live_item_range(const FakeLevel&,
+                                              u32 total_items,
+                                              u32 start_item_i) const
+  {
+    return this->filter.next_live_interval(start_item_i, total_items);
   }
 };
 
