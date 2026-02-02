@@ -11,14 +11,15 @@ template <typename ItemT, typename OffsetT>
   PiecewiseFilter<ItemT, OffsetT> filter;
 
   filter.dropped_total_ = 0;
-  for (const Interval<OffsetT>& drop_irange : dropped) {
-    if ((drop_irange.lower_bound == 0 && filter.items_size_ != 0) ||
-        (drop_irange.lower_bound != 0 && drop_irange.lower_bound <= filter.items_size_) ||
-        (drop_irange.upper_bound <= drop_irange.lower_bound)) {
+  OffsetT current_items_size = 0;
+  for (const Interval<OffsetT>& drop_range : dropped) {
+    if ((drop_range.lower_bound == 0 && current_items_size != 0) ||
+        (drop_range.lower_bound != 0 && drop_range.lower_bound <= current_items_size) ||
+        (drop_range.upper_bound <= drop_range.lower_bound)) {
       return Status{::batt::StatusCode::kInvalidArgument};
     }
-    filter.items_size_ = drop_irange.upper_bound;
-    filter.dropped_total_ += drop_irange.size();
+    current_items_size = drop_range.upper_bound;
+    filter.dropped_total_ += drop_range.size();
   }
 
   filter.dropped_.clear();
@@ -34,7 +35,6 @@ PiecewiseFilter<ItemT, OffsetT>::PiecewiseFilter() noexcept
     : items_{None}
     , dropped_{}
     , dropped_total_{0}
-    , items_size_{0}
 {
 }
 
@@ -98,7 +98,6 @@ template <typename ItemT, typename OffsetT>
 void PiecewiseFilter<ItemT, OffsetT>::set_items(const Slice<ItemT>& items)
 {
   this->items_ = items;
-  this->items_size_ = items.size();
 
   while (!this->dropped_.empty() && this->dropped_.back().lower_bound >= this->full_size()) {
     this->dropped_total_ -= this->dropped_.back().size();
@@ -112,7 +111,7 @@ template <typename ItemT, typename OffsetT>
 OffsetT PiecewiseFilter<ItemT, OffsetT>::full_size() const
 {
   BATT_CHECK(this->items_);
-  return this->items_size_;
+  return this->items_->size();
 }
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
@@ -151,7 +150,7 @@ bool PiecewiseFilter<ItemT, OffsetT>::empty() const
 
   BATT_CHECK_GE(this->full_size(), this->dropped_total_);
   const bool is_empty = (this->full_size() == this->dropped_total_);
-  if (is_empty && this->items_size_ != 0) {
+  if (is_empty && this->full_size() != 0) {
     BATT_CHECK_EQ(this->dropped_.size(), 1u) << batt::dump_range(this->dropped_);
     BATT_CHECK_EQ((Interval<usize>{0, this->full_size()}), this->dropped_[0]);
   }
@@ -247,5 +246,15 @@ usize PiecewiseFilter<ItemT, OffsetT>::cut_points_size() const
   bool first_element_filtered = this->dropped_[0].lower_bound == 0;
 
   return this->dropped_.size() * 2 - (first_element_filtered ? 1 : 0);
+}
+
+//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
+//
+template <typename ItemT, typename OffsetT>
+SmallFn<void(std::ostream&)> PiecewiseFilter<ItemT, OffsetT>::dump() const
+{
+  return [this](std::ostream& out) {
+    out << batt::dump_range(this->dropped_);
+  };
 }
 }  // namespace turtle_kv

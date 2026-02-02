@@ -920,10 +920,19 @@ usize InMemoryNode::key_data_byte_size() const
 //
 usize InMemoryNode::segment_filters_byte_size() const
 {
-  usize bytes = 0;
+  usize count = this->total_segment_filter_cut_points();
+
+  return llfs::packed_array_size<little_u32>(count);
+}
+
+//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
+//
+usize InMemoryNode::total_segment_filter_cut_points() const
+{
+  usize count = 0;
 
   for (const Level& level : this->update_buffer.levels) {
-    bytes += batt::case_of(  //
+    count += batt::case_of(  //
         level,               //
         [](const EmptyLevel&) -> usize {
           return 0;
@@ -934,13 +943,13 @@ usize InMemoryNode::segment_filters_byte_size() const
         [](const SegmentedLevel& segmented_level) -> usize {
           usize n = 0;
           for (const Segment& segment : segmented_level.segments) {
-            n += segment.cut_points_byte_size();
+            n += segment.num_cut_points();
           }
           return n;
         });
   }
 
-  return bytes;
+  return count;
 }
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
@@ -951,7 +960,7 @@ SubtreeViability InMemoryNode::get_viability() const
 
   const usize variable_space = PackedNodePage::variable_data_space();
   const usize keys_size = this->key_data_byte_size();
-  const usize segment_filters_size = this->segment_filters_byte_size() + 8;
+  const usize segment_filters_size = this->segment_filters_byte_size();
   const bool variables_too_large = (keys_size + segment_filters_size) > variable_space;
 
   needs_split.pivot_count = BATT_CHECKED_CAST(u16, this->pivot_count());
@@ -1781,9 +1790,12 @@ SmallFn<void(std::ostream&)> InMemoryNode::UpdateBuffer::Segment::dump(bool mult
   return [this, multi_line](std::ostream& out) {
     auto active = std::bitset<64>{this->active_pivots};
     if (multi_line) {
-      out << "Segment:" << std::endl << "   active=" << active << std::endl;
+      out << "Segment:" << std::endl
+          << "   active=" << active << std::endl
+          << "   filter=" << this->filter.dump() << std::endl
+          << std::endl;
     } else {
-      out << "Segment{.active=" << active << ",}";
+      out << "Segment{.active=" << active << ", .filter=" << this->filter.dump() << ",}";
     }
   };
 }

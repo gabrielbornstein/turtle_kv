@@ -162,9 +162,9 @@ struct InMemoryNode {
         return this->filter.next_live_interval(start_item_i, total_items);
       }
 
-      usize cut_points_byte_size() const
+      usize num_cut_points() const
       {
-        return this->filter.cut_points_size() * sizeof(little_u32);
+        return this->filter.cut_points_size();
       }
 
       //+++++++++++-+-+--+----- --- -- -  -  -   -
@@ -566,6 +566,8 @@ struct InMemoryNode {
   usize key_data_byte_size() const;
 
   usize segment_filters_byte_size() const;
+
+  usize total_segment_filter_cut_points() const;
 
   usize segment_count() const;
 

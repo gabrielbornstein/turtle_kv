@@ -131,7 +131,7 @@ inline bool normal_flush_might_fix(const SubtreeViability& viability)
       },
       [](const NeedsSplit& needs_split) {
         return needs_split.height == 2 &&                  //
-               (needs_split.flushed_item_counts_too_large  //
+               (needs_split.segment_filters_too_large      //
                 || needs_split.too_many_segments) &&       //
                !needs_split.items_too_large &&             //
                !needs_split.keys_too_large &&              //

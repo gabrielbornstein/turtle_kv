@@ -108,9 +108,8 @@ PackedNodePage* build_node_page(const MutableBuffer& buffer, const InMemoryNode&
 
   // Initialize the array containing cut points for segment filters.
   //
-  const usize segment_filters_items = src_node.segment_filters_byte_size() / sizeof(little_u32);
-  const usize segment_filters_array_size =
-      llfs::packed_array_size<little_u32>(segment_filters_items);
+  const usize segment_filters_items = src_node.total_segment_filter_cut_points();
+  const usize segment_filters_array_size = src_node.segment_filters_byte_size();
   BATT_CHECK_GE(variable_buffer.size(), segment_filters_array_size);
 
   llfs::PackedArray<little_u32>* segment_filters_array =
@@ -479,12 +478,26 @@ std::function<void(std::ostream&)> PackedNodePage::dump() const
 
     out << "  segments:" << std::endl;
     i = 0;
+    u16 mask = u16{1} << 15;
     for (const UpdateBuffer::Segment& segment : this->update_buffer.segments) {
+      u32 filter_start_i = segment.filter_start.value() & ~mask;
+      bool start_filtered = (segment.filter_start.value() & mask) != 0;
       out << "   - [" << std::setw(2) << std::setfill(' ') << i << "]:" << std::endl
           << "     leaf_page_id: " << segment.leaf_page_id.unpack() << std::endl
           << "     active_pivots:  " << std::bitset<64>{segment.active_pivots.value()} << std::endl
+          << "     filter_start:  " << filter_start_i << std::endl
+          << "     starts_filtered: " << start_filtered << std::endl
           << std::endl;
       ++i;
+    }
+
+    out << "  segment_filters:" << std::endl;
+    const llfs::PackedArray<little_u32>& packed_filters = *this->update_buffer.segment_filters;
+    i = 0;
+    for (; i < packed_filters.size(); ++i) {
+      out << "   - [" << std::setw(2) << std::setfill(' ') << i << "]:" << std::endl
+          << packed_filters[i] << std::endl
+          << std::endl;
     }
 
     out << "  level_start:" << std::endl;
