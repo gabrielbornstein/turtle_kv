@@ -148,7 +148,8 @@ struct PackedNodePage {
       }
 
       StatusOr<llfs::PinnedPage> load_leaf_page(llfs::PageLoader& page_loader,
-                                                llfs::PinPageToJob pin_page_to_job) const;
+                                                llfs::PinPageToJob pin_page_to_job,
+                                                llfs::PageCacheOvercommit& overcommit) const;
 
       bool is_index_filtered(const SegmentedLevel& level, u32 total_segment_items, u32 index) const;
 
@@ -251,6 +252,11 @@ struct PackedNodePage {
     BATT_ASSERT_LE(packed_node_page.pivot_count(), 64);
 
     return packed_node_page;
+  }
+
+  static usize variable_data_space()
+  {
+    return sizeof(PackedNodePage::key_and_flushed_item_data_);
   }
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -

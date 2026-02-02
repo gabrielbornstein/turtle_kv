@@ -194,7 +194,8 @@ struct InMemoryNode {
       /** \brief Loads the leaf page for this Segment, returning the resulting llfs::PinnedPage.
        */
       StatusOr<llfs::PinnedPage> load_leaf_page(llfs::PageLoader& page_loader,
-                                                llfs::PinPageToJob pin_page_to_job) const;
+                                                llfs::PinPageToJob pin_page_to_job,
+                                                llfs::PageCacheOvercommit& overcommit) const;
 
       /** \brief Prints a human-readable representation of this Segment.
        */
@@ -427,7 +428,7 @@ struct InMemoryNode {
                                                         const TreeOptions& tree_options,
                                                         const PackedNodePage& packed_node);
 
-  static StatusOr<std::unique_ptr<InMemoryNode>> from_subtrees(llfs::PageLoader& page_loader,  //
+  static StatusOr<std::unique_ptr<InMemoryNode>> from_subtrees(BatchUpdateContext& update_context,
                                                                const TreeOptions& tree_options,
                                                                Subtree&& first_subtree,
                                                                Subtree&& second_subtree,
@@ -546,7 +547,7 @@ struct InMemoryNode {
   MaxPendingBytes find_max_pending() const;
 
   void push_levels_to_merge(MergeCompactor& compactor,
-                            llfs::PageLoader& page_loader,
+                            BatchUpdateContext& update_context,
                             Status& segment_load_status,
                             HasPageRefs& has_page_refs,
                             const Slice<UpdateBuffer::Level>& levels_to_merge,
@@ -554,7 +555,7 @@ struct InMemoryNode {
                             bool only_pivot,
                             Optional<KeyView> min_key = None);
 
-  Status set_pivot_items_flushed(llfs::PageLoader& page_loader,
+  Status set_pivot_items_flushed(BatchUpdateContext& update_context,
                                  usize pivot_i,
                                  const CInterval<KeyView>& flush_key_crange);
 
@@ -575,6 +576,11 @@ struct InMemoryNode {
   /** \brief Split the node and return its new upper half (sibling).
    */
   StatusOr<std::unique_ptr<InMemoryNode>> try_split(BatchUpdateContext& context);
+
+  /** \brief (internal use only) Try splitting the node directly (don't apply any
+   * compaction/flushing remedies).
+   */
+  StatusOr<std::unique_ptr<InMemoryNode>> try_split_direct(BatchUpdateContext& context);
 
   /** \brief Attempt to make the node viable by flushing a batch.
    */
