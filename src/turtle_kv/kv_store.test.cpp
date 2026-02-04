@@ -484,7 +484,7 @@ TEST_P(CheckpointTest, CheckpointRecovery)
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-TEST(ExplorationTest, PutExploration)
+TEST(ChangeLogTest, ChangeLogRecovery)
 {
   u64 num_puts = 100000;
 
@@ -567,8 +567,18 @@ TEST(ExplorationTest, PutExploration)
       turtle_kv::ChangeLogFile::open(test_kv_store_dir / "change_log.turtle_kv");
 
   BATT_CHECK_OK(change_log_file);
-  std::vector<turtle_kv::ChangeLogBlock*> blocks = (*change_log_file)->read_blocks_into_vector();
-  LOG(INFO) << "blocks.begin()->owner_id() == " << (*blocks.begin())->owner_id();
+  std::vector<boost::intrusive_ptr<turtle_kv::ChangeLogBlock>> blocks =
+      (*change_log_file)->read_blocks_into_vector();
+
+  int i = 0;
+  for (auto block : blocks) {
+    // block->verify();
+    LOG(INFO) << "Reading block " << i << " with owner_id() == " << block->owner_id()
+              << ", and block_size() == " << block->block_size();
+    BATT_CHECK_NE(block->owner_id(), 0);
+    BATT_CHECK_NE(block->block_size(), 0);
+    ++i;
+  }
 }
 
 }  // namespace

@@ -146,6 +146,15 @@ auto ChangeLogFile::PackedConfig::unpack() const noexcept -> ChangeLogFile::Conf
 //
 ChangeLogFile::~ChangeLogFile() noexcept
 {
+  Interval<i64> block_range{0, this->size()};
+
+  // TODO: [Gabe Bornstein 2/4/26] Do we need to check only active blocks, or all blocks in the
+  // ChangeLogFile?
+  //
+  this->for_block_range(block_range, [](i64 block_i [[maybe_unused]], ReadLockCounter& counter) {
+    BATT_CHECK_EQ(counter->load(), 0)
+        << "Error when destructing ChangeLogFile, not all ReadLockCounter's are released.";
+  });
   VLOG(1) << BATT_INSPECT(this->write_throughput_.get());
 }
 
@@ -233,28 +242,54 @@ StatusOr<batt::Grant> ChangeLogFile::reserve_blocks(
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-// TODO: [Gabe Bornstein 1/20/26] Consider using a boost::instrusive_ptr in the container.
-// TODO: [Gabe Bornstein 1/20/26] Consider using a non-vector container.
+ChangeLogFile::ReadLock ChangeLogFile::acquire_read_lock(batt::Grant& grant,
+                                                         const Interval<i64>& block_range,
+                                                         i64 blocks_written) noexcept
+{
+  this->lock_for_read(block_range);
+
+  // Important: only do this after locking the range.
+  //
+  {
+    this->upper_bound_.fetch_add(blocks_written);
+
+    BATT_CHECK_EQ(grant.size(), blocks_written);
+
+    batt::Grant now_in_use =
+        BATT_OK_RESULT_OR_PANIC(grant.spend(blocks_written, batt::WaitForResource::kFalse));
+
+    this->in_use_block_tokens_.subsume(std::move(now_in_use));
+
+    BATT_CHECK_EQ(grant.size(), 0);
+  }
+
+  return ReadLock{this, block_range};
+}
+
+//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 // TODO: [Gabe Bornstein 1/20/26] Only read in blocks that are written after most recent checkpoint.
 //
-std::vector<ChangeLogBlock*> ChangeLogFile::read_blocks_into_vector()
+std::vector<boost::intrusive_ptr<ChangeLogBlock>> ChangeLogFile::read_blocks_into_vector()
 {
   // TODO: [Gabe Bornstein 1/21/26] Assumes EphemeralState::ref_count is passed as 1, needs to
   // calculate actual ref count. read_blocks_into_vector is responsible for calling remove_ref and
   // freeing mem of ChangeLogBlock if we aren't saving it.
   //
-  std::vector<ChangeLogBlock*> blocks;
-  this->read_blocks([&](batt::MutableBuffer& block) -> batt::Status {
-    blocks.push_back(reinterpret_cast<ChangeLogBlock*>(block.data()));
+  std::vector<boost::intrusive_ptr<ChangeLogBlock>> blocks;
+  this->read_blocks([&](ChangeLogBlock* block) -> batt::Status {
+    // If block size is zero, block has not been initialized. Stop reading here.
+    //
+    if (block->block_size() == 0) {
+      return batt::StatusCode::kOutOfRange;
+    }
+    // TODO: [Gabe Bornstein 1/28/26] Decide if we want to keep block, decrement ref count if not.
+    //
+
+    blocks.push_back(boost::intrusive_ptr<ChangeLogBlock>{block, false});
 
     LOG(INFO) << "ChangeLogBlock->block_size() == " << blocks.back()->block_size()
               << " owner_id() == " << blocks.back()->owner_id();
 
-    // TODO: [Gabe Bornstein 1/15/26] Improve this check if possible.
-    //
-    if (blocks.back()->block_size() == 0) {
-      return batt::StatusCode::kOutOfRange;
-    }
     return batt::OkStatus();
   });
   LOG(INFO) << "In read_blocks, blocks.begin()->owner_id() == " << (*blocks.begin())->owner_id();
@@ -313,24 +348,7 @@ auto ChangeLogFile::append(batt::Grant& grant, batt::SmallVecBase<ConstBuffer>& 
 
   auto block_range = Interval<i64>{append_lower_bound, append_upper_bound};
 
-  this->lock_for_read(block_range);
-
-  // Important: only do this after locking the range.
-  //
-  {
-    this->upper_bound_.fetch_add(blocks_written);
-
-    BATT_CHECK_EQ(grant.size(), blocks_written);
-
-    batt::Grant now_in_use =
-        BATT_OK_RESULT_OR_PANIC(grant.spend(blocks_written, batt::WaitForResource::kFalse));
-
-    this->in_use_block_tokens_.subsume(std::move(now_in_use));
-
-    BATT_CHECK_EQ(grant.size(), 0);
-  }
-
-  return {ReadLock{this, block_range}};
+  return {this->acquire_read_lock(grant, block_range, blocks_written)};
 }
 
 }  // namespace turtle_kv

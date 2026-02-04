@@ -120,13 +120,13 @@ class ChangeLogFile
   StatusOr<batt::Grant> reserve_blocks(BlockCount block_count,
                                        batt::WaitForResource wait_for_resource) noexcept;
 
-  std::vector<ChangeLogBlock*> read_blocks_into_vector();
+  std::vector<boost::intrusive_ptr<ChangeLogBlock>> read_blocks_into_vector();
 
   // TODO: [Gabe Bornstein 1/20/26] Can we use concepts here to define required parameters and
   // return types?
   //
-  template <typename SerializeFn = void(batt::MutableBuffer)>
-  void read_blocks(SerializeFn write_block);
+  template <typename SerializeFn = void(ChangeLogBlock*)>
+  void read_blocks(SerializeFn process_block);
 
   StatusOr<ReadLock> append(batt::Grant& grant, batt::SmallVecBase<ConstBuffer>& data) noexcept;
 
@@ -181,13 +181,15 @@ class ChangeLogFile
   template <typename Fn = void(i64 block_i, ReadLockCounter& counter)>
   void for_block_range(const Interval<i64>& block_range, Fn&& fn) noexcept;
 
-  // TODO: Grab read locks from here?
-  //
   void lock_for_read(const Interval<i64>& block_range) noexcept;
 
   void unlock_for_read(const Interval<i64>& block_range) noexcept;
 
   void update_lower_bound(i64 update_upper_bound) noexcept;
+
+  ReadLock acquire_read_lock(batt::Grant& grant,
+                             const Interval<i64>& block_range,
+                             i64 blocks_written) noexcept;
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
 
@@ -203,8 +205,6 @@ class ChangeLogFile
 
   const usize max_batch_size_ = (16 * 1024 * 1024) / this->config_.block_size;
 
-  // TODO: Grab grants from here
-  //
   batt::Grant::Issuer free_block_tokens_{BATT_CHECKED_CAST(u64, this->config_.block_count.value())};
 
   batt::Grant in_use_block_tokens_{BATT_OK_RESULT_OR_PANIC(
@@ -213,8 +213,6 @@ class ChangeLogFile
   std::atomic<i64> lower_bound_{0};
   std::atomic<i64> upper_bound_{0};
 
-  // TODO: Grab read locks from here?
-  //
   std::unique_ptr<ReadLockCounter[]> read_lock_counter_per_block_{
       new ReadLockCounter[this->config_.block_count]};
 
@@ -226,10 +224,10 @@ class ChangeLogFile
 };
 
 // TODO: [Gabe Bornstein 1/16/26] Do I need to update other ChangeLogFile member data? Like lower,
-// upper bound? They aren;t recovered from ::open.
+// upper bound? They aren't recovered from ::open.
 //
 template <typename SerializeFn>
-void ChangeLogFile::read_blocks(SerializeFn write_block)
+void ChangeLogFile::read_blocks(SerializeFn process_block)
 {
   batt::Status status = batt::OkStatus();
   i64 blocks_read = 0;
@@ -242,21 +240,34 @@ void ChangeLogFile::read_blocks(SerializeFn write_block)
     //
     i64 curr_file_offset = this->config_.block0_offset + curr_block_offset;
 
-    // TODO: [Gabe Bornstein 1/20/26] Make sure this stays in scope for lifetime of container it's
-    // written to. When do we deallocate?
-    //
     void* block_memory = ChangeLogBlock::allocate_aligned(this->config_.block_size);
 
+    ChangeLogBlock* block = reinterpret_cast<ChangeLogBlock*>(block_memory);
+
+    // block->verify();
+
+    // Create MutableBuffer for reading from file
+    //
     batt::MutableBuffer block_buffer{block_memory, static_cast<size_t>(this->config_.block_size)};
 
     status = this->file_.read_all(curr_file_offset, block_buffer);
 
     LOG(INFO) << "Read ChangeLogBlock #" << blocks_read;
 
-    // TODO: [Gabe Bornstein 1/20/26] Consider just passing ChangeLogBlock* instead of
-    // MutableBuffer.
-    //
-    if (!write_block(block_buffer).ok()) {
+    batt::StatusOr<batt::Grant> buffer_grant =
+        this->reserve_blocks(BlockCount{1}, batt::WaitForResource::kFalse);
+
+    BATT_CHECK_OK(buffer_grant);
+
+    block->init_ephemeral_state(*buffer_grant);
+
+    Interval<i64> block_range{blocks_read, blocks_read};
+
+    i64 blocks_written = 1;
+
+    block->set_read_lock(acquire_read_lock(block->get_grant(), block_range, blocks_written));
+
+    if (!process_block(block).ok()) {
       break;
     }
 

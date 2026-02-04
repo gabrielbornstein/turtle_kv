@@ -49,12 +49,10 @@ namespace turtle_kv {
     , xxh3_checksum_{0}
     , xxh3_seed_{0}
 {
-  new (&this->ephemeral_state_storage_) EphemeralStatePtr{new EphemeralState{std::move(grant)}};
+  this->init_ephemeral_state(grant);
 
-  this->ephemeral_state_ptr()->ref_count_.store(1);
-
-  BATT_CHECK_EQ(this->ephemeral_state().grant_.size(), 1);
-
+  // TODO: [Gabe Bornstein 1/30/26] Do we need to initialize these things when recovering from disk?
+  //
   this->slots_rbegin()->offset = sizeof(ChangeLogBlock);
 
   this->check_buffer_invariant();

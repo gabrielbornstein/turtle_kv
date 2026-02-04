@@ -87,6 +87,20 @@ class ChangeLogBlock
     return this->ephemeral_state_ptr()->ref_count_;
   }
 
+  void init_ephemeral_state(batt::Grant& grant, i64 ref_count = 1)
+  {
+    new (&this->ephemeral_state_storage_) EphemeralStatePtr{new EphemeralState{std::move(grant)}};
+
+    this->ephemeral_state_ptr()->ref_count_.store(ref_count);
+
+    BATT_CHECK_EQ(this->ephemeral_state().grant_.size(), 1);
+  }
+
+  batt::Grant& get_grant()
+  {
+    return this->ephemeral_state().grant_;
+  }
+
   usize slot_count() const noexcept
   {
     return this->slot_count_;
@@ -188,25 +202,16 @@ class ChangeLogBlock
   /** \brief The members of this object which live outside the block buffer.
    */
   struct EphemeralState {
-    // TODO: [Gabe Bornstein 1/21/26] Is it ever the case ref_count_ does not start at 1? Does it
-    // need to be a member of ChangeLogBlock so it can persist between shutdowns?
-    //
     /** \brief Atomic reference counter to manage the lifetime of the buffer.
      */
     std::atomic<i32> ref_count_;
 
-    // TODO: [Gabe Bornstein 1/21/26] Needs post recovery initialization. After reading block from
-    // disk, needs to be initialized.
-    //
-
-    // TODO: [Gabe Bornstein 1/21/26] Where do I acquire a read_lock from? ChangeLogFile somewhere
+    // TODO: [Gabe Bornstein 2/2/26] Consider turning grant and read lock into Variant
     //
     /** \brief Used to track whether this block has been flushed.
      */
     batt::Latch<boost::intrusive_ptr<ChangeLogReadLock>> read_lock_;
 
-    // TODO: [Gabe Bornstein 1/21/26] Where do I acquire a grant_ from?
-    //
     /** \brief The Volume root log Grant passed in at construction time; a pre-reservation of
      * space in the Volume root log for the slot data that will be appended to this buffer.
      */
@@ -293,10 +298,15 @@ class ChangeLogBlock
   u8 padding0_[6];
 
   /* \brief The number of slots in the previous MemTable (used for recovery). This change log block
-   * is part of a MemTable currently being written to disk. prev_mem_table_num_slots_ corresponds to
+   * is part of a MemTable currently being written to disk. prev_epoch_num_slots_ corresponds to
    * the MemTable written to disk prior to the MemTable currently being written.
    */
-  u32 prev_mem_table_num_slots_;
+  // TODO: [Gabe Bornstein 2/3/26] Whoever constructs a Mutable ChangeLogBlock should pass this
+  // value. Whoever creates a new MemTable also needs to pass this value to the MemTable
+  // construction. Needs to be added to MemTable. Open questions if this value should live in
+  // MemTable or a level below.
+  //
+  u32 prev_epoch_num_slots_;
 
   /** \brief The next ChangeLogBlock in the current stack.
    */
@@ -314,6 +324,16 @@ class ChangeLogBlock
 
   EphemeralStateStorage ephemeral_state_storage_;
 };
+
+inline void intrusive_ptr_add_ref(ChangeLogBlock* block) noexcept
+{
+  block->add_ref(1);
+}
+
+inline void intrusive_ptr_release(ChangeLogBlock* block) noexcept
+{
+  block->remove_ref(1);
+}
 
 namespace {
 
