@@ -87,6 +87,9 @@ class ChangeLogBlock
     return this->ephemeral_state_ptr()->ref_count_;
   }
 
+  /** \brief Helper function to initialize the ephemeral state of this ChangeLogBlock. Transfers
+   * ownership of grant to ChangeLogBlock, and initializes the reference count to ref_count.
+   */
   void init_ephemeral_state(batt::Grant& grant, i64 ref_count = 1)
   {
     new (&this->ephemeral_state_storage_) EphemeralStatePtr{new EphemeralState{std::move(grant)}};
@@ -96,6 +99,8 @@ class ChangeLogBlock
     BATT_CHECK_EQ(this->ephemeral_state().grant_.size(), 1);
   }
 
+  /** \brief Return a referenece to this ChangeLogBlock's underlying grant.
+   */
   batt::Grant& get_grant()
   {
     return this->ephemeral_state().grant_;
@@ -325,11 +330,16 @@ class ChangeLogBlock
   EphemeralStateStorage ephemeral_state_storage_;
 };
 
+/** \brief Free function necessary for intrusive_ptr usage. Adds a reference to the ChangeLogBlock.
+ */
 inline void intrusive_ptr_add_ref(ChangeLogBlock* block) noexcept
 {
   block->add_ref(1);
 }
 
+/** \brief Free function necessary for intrusive_ptr usage. Removes a reference from the
+ * ChangeLogBlock.
+ */
 inline void intrusive_ptr_release(ChangeLogBlock* block) noexcept
 {
   block->remove_ref(1);

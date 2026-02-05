@@ -120,11 +120,19 @@ class ChangeLogFile
   StatusOr<batt::Grant> reserve_blocks(BlockCount block_count,
                                        batt::WaitForResource wait_for_resource) noexcept;
 
+  /** \brief Recovers all previously active ChangeLogBlocks from disk and returns them to the user.
+   * All blocks initially have a reference count of 1. intrusive_ptr will help manage the lifetime
+   * of the block, however, the user can also alter and manage the lifetime of the returned blocks.
+   */
   std::vector<boost::intrusive_ptr<ChangeLogBlock>> read_blocks_into_vector();
 
-  // TODO: [Gabe Bornstein 1/20/26] Can we use concepts here to define required parameters and
+  // TODO: [Gabe Bornstein 1/20/26] Consider using concepts here to define required parameters and
   // return types?
   //
+  /** \brief Read over all the blocks currently in the ChangeLogFile, calling process_block for each
+   * block. process_block is responsible for determining when to stop reading blocks, and what to do
+   * with each recovered block.
+   */
   template <typename SerializeFn = void(ChangeLogBlock*)>
   void read_blocks(SerializeFn process_block);
 
@@ -229,10 +237,9 @@ class ChangeLogFile
 template <typename SerializeFn>
 void ChangeLogFile::read_blocks(SerializeFn process_block)
 {
-  batt::Status status = batt::OkStatus();
   i64 blocks_read = 0;
-  while (status.ok()) {
-    // The offset of where we are writing to our buffer.
+  for (;;) {
+    // The oaffset of where we are writing to our buffer.
     //
     i64 curr_block_offset = blocks_read * this->config_.block_size;
 
@@ -244,6 +251,8 @@ void ChangeLogFile::read_blocks(SerializeFn process_block)
 
     ChangeLogBlock* block = reinterpret_cast<ChangeLogBlock*>(block_memory);
 
+    // TODO: [Gabe Bornstein 2/4/26] Investigate why verify is failing.
+    //
     // block->verify();
 
     // Create MutableBuffer for reading from file
@@ -251,8 +260,6 @@ void ChangeLogFile::read_blocks(SerializeFn process_block)
     batt::MutableBuffer block_buffer{block_memory, static_cast<size_t>(this->config_.block_size)};
 
     status = this->file_.read_all(curr_file_offset, block_buffer);
-
-    LOG(INFO) << "Read ChangeLogBlock #" << blocks_read;
 
     batt::StatusOr<batt::Grant> buffer_grant =
         this->reserve_blocks(BlockCount{1}, batt::WaitForResource::kFalse);
@@ -267,6 +274,8 @@ void ChangeLogFile::read_blocks(SerializeFn process_block)
 
     block->set_read_lock(acquire_read_lock(block->get_grant(), block_range, blocks_written));
 
+    // Break once we 've read a block that isn't valid or if we've reached the end of the file
+    //
     if (!process_block(block).ok()) {
       break;
     }

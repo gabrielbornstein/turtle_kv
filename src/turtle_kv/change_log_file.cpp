@@ -277,6 +277,7 @@ std::vector<boost::intrusive_ptr<ChangeLogBlock>> ChangeLogFile::read_blocks_int
   //
   std::vector<boost::intrusive_ptr<ChangeLogBlock>> blocks;
   this->read_blocks([&](ChangeLogBlock* block) -> batt::Status {
+    BATT_CHECK_EQ(block->ref_count(), 1);
     // If block size is zero, block has not been initialized. Stop reading here.
     //
     if (block->block_size() == 0) {
