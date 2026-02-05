@@ -271,12 +271,11 @@ ChangeLogFile::ReadLock ChangeLogFile::acquire_read_lock(batt::Grant& grant,
 //
 std::vector<boost::intrusive_ptr<ChangeLogBlock>> ChangeLogFile::read_blocks_into_vector()
 {
-  // TODO: [Gabe Bornstein 1/21/26] Assumes EphemeralState::ref_count is passed as 1, needs to
-  // calculate actual ref count. read_blocks_into_vector is responsible for calling remove_ref and
-  // freeing mem of ChangeLogBlock if we aren't saving it.
+  // TODO: [Gabe Bornstein 1/21/26] read_blocks_into_vector is responsible for calling remove_ref
+  // and freeing mem of ChangeLogBlock if we aren't saving it.
   //
   std::vector<boost::intrusive_ptr<ChangeLogBlock>> blocks;
-  this->read_blocks([&](ChangeLogBlock* block) -> batt::Status {
+  batt::Status read_blocks_status = this->read_blocks([&](ChangeLogBlock* block) -> batt::Status {
     BATT_CHECK_EQ(block->ref_count(), 1);
     // If block size is zero, block has not been initialized. Stop reading here.
     //
@@ -288,12 +287,13 @@ std::vector<boost::intrusive_ptr<ChangeLogBlock>> ChangeLogFile::read_blocks_int
 
     blocks.push_back(boost::intrusive_ptr<ChangeLogBlock>{block, false});
 
-    LOG(INFO) << "ChangeLogBlock->block_size() == " << blocks.back()->block_size()
-              << " owner_id() == " << blocks.back()->owner_id();
+    VLOG(3) << "ChangeLogBlock->block_size() == " << blocks.back()->block_size()
+            << " owner_id() == " << blocks.back()->owner_id();
 
     return batt::OkStatus();
   });
-  LOG(INFO) << "In read_blocks, blocks.begin()->owner_id() == " << (*blocks.begin())->owner_id();
+
+  BATT_CHECK_OK(read_blocks_status);
   return blocks;
 }
 

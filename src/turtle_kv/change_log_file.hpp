@@ -122,7 +122,8 @@ class ChangeLogFile
 
   /** \brief Recovers all previously active ChangeLogBlocks from disk and returns them to the user.
    * All blocks initially have a reference count of 1. intrusive_ptr will help manage the lifetime
-   * of the block, however, the user can also alter and manage the lifetime of the returned blocks.
+   * of the block, however, the user is also resposnsible for altering and managing the lifetime of
+   * the returned blocks (https://www.boost.org/doc/libs/1_40_0/libs/smart_ptr/intrusive_ptr.html).
    */
   std::vector<boost::intrusive_ptr<ChangeLogBlock>> read_blocks_into_vector();
 
@@ -134,7 +135,7 @@ class ChangeLogFile
    * with each recovered block.
    */
   template <typename SerializeFn = void(ChangeLogBlock*)>
-  void read_blocks(SerializeFn process_block);
+  batt::Status read_blocks(SerializeFn process_block);
 
   StatusOr<ReadLock> append(batt::Grant& grant, batt::SmallVecBase<ConstBuffer>& data) noexcept;
 
@@ -195,6 +196,10 @@ class ChangeLogFile
 
   void update_lower_bound(i64 update_upper_bound) noexcept;
 
+  /** \brief Marks grant as in use by adding grant to this->in_use_block_tokens_.
+   * Updates this->upper_bound_ to include the new number of blocks_written.
+   * Returns a ReadLock on the range block_range.
+   */
   ReadLock acquire_read_lock(batt::Grant& grant,
                              const Interval<i64>& block_range,
                              i64 blocks_written) noexcept;
@@ -235,10 +240,11 @@ class ChangeLogFile
 // upper bound? They aren't recovered from ::open.
 //
 template <typename SerializeFn>
-void ChangeLogFile::read_blocks(SerializeFn process_block)
+batt::Status ChangeLogFile::read_blocks(SerializeFn process_block)
 {
   i64 blocks_read = 0;
-  for (;;) {
+  batt::Status status = batt::OkStatus();
+  while (status.ok()) {
     // The oaffset of where we are writing to our buffer.
     //
     i64 curr_block_offset = blocks_read * this->config_.block_size;
@@ -264,7 +270,7 @@ void ChangeLogFile::read_blocks(SerializeFn process_block)
     batt::StatusOr<batt::Grant> buffer_grant =
         this->reserve_blocks(BlockCount{1}, batt::WaitForResource::kFalse);
 
-    BATT_CHECK_OK(buffer_grant);
+    BATT_REQUIRE_OK(buffer_grant);
 
     block->init_ephemeral_state(*buffer_grant);
 
@@ -282,6 +288,7 @@ void ChangeLogFile::read_blocks(SerializeFn process_block)
 
     ++blocks_read;
   }
+  return batt::OkStatus();
 }
 
 // #=##=##=#==#=#==#===#+==#+==========+==+=+=+=+=+=++=+++=+++++=-++++=-+++++++++++

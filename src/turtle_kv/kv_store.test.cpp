@@ -46,7 +46,7 @@ using turtle_kv::testing::SequentialStringGenerator;
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 // Base test fixture with common KVStore setup and teardown
 //
-class KVStoreTestFixture : public ::testing::Test
+class KVStoreTest : public ::testing::Test
 {
  public:
   void SetUp() override
@@ -167,7 +167,7 @@ class KVStoreTestFixture : public ::testing::Test
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-TEST(KVStoreTest, CreateAndOpen)
+TEST_F(KVStoreTest, CreateAndOpen)
 {
   batt::StatusOr<std::filesystem::path> root = turtle_kv::data_root();
   ASSERT_TRUE(root.ok());
@@ -285,7 +285,7 @@ TEST(KVStoreTest, CreateAndOpen)
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-TEST(KVStoreTest, StdMapWorkloadTest)
+TEST_F(KVStoreTest, StdMapWorkloadTest)
 {
   StdMapTable table;
 
@@ -300,7 +300,7 @@ TEST(KVStoreTest, StdMapWorkloadTest)
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-TEST_F(KVStoreTestFixture, ScanStressTest)
+TEST_F(KVStoreTest, ScanStressTest)
 {
   batt::StatusOr<std::filesystem::path> root = turtle_kv::data_root();
   ASSERT_TRUE(root.ok());
@@ -403,13 +403,13 @@ class CheckpointTestParams
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
 class CheckpointTest
-    : public KVStoreTestFixture
+    : public KVStoreTest
     , public testing::WithParamInterface<CheckpointTestParams>
 {
  public:
   void SetUp() override
   {
-    KVStoreTestFixture::SetUp();
+    KVStoreTest::SetUp();
 
     CheckpointTestParams checkpoint_test_params = GetParam();
     this->num_checkpoints_to_create = checkpoint_test_params.num_checkpoints_to_create;
@@ -530,7 +530,7 @@ TEST_P(CheckpointTest, CheckpointRecovery)
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-TEST_F(KVStoreTestFixture, ChangeLogRecovery)
+TEST_F(KVStoreTest, ChangeLogRecovery)
 {
   const u64 num_puts = 100000;
 
