@@ -1078,7 +1078,8 @@ StatusOr<std::unique_ptr<CheckpointJob>> KVStore::apply_batch_to_checkpoint(
           out << "Finalizing checkpoint early due to cache overcommit;"
               << BATT_INSPECT(this->checkpoint_batch_count_);
         },
-        this->page_cache());
+        this->page_cache(),
+        this->metrics_.overcommit);
   }
 
   // Else if we have reached the target checkpoint distance, then flush the checkpoint and start a
@@ -1328,6 +1329,11 @@ void KVStore::collect_stats(
   fn("page_cache.get_count", page_cache.get_count.get());
 
   emit_latency("page_cache.allocate_page_latency", page_cache.allocate_page_alloc_latency);
+
+  //+++++++++++-+-+--+----- --- -- -  -  -   -
+  // Page cache overcommit metrics.
+  //
+  fn("page_cache.overcommit.trigger_count", this->metrics_.overcommit.trigger_count.get());
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
   // Tree Node related stats.

@@ -405,36 +405,39 @@ inline void PackedLeafLayoutPlan::check_valid(std::string_view label) const
 inline usize PackedLeafLayoutPlan::compute_trie_step_size() const
 {
   BATT_CHECK_GT(this->key_count, 0);
-  BATT_CHECK_GT(this->avg_key_len, 0);
-
-  // If there are no deleted items in this leaf, return 16.
-  //
-  if (this->drop_count == 0) {
-    return 16;
-  }
-
-  usize trie_buffer_size = this->trie_index_end - this->trie_index_begin;
-  BATT_CHECK_GT(trie_buffer_size, 0);
 
   // Determine the number of pivot keys to intialize the trie with by using the size of the trie
   // buffer and the average key length across the items in the leaf.
   //
-  usize pivot_count = trie_buffer_size / this->avg_key_len;
-  usize step_size = (this->key_count + pivot_count - 1) / pivot_count;
+  usize step_size = [&]() -> usize {
+    // If there are no deleted items in this leaf, return 16.
+    //
+    if (this->drop_count == 0) {
+      return 16;
+    }
+    const usize trie_buffer_size = this->trie_index_end - this->trie_index_begin;
+    BATT_CHECK_GT(trie_buffer_size, 0);
+
+    BATT_CHECK_GT(this->avg_key_len, 0);
+    const usize pivot_count = trie_buffer_size / this->avg_key_len;
+    return (this->key_count + pivot_count - 1) / pivot_count;
+  }();
 
   BATT_CHECK_GT(step_size, 0);
 
-  // If the calculated step size is already a power of 2, return it now.
+  // Round down to the nearest power of 2.
   //
-  if ((step_size & (step_size - 1)) == 0) {
-    return step_size;
+  step_size = (usize{1} << batt::log2_floor(step_size));
+
+  // Handle edge cases.
+  //
+  if (this->key_count <= step_size) {
+    step_size = 1;
+  } else if (this->key_count < 256) {
+    step_size = this->key_count / 16;
   }
 
-  // Otherwise, calculate the nearest power of 2 less than `step_size`.
-  //
-  i32 shift = batt::log2_floor(step_size);
-  BATT_CHECK_GE(shift, 0);
-  return usize{1} << shift;
+  return step_size;
 }
 
 //=#=#==#==#===============+=+=+=+=++=++++++++++++++-++-+--+-+----+---------------
@@ -739,11 +742,6 @@ inline PackedLeafPage* build_leaf_page(MutableBuffer buffer,
                                     plan.trie_index_end - plan.trie_index_begin};
 
     usize step_size = plan.compute_trie_step_size();
-    if (plan.key_count <= step_size) {
-      step_size = 1;
-    } else if (plan.key_count < 256) {
-      step_size = plan.key_count / 16;
-    }
 
     bool retried = false;
     batt::SmallVec<char, 64> upper_bound_key;
