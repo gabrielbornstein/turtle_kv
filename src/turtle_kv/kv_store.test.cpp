@@ -552,20 +552,22 @@ TEST_F(KVStoreTest, ChangeLogRecovery)
   batt::StatusOr<std::unique_ptr<turtle_kv::ChangeLogFile>> change_log_file =
       turtle_kv::ChangeLogFile::open(test_kv_store_dir / "change_log.turtle_kv");
 
-  BATT_CHECK_OK(change_log_file);
-  std::vector<boost::intrusive_ptr<turtle_kv::ChangeLogBlock>> blocks =
+  ASSERT_TRUE(change_log_file.ok());
+  batt::StatusOr<std::vector<boost::intrusive_ptr<turtle_kv::ChangeLogBlock>>> blocks =
       (*change_log_file)->read_blocks_into_vector();
 
+  ASSERT_TRUE(blocks.ok()) << BATT_INSPECT(blocks.status());
+
   int i = 0;
-  for (auto block : blocks) {
+  for (auto block : *blocks) {
     // TODO: [Gabe Bornstein 2/4/26] Investigate why verify is failing. It fails as soon as
     // ChangeLogBlock is recovered.
     //
     // block->verify();
-    LOG(INFO) << "Reading block " << i << " with owner_id() == " << block->owner_id()
-              << ", and block_size() == " << block->block_size();
-    BATT_CHECK_NE(block->owner_id(), 0);
-    BATT_CHECK_NE(block->block_size(), 0);
+    VLOG(1) << "Reading block " << i << " with owner_id() == " << block->owner_id()
+            << ", and block_size() == " << block->block_size();
+    ASSERT_NE(block->owner_id(), 0);
+    ASSERT_NE(block->block_size(), 0);
     ++i;
   }
 }

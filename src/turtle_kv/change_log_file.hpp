@@ -125,7 +125,7 @@ class ChangeLogFile
    * of the block, however, the user is also resposnsible for altering and managing the lifetime of
    * the returned blocks (https://www.boost.org/doc/libs/1_40_0/libs/smart_ptr/intrusive_ptr.html).
    */
-  std::vector<boost::intrusive_ptr<ChangeLogBlock>> read_blocks_into_vector();
+  batt::StatusOr<std::vector<boost::intrusive_ptr<ChangeLogBlock>>> read_blocks_into_vector();
 
   // TODO: [Gabe Bornstein 1/20/26] Consider using concepts here to define required parameters and
   // return types?
@@ -280,7 +280,8 @@ batt::Status ChangeLogFile::read_blocks(SerializeFn process_block)
 
     block->set_read_lock(acquire_read_lock(block->get_grant(), block_range, blocks_written));
 
-    // Break once we 've read a block that isn't valid or if we've reached the end of the file
+    // process_block is responsible for determining when to stop reading. Usually, break once we've
+    // read a block that isn't valid or if we've reached the end of the file.
     //
     if (!process_block(block).ok()) {
       break;

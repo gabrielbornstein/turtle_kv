@@ -269,7 +269,8 @@ ChangeLogFile::ReadLock ChangeLogFile::acquire_read_lock(batt::Grant& grant,
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 // TODO: [Gabe Bornstein 1/20/26] Only read in blocks that are written after most recent checkpoint.
 //
-std::vector<boost::intrusive_ptr<ChangeLogBlock>> ChangeLogFile::read_blocks_into_vector()
+batt::StatusOr<std::vector<boost::intrusive_ptr<ChangeLogBlock>>>
+ChangeLogFile::read_blocks_into_vector()
 {
   // TODO: [Gabe Bornstein 1/21/26] read_blocks_into_vector is responsible for calling remove_ref
   // and freeing mem of ChangeLogBlock if we aren't saving it.
@@ -293,7 +294,7 @@ std::vector<boost::intrusive_ptr<ChangeLogBlock>> ChangeLogFile::read_blocks_int
     return batt::OkStatus();
   });
 
-  BATT_CHECK_OK(read_blocks_status);
+  BATT_REQUIRE_OK(read_blocks_status);
   return blocks;
 }
 
