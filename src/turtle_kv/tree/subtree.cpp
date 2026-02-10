@@ -417,8 +417,7 @@ StatusOr<ValueView> Subtree::find_key(ParentNodeHeight parent_height, KeyQuery& 
         BATT_CHECK_EQ(parent_height, 2);
 
         usize key_index_if_found = 0;
-        u32 total_items = 0;
-        return find_key_in_leaf(page_id_slot, query, key_index_if_found, total_items);
+        return find_key_in_leaf(page_id_slot, query, key_index_if_found);
       },
       [&](const std::unique_ptr<InMemoryLeaf>& leaf) -> StatusOr<ValueView> {
         return leaf->find_key(query.key());

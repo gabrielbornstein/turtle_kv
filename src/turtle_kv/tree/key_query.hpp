@@ -263,16 +263,14 @@ struct KeyQuery {
 
 StatusOr<ValueView> find_key_in_leaf(llfs::PageId leaf_page_id,
                                      KeyQuery& query,
-                                     usize& item_index_out,
-                                     u32& total_items_out);
+                                     usize& item_index_out);
 
 StatusOr<ValueView> find_key_in_leaf(const llfs::PageIdSlot& leaf_page_id,
                                      KeyQuery& query,
-                                     usize& item_index_out,
-                                     u32& total_items_out);
+                                     usize& item_index_out);
 
 StatusOr<u32> find_key_lower_bound_index(llfs::PageId leaf_page_id,
-                                           KeyQuery& query,
-                                           u32& total_items_out);
+                                         KeyQuery& query,
+                                         u32& total_items_out);
 
 }  // namespace turtle_kv

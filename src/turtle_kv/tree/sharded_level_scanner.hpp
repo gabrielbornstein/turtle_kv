@@ -386,7 +386,7 @@ inline auto ShardedLevelScanner<NodeT, LevelT, PageLoaderT>::continue_sharded_af
     usize prev_item_i = this->item_i_;
     if (this->hit_next_flushed_i_) {
       Optional<u32> next_live_item =
-          segment->next_live_item(*this->level_, this->segment_i_size_, live_range->upper_bound);
+          segment->live_lower_bound(*this->level_, this->segment_i_size_, live_range->upper_bound);
 
       if (!next_live_item) {
         this->advance_segment();
@@ -443,7 +443,7 @@ inline auto ShardedLevelScanner<NodeT, LevelT, PageLoaderT>::continue_full_leaf_
 
   if (advance) {
     Optional<u32> next_live_item =
-        segment->next_live_item(*this->level_, this->segment_i_size_, end_i);
+        segment->live_lower_bound(*this->level_, this->segment_i_size_, end_i);
     if (!next_live_item) {
       this->advance_segment();
     } else {
@@ -510,7 +510,7 @@ inline void ShardedLevelScanner<NodeT, LevelT, PageLoaderT>::advance_to_pivot_fu
   const usize lower_bound_i = std::distance(leaf_page.items_begin(),  //
                                             leaf_page.lower_bound(lower_bound_key));
 
-  Optional<u32> next_live_item = segment.next_live_item(*this->level_,
+  Optional<u32> next_live_item = segment.live_lower_bound(*this->level_,
                                                         this->segment_i_size_,
                                                         BATT_CHECKED_CAST(u32, lower_bound_i));
 
@@ -765,7 +765,7 @@ inline Status ShardedLevelScanner<NodeT, LevelT, PageLoaderT>::set_start_item(
     usize lower_bound_key_i = search_range.lower_bound + std::distance(items_begin, found_item);
 
     Optional<u32> next_live_item =
-        segment.next_live_item(*this->level_,
+        segment.live_lower_bound(*this->level_,
                                this->segment_i_size_,
                                BATT_CHECKED_CAST(u32, lower_bound_key_i));
     BATT_CHECK(next_live_item);

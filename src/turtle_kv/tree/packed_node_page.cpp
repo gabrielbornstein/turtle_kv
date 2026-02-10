@@ -151,8 +151,7 @@ PackedNodePage* build_node_page(const MutableBuffer& buffer, const InMemoryNode&
 
         dst_segment.filter_start = BATT_CHECKED_CAST(u16, segment_filters_offset);
 
-        PiecewiseFilter<const PackedKeyValue, u32> segment_filter = src_segment.filter;
-        u16 mask = u16{1} << 15;
+        PiecewiseFilter<u32> segment_filter = src_segment.filter;
         if (!src_segment.is_unfiltered()) {
           Slice<const Interval<u32>> dropped_ranges = segment_filter.dropped();
           BATT_CHECK(!dropped_ranges.empty());
@@ -161,7 +160,7 @@ PackedNodePage* build_node_page(const MutableBuffer& buffer, const InMemoryNode&
           //
           bool start_filtered = dropped_ranges[0].lower_bound == 0;
           if (start_filtered) {
-            dst_segment.filter_start |= mask;
+            dst_segment.filter_start |= PackedNodePage::kSegmentStartsFiltered;
           }
 
           for (const Interval<u32>& range : dropped_ranges) {
@@ -236,21 +235,22 @@ PackedNodePage::UpdateBuffer::SegmentFilterData PackedNodePage::get_segment_filt
 
   const UpdateBuffer::Segment& segment = this->update_buffer.segments[i];
   const llfs::PackedArray<little_u32>& packed_filters = *this->update_buffer.segment_filters;
-  u16 mask = u16{1} << 15;
 
   // To retrieve the starting offset into the packed_filters array for this segment, clear the
   // most significant bit, since that bit stores whether or not the start of the segment is
   // filtered.
   //
-  u32 filter_start_i = segment.filter_start.value() & ~mask;
+  u32 filter_start_i = segment.filter_start.value() & ~PackedNodePage::kSegmentStartsFiltered;
   u32 filter_end_i;
   if (i + 1 < this->update_buffer.segment_count()) {
-    filter_end_i = this->update_buffer.segments[i + 1].filter_start.value() & ~mask;
+    filter_end_i = this->update_buffer.segments[i + 1].filter_start.value() &
+                   ~PackedNodePage::kSegmentStartsFiltered;
   } else {
     filter_end_i = packed_filters.size();
   }
 
-  bool start_filtered = (segment.filter_start.value() & mask) != 0;
+  bool start_filtered =
+      (segment.filter_start.value() & PackedNodePage::kSegmentStartsFiltered) != 0;
 
   return PackedNodePage::UpdateBuffer::SegmentFilterData{
       as_const_slice(packed_filters.data() + filter_start_i, packed_filters.data() + filter_end_i),
@@ -259,9 +259,8 @@ PackedNodePage::UpdateBuffer::SegmentFilterData PackedNodePage::get_segment_filt
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-StatusOr<PiecewiseFilter<const PackedKeyValue, u32>> PackedNodePage::create_piecewise_filter(
-    usize level_i,
-    usize segment_i) const
+StatusOr<PiecewiseFilter<u32>> PackedNodePage::create_piecewise_filter(usize level_i,
+                                                                       usize segment_i) const
 {
   PackedNodePage::UpdateBuffer::SegmentFilterData filter_data =
       this->get_segment_filter_values(level_i, segment_i);
@@ -269,8 +268,9 @@ StatusOr<PiecewiseFilter<const PackedKeyValue, u32>> PackedNodePage::create_piec
   // If the start is marked as unfiltered and there aren't any values stored for this segment,
   // the entire segment is unfiltered.
   //
-  if (!filter_data.start_is_filtered && filter_data.values.empty()) {
-    return PiecewiseFilter<const PackedKeyValue, u32>{};
+  if (filter_data.values.empty()) {
+    BATT_CHECK(!filter_data.start_is_filtered);
+    return PiecewiseFilter<u32>{};
   }
 
   SmallVec<Interval<u32>, 64> dropped_ranges;
@@ -289,7 +289,7 @@ StatusOr<PiecewiseFilter<const PackedKeyValue, u32>> PackedNodePage::create_piec
         Interval<u32>{filter_data.values[i].value(), filter_data.values[i + 1].value()});
   }
 
-  return PiecewiseFilter<const PackedKeyValue, u32>::from_dropped(as_slice(dropped_ranges));
+  return PiecewiseFilter<u32>::from_dropped(as_slice(dropped_ranges));
 }
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
@@ -325,12 +325,8 @@ StatusOr<llfs::PinnedPage> PackedNodePage::UpdateBuffer::Segment::load_leaf_page
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
 bool PackedNodePage::UpdateBuffer::Segment::is_index_filtered(const SegmentedLevel& level,
-                                                              u32 total_segment_items,
                                                               u32 index) const
 {
-  BATT_CHECK_LT(index, total_segment_items)
-      << BATT_INSPECT(index) << BATT_INSPECT(total_segment_items);
-
   const usize segment_i = std::distance(level.segments_slice.begin(), this);
   PackedNodePage::UpdateBuffer::SegmentFilterData filter_data =
       level.packed_node_->get_segment_filter_values(level.level_i_, segment_i);
@@ -358,9 +354,9 @@ bool PackedNodePage::UpdateBuffer::Segment::is_index_filtered(const SegmentedLev
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-Optional<u32> PackedNodePage::UpdateBuffer::Segment::next_live_item(const SegmentedLevel& level,
-                                                                    u32 total_segment_items,
-                                                                    u32 item_i) const
+Optional<u32> PackedNodePage::UpdateBuffer::Segment::live_lower_bound(const SegmentedLevel& level,
+                                                                      u32 total_segment_items,
+                                                                      u32 item_i) const
 {
   if (item_i >= total_segment_items) {
     return None;
@@ -478,10 +474,10 @@ std::function<void(std::ostream&)> PackedNodePage::dump() const
 
     out << "  segments:" << std::endl;
     i = 0;
-    u16 mask = u16{1} << 15;
     for (const UpdateBuffer::Segment& segment : this->update_buffer.segments) {
-      u32 filter_start_i = segment.filter_start.value() & ~mask;
-      bool start_filtered = (segment.filter_start.value() & mask) != 0;
+      u32 filter_start_i = segment.filter_start.value() & ~PackedNodePage::kSegmentStartsFiltered;
+      bool start_filtered =
+          (segment.filter_start.value() & PackedNodePage::kSegmentStartsFiltered) != 0;
       out << "   - [" << std::setw(2) << std::setfill(' ') << i << "]:" << std::endl
           << "     leaf_page_id: " << segment.leaf_page_id.unpack() << std::endl
           << "     active_pivots:  " << std::bitset<64>{segment.active_pivots.value()} << std::endl

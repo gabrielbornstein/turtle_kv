@@ -38,7 +38,6 @@ struct SegmentAlgorithms {
   template <typename LevelT>
   [[nodiscard]] bool split_pivot(i32 pivot_i,
                                  Optional<usize> split_offset_in_leaf,
-                                 Optional<u32> total_segment_items,
                                  const LevelT& level) const
   {
     using batt::BoolStatus;
@@ -67,7 +66,7 @@ struct SegmentAlgorithms {
       }
 
       return batt::bool_status_from(
-          this->segment_.is_index_filtered(level, *total_segment_items, *split_offset_in_leaf - 1));
+          this->segment_.is_index_filtered(level, *split_offset_in_leaf - 1));
     }();
 
     const BoolStatus new_pivot_has_flushed_items = [&] {
@@ -75,9 +74,8 @@ struct SegmentAlgorithms {
         return BoolStatus::kUnknown;
       }
 
-      return batt::bool_status_from(
-          old_pivot_becomes_inactive == BoolStatus::kTrue &&
-          this->segment_.is_index_filtered(level, *total_segment_items, *split_offset_in_leaf));
+      return batt::bool_status_from(old_pivot_becomes_inactive == BoolStatus::kTrue &&
+                                    this->segment_.is_index_filtered(level, *split_offset_in_leaf));
     }();
 
     // Next simplest: pivot active, but flush count is zero for pivot.
@@ -98,7 +96,6 @@ struct SegmentAlgorithms {
 
     BATT_CHECK_EQ(old_pivot_becomes_inactive, BoolStatus::kTrue);
     BATT_CHECK(split_offset_in_leaf);
-    BATT_CHECK(total_segment_items);
 
     // If the split is not after the last flushed item, then the lower pivot (in the split) is now
     // inactive and the upper one is active, possibly with some flushed items.
@@ -186,29 +183,23 @@ struct SegmentAlgorithms {
   /** \brief Searches the segment for the given key, returning its value if found.
    */
   template <typename LevelT>
-  batt::seq::LoopControl find_key(LevelT& level,
-                                  KeyQuery& query,
-                                  StatusOr<ValueView>* value_out)
+  batt::seq::LoopControl find_key(LevelT& level, KeyQuery& query, StatusOr<ValueView>* value_out)
   {
     usize key_index_in_leaf = ~usize{0};
-    u32 total_leaf_items = 0;
 
-    StatusOr<ValueView> found = find_key_in_leaf(this->segment_.get_leaf_page_id(),
-                                                 query,
-                                                 key_index_in_leaf,
-                                                 total_leaf_items);
+    StatusOr<ValueView> found =
+        find_key_in_leaf(this->segment_.get_leaf_page_id(), query, key_index_in_leaf);
 
     if (!found.ok()) {
       return batt::seq::LoopControl::kContinue;
     }
 
     BATT_CHECK_NE(key_index_in_leaf, ~usize{0});
-    BATT_CHECK_NE(total_leaf_items, 0);
 
     // At this point we know the key *is* present in this segment, but it may have
     // been flushed out of the level. Check the segment filter to see if it has been flushed.
     //
-    if (this->segment_.is_index_filtered(level, total_leaf_items, key_index_in_leaf)) {
+    if (this->segment_.is_index_filtered(level, key_index_in_leaf)) {
       //
       // Key was found, but it has been flushed from this segment.  Since keys are
       // unique within a level, we can stop at this point and return kNotFound.

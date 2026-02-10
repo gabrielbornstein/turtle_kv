@@ -26,6 +26,8 @@
 
 #include <batteries/assert.hpp>
 
+#include <boost/range/algorithm/equal_range.hpp>
+
 namespace turtle_kv {
 
 //=#=#==#==#===============+=+=+=+=++=++++++++++++++-++-+--+-+----+---------------
@@ -91,7 +93,7 @@ struct InMemoryNode {
 
       /** \brief A filter over the flushed items in this segment.
        */
-      PiecewiseFilter</*ItemT=*/const PackedKeyValue, /*OffsetT=*/u32> filter;
+      PiecewiseFilter</*OffsetT=*/u32> filter;
 
       //+++++++++++-+-+--+----- --- -- -  -  -   -
 
@@ -124,15 +126,18 @@ struct InMemoryNode {
         return get_bit(this->active_pivots, pivot_i);
       }
 
-      void set_filter_items(const Slice<const PackedKeyValue>& items)
-      {
-        this->filter.set_items(items);
-      }
-
       template <typename Traits>
-      void drop_key_range(const BasicInterval<Traits>& range)
+      void drop_key_range(const BasicInterval<Traits>& key_range,
+                          const Slice<const PackedKeyValue>& items)
       {
-        this->filter.drop_item_range(range, llfs::KeyRangeOrder{});
+        auto iters = boost::range::equal_range(items, key_range, llfs::KeyRangeOrder{});
+
+        u32 start_i = BATT_CHECKED_CAST(u32, std::distance(items.begin(), iters.first));
+        u32 end_i = BATT_CHECKED_CAST(u32, std::distance(items.begin(), iters.second));
+
+        u32 total_items = BATT_CHECKED_CAST(u32, items.size());
+
+        this->filter.drop_index_range(Interval<u32>{start_i, end_i}, total_items);
       }
 
       void drop_index_range(u32 total_items, Interval<u32> i)
@@ -140,26 +145,26 @@ struct InMemoryNode {
         this->filter.drop_index_range(i, total_items);
       }
 
-      bool is_index_filtered(const SegmentedLevel&, u32 total_items, u32 index) const
+      bool is_index_filtered(const SegmentedLevel&, u32 index) const
       {
-        return !this->filter.live_at_index(index, total_items);
+        return !this->filter.live_at_index(index);
       }
 
       bool is_unfiltered() const
       {
-        return this->filter.dropped().empty();
+        return !this->filter.dropped_total();
       }
 
-      Optional<u32> next_live_item(const SegmentedLevel&, u32 total_items, u32 item_i) const
+      Optional<u32> live_lower_bound(const SegmentedLevel&, u32 total_items, u32 item_i) const
       {
-        return this->filter.next_live_index(item_i, total_items);
+        return this->filter.live_lower_bound(item_i, total_items);
       }
 
       Optional<Interval<u32>> get_live_item_range(const SegmentedLevel&,
                                                   u32 total_items,
                                                   u32 start_item_i) const
       {
-        return this->filter.next_live_interval(start_item_i, total_items);
+        return this->filter.find_live_range(start_item_i, total_items);
       }
 
       usize num_cut_points() const

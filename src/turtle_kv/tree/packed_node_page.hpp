@@ -4,7 +4,6 @@
 #include <turtle_kv/tree/packed_node_page_key.hpp>
 
 #include <turtle_kv/core/key_view.hpp>
-#include <turtle_kv/core/packed_key_value.hpp>
 #include <turtle_kv/core/value_view.hpp>
 
 #include <turtle_kv/util/page_buffers.hpp>
@@ -50,6 +49,7 @@ struct PackedNodePage {
 
   static constexpr u8 kFlagSizeTiered = 0x80;
   static constexpr u8 kPivotCountMask = 0x3f;
+  static constexpr u16 kSegmentStartsFiltered = 0x8000;
 
   using Key = PackedNodePageKey;
   using SegmentFilters = llfs::PackedPointer<llfs::PackedArray<little_u32>, little_u16>;
@@ -151,11 +151,11 @@ struct PackedNodePage {
                                                 llfs::PinPageToJob pin_page_to_job,
                                                 llfs::PageCacheOvercommit& overcommit) const;
 
-      bool is_index_filtered(const SegmentedLevel& level, u32 total_segment_items, u32 index) const;
+      bool is_index_filtered(const SegmentedLevel& level, u32 index) const;
 
-      Optional<u32> next_live_item(const SegmentedLevel& level,
-                                   u32 total_segment_items,
-                                   u32 item_i) const;
+      Optional<u32> live_lower_bound(const SegmentedLevel& level,
+                                     u32 total_segment_items,
+                                     u32 item_i) const;
 
       Optional<Interval<u32>> get_live_item_range(const SegmentedLevel& level,
                                                   u32 total_segment_items,
@@ -194,7 +194,7 @@ struct PackedNodePage {
 
     std::array<Segment, kMaxSegments> segments;         // +(18*63) -> 1134
     SegmentFilters segment_filters;                     // +2       -> 1136
-    std::array<little_u8, kMaxLevels + 1> level_start;  // +(1*7)   -> 1143                
+    std::array<little_u8, kMaxLevels + 1> level_start;  // +(1*7)   -> 1143
     std::array<u8, 1> pad_;                             // +1       -> 1144
 
     //+++++++++++-+-+--+----- --- -- -  -  -   -
@@ -392,9 +392,7 @@ struct PackedNodePage {
 
   UpdateBuffer::SegmentFilterData get_segment_filter_values(usize level_i, usize segment_i) const;
 
-  StatusOr<PiecewiseFilter<const PackedKeyValue, u32>> create_piecewise_filter(
-      usize level_i,
-      usize segment_i) const;
+  StatusOr<PiecewiseFilter<u32>> create_piecewise_filter(usize level_i, usize segment_i) const;
 
   //----- --- -- -  -  -   -
 

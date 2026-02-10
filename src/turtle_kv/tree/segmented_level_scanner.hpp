@@ -39,7 +39,7 @@ class SegmentedLevelScannerBase
  *  segment->load_leaf_page(PageLoaderT&, llfs::PinPageToJob) -> StatusOr<PinnedPageT>
  *  segment->get_active_pivots() -> u64
  *    - Returns a bitset identifying the pivots for which this segment contains active edits
- *  segment->next_live_item(Level& level, u32 item_i) -> u32
+ *  segment->live_lower_bound(Level& level, u32 item_i) -> u32
  *    - Returns the position of the next live (non flushed item) in the segment at or after item_i
  */
 template <typename NodeT, typename LevelT, typename PageLoaderT>
@@ -277,7 +277,7 @@ inline auto SegmentedLevelScanner<NodeT, LevelT, PageLoaderT>::peek_next_impl(bo
 
   if (advance) {
     Optional<u32> next_live_item =
-        segment->next_live_item(*this->level_, this->segment_i_size_, end_i);
+        segment->live_lower_bound(*this->level_, this->segment_i_size_, end_i);
     if (!next_live_item) {
       this->advance_segment();
     } else {
@@ -318,7 +318,7 @@ inline void SegmentedLevelScanner<NodeT, LevelT, PageLoaderT>::advance_to_pivot(
   const usize lower_bound_i = std::distance(leaf_page.items_begin(),  //
                                             leaf_page.lower_bound(lower_bound_key));
 
-  Optional<u32> next_live_item = segment.next_live_item(*this->level_,
+  Optional<u32> next_live_item = segment.live_lower_bound(*this->level_,
                                                         this->segment_i_size_,
                                                         BATT_CHECKED_CAST(u32, lower_bound_i));
 

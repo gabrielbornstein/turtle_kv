@@ -198,11 +198,11 @@ struct SegmentedLevelAlgorithms {
           std::distance(leaf.items_begin(), leaf.lower_bound(pivot_lower_bound_key));
       usize pivot_last = std::distance(leaf.items_begin(), leaf.lower_bound(pivot_upper_bound_key));
 
-      segment.set_filter_items(leaf.items_slice());
-      segment.drop_key_range(flush_key_crange);
+      segment.drop_key_range(flush_key_crange, leaf.items_slice());
 
-      Optional<u32> next_live_item =
-          segment.next_live_item(this->level_, leaf.key_count, BATT_CHECKED_CAST(u32, pivot_first));
+      Optional<u32> next_live_item = segment.live_lower_bound(this->level_,
+                                                              leaf.key_count,
+                                                              BATT_CHECKED_CAST(u32, pivot_first));
       if (!next_live_item || *next_live_item >= BATT_CHECKED_CAST(u32, pivot_last)) {
         segment.set_pivot_active(pivot_i, false);
       }
@@ -250,7 +250,7 @@ struct SegmentedLevelAlgorithms {
 
       // If we can split the pivot without loading the leaf, great!
       //
-      if (in_segment(segment).split_pivot(pivot_i, None, None, this->level_)) {
+      if (in_segment(segment).split_pivot(pivot_i, None, this->level_)) {
         continue;
       }
 
@@ -273,10 +273,7 @@ struct SegmentedLevelAlgorithms {
 
       BATT_CHECK_LE(pivot_offset_in_leaf, split_offset_in_leaf);
 
-      BATT_CHECK(in_segment(segment).split_pivot(pivot_i,
-                                                 split_offset_in_leaf,
-                                                 leaf_page.key_count,
-                                                 this->level_));
+      BATT_CHECK(in_segment(segment).split_pivot(pivot_i, split_offset_in_leaf, this->level_));
     }
 
     return OkStatus();

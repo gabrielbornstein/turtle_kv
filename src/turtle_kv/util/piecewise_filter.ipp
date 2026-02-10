@@ -4,11 +4,11 @@ namespace turtle_kv {
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-template <typename ItemT, typename OffsetT>
-/*static*/ StatusOr<PiecewiseFilter<ItemT, OffsetT>> PiecewiseFilter<ItemT, OffsetT>::from_dropped(
+template <typename OffsetT>
+/*static*/ StatusOr<PiecewiseFilter<OffsetT>> PiecewiseFilter<OffsetT>::from_dropped(
     const Slice<const Interval<OffsetT>>& dropped)
 {
-  PiecewiseFilter<ItemT, OffsetT> filter;
+  PiecewiseFilter<OffsetT> filter;
 
   filter.dropped_total_ = 0;
   OffsetT current_items_size = 0;
@@ -30,18 +30,16 @@ template <typename ItemT, typename OffsetT>
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-template <typename ItemT, typename OffsetT>
-PiecewiseFilter<ItemT, OffsetT>::PiecewiseFilter() noexcept
-    : items_{None}
-    , dropped_{}
-    , dropped_total_{0}
+template <typename OffsetT>
+PiecewiseFilter<OffsetT>::PiecewiseFilter() noexcept : dropped_{}
+                                                     , dropped_total_{0}
 {
 }
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-template <typename ItemT, typename OffsetT>
-void PiecewiseFilter<ItemT, OffsetT>::drop_index_range(Interval<OffsetT> i, OffsetT total_items)
+template <typename OffsetT>
+void PiecewiseFilter<OffsetT>::drop_index_range(Interval<OffsetT> i, OffsetT total_items)
 {
   if (i.empty()) {
     return;
@@ -94,76 +92,25 @@ void PiecewiseFilter<ItemT, OffsetT>::drop_index_range(Interval<OffsetT> i, Offs
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-template <typename ItemT, typename OffsetT>
-void PiecewiseFilter<ItemT, OffsetT>::set_items(const Slice<ItemT>& items)
-{
-  this->items_ = items;
-
-  while (!this->dropped_.empty() && this->dropped_.back().lower_bound >= this->full_size()) {
-    this->dropped_total_ -= this->dropped_.back().size();
-    this->dropped_.pop_back();
-  }
-  BATT_CHECK(this->dropped_.empty() || this->dropped_.back().upper_bound <= this->full_size());
-}
-
-//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
-template <typename ItemT, typename OffsetT>
-OffsetT PiecewiseFilter<ItemT, OffsetT>::full_size() const
-{
-  BATT_CHECK(this->items_);
-  return this->items_->size();
-}
-
-//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
-//
-template <typename ItemT, typename OffsetT>
-OffsetT PiecewiseFilter<ItemT, OffsetT>::size() const
-{
-  BATT_CHECK(this->items_);
-
-  BATT_CHECK_GE(this->full_size(), this->dropped_total_);
-  return this->full_size() - this->dropped_total_;
-}
-
-//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
-//
-template <typename ItemT, typename OffsetT>
-OffsetT PiecewiseFilter<ItemT, OffsetT>::dropped_total() const
+template <typename OffsetT>
+OffsetT PiecewiseFilter<OffsetT>::dropped_total() const
 {
   return this->dropped_total_;
 }
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-template <typename ItemT, typename OffsetT>
-Slice<const Interval<OffsetT>> PiecewiseFilter<ItemT, OffsetT>::dropped() const
+template <typename OffsetT>
+Slice<const Interval<OffsetT>> PiecewiseFilter<OffsetT>::dropped() const
 {
   return as_const_slice(this->dropped_);
 }
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-template <typename ItemT, typename OffsetT>
-bool PiecewiseFilter<ItemT, OffsetT>::empty() const
+template <typename OffsetT>
+bool PiecewiseFilter<OffsetT>::live_at_index(OffsetT i) const
 {
-  BATT_CHECK(this->items_);
-
-  BATT_CHECK_GE(this->full_size(), this->dropped_total_);
-  const bool is_empty = (this->full_size() == this->dropped_total_);
-  if (is_empty && this->full_size() != 0) {
-    BATT_CHECK_EQ(this->dropped_.size(), 1u) << batt::dump_range(this->dropped_);
-    BATT_CHECK_EQ((Interval<usize>{0, this->full_size()}), this->dropped_[0]);
-  }
-  return is_empty;
-}
-
-//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
-//
-template <typename ItemT, typename OffsetT>
-bool PiecewiseFilter<ItemT, OffsetT>::live_at_index(OffsetT i, OffsetT total_items) const
-{
-  BATT_CHECK_LT(i, total_items);
-
   auto iter = std::lower_bound(this->dropped_.begin(),
                                this->dropped_.end(),
                                i,
@@ -171,14 +118,13 @@ bool PiecewiseFilter<ItemT, OffsetT>::live_at_index(OffsetT i, OffsetT total_ite
   if (iter != this->dropped_.end() && iter->contains(i)) {
     return false;
   }
-  return i < total_items;
+  return true;
 }
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-template <typename ItemT, typename OffsetT>
-Optional<OffsetT> PiecewiseFilter<ItemT, OffsetT>::next_live_index(OffsetT i,
-                                                                   OffsetT total_items) const
+template <typename OffsetT>
+Optional<OffsetT> PiecewiseFilter<OffsetT>::live_lower_bound(OffsetT i, OffsetT total_items) const
 {
   if (i >= total_items) {
     return None;
@@ -203,10 +149,9 @@ Optional<OffsetT> PiecewiseFilter<ItemT, OffsetT>::next_live_index(OffsetT i,
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-template <typename ItemT, typename OffsetT>
-Optional<Interval<OffsetT>> PiecewiseFilter<ItemT, OffsetT>::next_live_interval(
-    OffsetT start_i,
-    OffsetT total_items) const
+template <typename OffsetT>
+Optional<Interval<OffsetT>> PiecewiseFilter<OffsetT>::find_live_range(OffsetT start_i,
+                                                                      OffsetT total_items) const
 {
   OffsetT end_i = total_items;
 
@@ -231,12 +176,13 @@ Optional<Interval<OffsetT>> PiecewiseFilter<ItemT, OffsetT>::next_live_interval(
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-template <typename ItemT, typename OffsetT>
-usize PiecewiseFilter<ItemT, OffsetT>::cut_points_size() const
+template <typename OffsetT>
+usize PiecewiseFilter<OffsetT>::cut_points_size() const
 {
   // There will be no filter cut points if no items are dropped.
   //
-  if (this->dropped_.empty()) {
+  if (!this->dropped_total()) {
+    BATT_CHECK(this->dropped_.empty());
     return 0;
   }
 
@@ -250,8 +196,8 @@ usize PiecewiseFilter<ItemT, OffsetT>::cut_points_size() const
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-template <typename ItemT, typename OffsetT>
-SmallFn<void(std::ostream&)> PiecewiseFilter<ItemT, OffsetT>::dump() const
+template <typename OffsetT>
+SmallFn<void(std::ostream&)> PiecewiseFilter<OffsetT>::dump() const
 {
   return [this](std::ostream& out) {
     out << batt::dump_range(this->dropped_);
