@@ -48,7 +48,7 @@ struct CheckpointJob {
 
   Optional<llfs::PackAsVariant<CheckpointLogEvent, PackedCheckpoint>> packed_checkpoint;
 
-  //+++++++++++-+-+--+----- --- -- -  -  -   -
+  //----- --- -- -  -  -   -
 
   Optional<batt::Grant> append_job_grant;
 
@@ -57,6 +57,8 @@ struct CheckpointJob {
   Optional<llfs::SlotSequencer> prepare_slot_sequencer;
 
   batt::Promise<llfs::SlotRange> promise;
+
+  DeltaBatchId batch_id_upper_bound = DeltaBatchId::min_value();
 
   usize batch_count = 0;
 };

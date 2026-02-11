@@ -14,7 +14,15 @@ namespace turtle_kv {
 struct DeltaBatchId {
   using Self = DeltaBatchId;
 
-  static constexpr u64 kMaxDifference = (u64{1} << 48) - 1;
+  //----- --- -- -  -  -   -
+
+  static constexpr i32 kBatchIndexBits = 16;
+  static constexpr i32 kMemTableIdBits = 64 - kBatchIndexBits;
+  static constexpr u64 kMaxDifference = (u64{1} << 63) - 1;
+  static constexpr u64 kBatchIndexMask = (u64{1} << 16) - 1;
+  static constexpr u64 kMemTableIdMask = ~kBatchIndexMask;
+
+  //----- --- -- -  -  -   -
 
   static Self from_u64(u64 i)
   {
@@ -23,10 +31,15 @@ struct DeltaBatchId {
     };
   }
 
-  static Self from_mem_table_id(u64 mem_table_id) noexcept
+  static Self min_value()
+  {
+    return Self::from_u64(0);
+  }
+
+  static Self from_mem_table_id(u64 mem_table_id, u64 batch_index = 0) noexcept
   {
     return Self{
-        .value_ = (mem_table_id >> 16),
+        .value_ = (mem_table_id & kMemTableIdMask) | (batch_index & kBatchIndexMask),
     };
   }
 
@@ -43,7 +56,12 @@ struct DeltaBatchId {
 
   u64 to_mem_table_id() const noexcept
   {
-    return this->value_ << 16;
+    return this->value_ & kMemTableIdMask;
+  }
+
+  u64 to_mem_table_ordinal() const noexcept
+  {
+    return this->value_ >> kBatchIndexBits;
   }
 
   DeltaBatchId next() const noexcept

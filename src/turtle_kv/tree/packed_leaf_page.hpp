@@ -346,6 +346,11 @@ struct PackedLeafLayoutPlan {
   usize value_data_begin;
   usize value_data_end;
 
+  BATT_ALWAYS_INLINE usize get_key_value_data_end() const
+  {
+    return this->value_data_end;
+  }
+
   //+++++++++++-+-+--+----- --- -- -  -  -   -
 
   template <typename ItemsRangeT>
@@ -361,7 +366,7 @@ struct PackedLeafLayoutPlan {
 
   bool is_valid() const
   {
-    return this->value_data_end <= this->page_size;
+    return this->get_key_value_data_end() <= this->page_size;
   }
 
   void check_valid(std::string_view label) const;
@@ -512,11 +517,12 @@ class PackedLeafLayoutPlanBuilder
     }
 
     if (plan.trie_index_reserved_size > 0) {
-      BATT_CHECK_GE(this->page_size - plan.value_data_end, plan.trie_index_reserved_size - 63);
+      BATT_CHECK_GE(this->page_size - plan.get_key_value_data_end(),
+                    plan.trie_index_reserved_size - 63);
 
       const usize space_for_trie =
           batt::round_down_bits(6,
-                                std::min(this->page_size - plan.value_data_end,  //
+                                std::min(this->page_size - plan.get_key_value_data_end(),  //
                                          plan.trie_index_reserved_size));
 
       offset = plan.leaf_header_end;
@@ -650,13 +656,13 @@ inline PackedLeafPage* build_leaf_page(MutableBuffer buffer,
                                        const Items& items)
 {
   BATT_CHECK_EQ(plan.key_count, std::end(items) - std::begin(items));
-  BATT_CHECK_LE(plan.value_data_end, buffer.size());
+  BATT_CHECK_LE(plan.get_key_value_data_end(), buffer.size());
 
   auto* const p_header = plan.place<PackedLeafPage>(buffer, plan.leaf_header_begin);
 
   p_header->magic = PackedLeafPage::kMagic;
   p_header->key_count = plan.key_count;
-  p_header->total_packed_size = plan.value_data_end - plan.leaf_header_begin;
+  p_header->total_packed_size = plan.get_key_value_data_end() - plan.leaf_header_begin;
 
   PackedLeafPage::Metrics& metrics = PackedLeafPage::metrics();
 

@@ -194,11 +194,15 @@ class KVStore : public Table
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
 
+  boost::intrusive_ptr<MemTable> create_mem_table(u64 mem_table_id);
+
   Status update_checkpoint(const State* observed_state);
 
   void info_task_main() noexcept;
 
-  std::unique_ptr<DeltaBatch> compact_memtable(boost::intrusive_ptr<MemTable>&& mem_table);
+  template <typename Fn>
+    requires std::invocable<Fn, std::unique_ptr<DeltaBatch>>
+  Status compact_memtable(boost::intrusive_ptr<MemTable>&& mem_table, Fn&& consume_fn);
 
   void memtable_compact_thread_main(usize thread_i);
 

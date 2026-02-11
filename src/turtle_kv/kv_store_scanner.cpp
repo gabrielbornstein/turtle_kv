@@ -148,6 +148,8 @@ Status KVStoreScanner::start()
 
         MemTable& delta_mem_table = *this->pinned_state_->deltas_[delta_i];
 
+#if !TURTLE_KV_BIG_MEM_TABLES
+
         // Delta case 1: compacted edits vector
         //
         Optional<Slice<const EditView>> compacted = delta_mem_table.poll_compacted_edits();
@@ -175,6 +177,8 @@ Status KVStoreScanner::start()
           }
           continue;
         }
+
+#endif  // !TURTLE_KV_BIG_MEM_TABLES
 
         // Delta case 3: single ART index for keys and values
         //

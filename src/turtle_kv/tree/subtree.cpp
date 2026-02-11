@@ -222,38 +222,50 @@ Status Subtree::apply_batch_update(const TreeOptions& tree_options,
   // If this is the root level and tree needs to grow/shrink in height, do so now.
   //
   if (is_root) {
-    BATT_REQUIRE_OK(batt::case_of(
-        new_subtree->get_viability(),
-        [](const Viable&) -> Status {
-          // Nothing to fix; tree is viable!
-          return OkStatus();
-        },
-        [&](NeedsSplit needs_split) {
-          // TODO [vsilai 2025-12-09]: revist when VLDB changes are merged in.
-          //
-          if (normal_flush_might_fix_root(needs_split)) {
-            Status flush_status = new_subtree->try_flush(update.context);
-            if (flush_status.ok() && batt::is_case<Viable>(new_subtree->get_viability())) {
-              return OkStatus();
-            }
-          }
-
-          Status status =
-              new_subtree->split_and_grow(update.context, tree_options, key_upper_bound);
-
-          if (!status.ok()) {
-            LOG(INFO) << "split_and_grow failed;" << BATT_INSPECT(needs_split);
-          }
-          return status;
-        },
-        [&](const NeedsMerge& needs_merge) {
-          BATT_CHECK(!needs_merge.single_pivot)
-              << "TODO [vsilai 2026-01-08] implement flush and shrink";
-          return OkStatus();
-        }));
+    BATT_REQUIRE_OK(
+        Subtree::make_root_viable(*new_subtree, tree_options, update.context, key_upper_bound));
   }
 
   subtree = std::move(*new_subtree);
+
+  return OkStatus();
+}
+
+//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
+//
+/*static*/ Status Subtree::make_root_viable(Subtree& new_subtree,
+                                            const TreeOptions& tree_options,
+                                            BatchUpdateContext& update_context,
+                                            const KeyView& key_upper_bound)
+{
+  BATT_REQUIRE_OK(batt::case_of(
+      new_subtree.get_viability(),
+      [](const Viable&) -> Status {
+        // Nothing to fix; tree is viable!
+        return OkStatus();
+      },
+      [&](NeedsSplit needs_split) {
+        // TODO [vsilai 2025-12-09]: revist when VLDB changes are merged in.
+        //
+        if (normal_flush_might_fix_root(needs_split)) {
+          Status flush_status = new_subtree.try_flush(update_context);
+          if (flush_status.ok() && batt::is_case<Viable>(new_subtree.get_viability())) {
+            return OkStatus();
+          }
+        }
+
+        Status status = new_subtree.split_and_grow(update_context, tree_options, key_upper_bound);
+
+        if (!status.ok()) {
+          LOG(INFO) << "split_and_grow failed;" << BATT_INSPECT(needs_split);
+        }
+        return status;
+      },
+      [&](const NeedsMerge& needs_merge) {
+        BATT_CHECK(!needs_merge.single_pivot)
+            << "TODO [tastolfi 2025-03-26] implement flush and shrink";
+        return OkStatus();
+      }));
 
   return OkStatus();
 }

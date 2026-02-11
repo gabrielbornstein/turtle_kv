@@ -641,6 +641,9 @@ inline StatusOr<SliceData> ShardedLevelScanner<NodeT, LevelT, PageLoaderT>::init
     usize items_slice_upper_bound = aligned_boundary_i;
     Interval<usize> items_slice{item_i_offset,
                                 (usize)byte_distance(page_start, head_items + aligned_boundary_i)};
+
+    BATT_CHECK_GT(items_slice.size(), 0);
+
     items_buffer = this->slice_reader_.read_slice(items_slice,
                                                   *(this->slice_storage_),
                                                   this->pin_pages_to_job_,
@@ -827,6 +830,7 @@ inline Status ShardedLevelScanner<NodeT, LevelT, PageLoaderT>::set_start_item(
     const isize offset_target = byte_distance(items_begin, key_data_buffer->data());
     const isize offset_delta = offset_target - offset_base;
 
+    //+++++++++++-+-+--+----- --- -- -  -  -   -
     // Search for the given key within the key range we loaded.
     //
     const PackedKeyValue* found_item = std::lower_bound(items_begin,  //
@@ -836,6 +840,7 @@ inline Status ShardedLevelScanner<NodeT, LevelT, PageLoaderT>::set_start_item(
 
     if (found_item == items_end) {
       this->item_i_ = search_range->upper_bound;
+
     } else {
       usize lower_bound_key_i = search_range->lower_bound + std::distance(items_begin, found_item);
       if (flushed_upper_bound != 0) {
