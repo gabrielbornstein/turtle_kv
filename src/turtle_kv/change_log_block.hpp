@@ -90,7 +90,7 @@ class ChangeLogBlock
   /** \brief Helper function to initialize the ephemeral state of this ChangeLogBlock. Transfers
    * ownership of grant to ChangeLogBlock, and initializes the reference count to ref_count.
    */
-  void init_ephemeral_state(batt::Grant& grant, i64 ref_count = 1)
+  void init_ephemeral_state(batt::Grant&& grant, i64 ref_count = 1)
   {
     new (&this->ephemeral_state_storage_) EphemeralStatePtr{new EphemeralState{std::move(grant)}};
 

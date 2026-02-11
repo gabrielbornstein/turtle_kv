@@ -49,7 +49,7 @@ namespace turtle_kv {
     , xxh3_checksum_{0}
     , xxh3_seed_{0}
 {
-  this->init_ephemeral_state(grant);
+  this->init_ephemeral_state(std::move(grant));
 
   // TODO: [Gabe Bornstein 1/30/26] Do we need to initialize these things when recovering from disk?
   //

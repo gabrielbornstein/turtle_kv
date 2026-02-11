@@ -200,9 +200,7 @@ class ChangeLogFile
    * Updates this->upper_bound_ to include the new number of blocks_written.
    * Returns a ReadLock on the range block_range.
    */
-  ReadLock acquire_read_lock(batt::Grant& grant,
-                             const Interval<i64>& block_range,
-                             i64 blocks_written) noexcept;
+  ReadLock set_block_range_in_use(batt::Grant& grant, const Interval<i64>& block_range) noexcept;
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
 
@@ -245,7 +243,7 @@ batt::Status ChangeLogFile::read_blocks(SerializeFn process_block)
   i64 blocks_read = 0;
   batt::Status status = batt::OkStatus();
   while (status.ok()) {
-    // The oaffset of where we are writing to our buffer.
+    // The offset of where we are writing to our buffer.
     //
     i64 curr_block_offset = blocks_read * this->config_.block_size;
 
@@ -272,13 +270,11 @@ batt::Status ChangeLogFile::read_blocks(SerializeFn process_block)
 
     BATT_REQUIRE_OK(buffer_grant);
 
-    block->init_ephemeral_state(*buffer_grant);
+    block->init_ephemeral_state(std::move(*buffer_grant));
 
-    Interval<i64> block_range{blocks_read, blocks_read};
+    Interval<i64> block_range{blocks_read, blocks_read + 1};
 
-    i64 blocks_written = 1;
-
-    block->set_read_lock(acquire_read_lock(block->get_grant(), block_range, blocks_written));
+    block->set_read_lock(set_block_range_in_use(block->get_grant(), block_range));
 
     // process_block is responsible for determining when to stop reading. Usually, break once we've
     // read a block that isn't valid or if we've reached the end of the file.

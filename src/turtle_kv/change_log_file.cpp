@@ -146,7 +146,7 @@ auto ChangeLogFile::PackedConfig::unpack() const noexcept -> ChangeLogFile::Conf
 //
 ChangeLogFile::~ChangeLogFile() noexcept
 {
-  Interval<i64> block_range{0, this->size()};
+  Interval<i64> block_range = this->active_blocks();
 
   // TODO: [Gabe Bornstein 2/4/26] Do we need to check only active blocks, or all blocks in the
   // ChangeLogFile?
@@ -242,10 +242,11 @@ StatusOr<batt::Grant> ChangeLogFile::reserve_blocks(
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-ChangeLogFile::ReadLock ChangeLogFile::acquire_read_lock(batt::Grant& grant,
-                                                         const Interval<i64>& block_range,
-                                                         i64 blocks_written) noexcept
+ChangeLogFile::ReadLock ChangeLogFile::set_block_range_in_use(
+    batt::Grant& grant,
+    const Interval<i64>& block_range) noexcept
 {
+  i64 blocks_written = block_range.size();
   this->lock_for_read(block_range);
 
   // Important: only do this after locking the range.
@@ -281,6 +282,9 @@ ChangeLogFile::read_blocks_into_vector()
     // If block size is zero, block has not been initialized. Stop reading here.
     //
     if (block->block_size() == 0) {
+      // Need to free memory of untracked block here otherwise we will have a memory leak.
+      //
+      block->remove_ref(1);
       return batt::StatusCode::kOutOfRange;
     }
     // TODO: [Gabe Bornstein 1/28/26] Decide if we want to keep block, decrement ref count if not.
@@ -350,7 +354,7 @@ auto ChangeLogFile::append(batt::Grant& grant, batt::SmallVecBase<ConstBuffer>& 
 
   auto block_range = Interval<i64>{append_lower_bound, append_upper_bound};
 
-  return {this->acquire_read_lock(grant, block_range, blocks_written)};
+  return {this->set_block_range_in_use(grant, block_range)};
 }
 
 }  // namespace turtle_kv
