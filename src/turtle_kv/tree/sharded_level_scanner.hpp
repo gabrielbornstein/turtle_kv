@@ -165,7 +165,6 @@ class ShardedLevelScanner : private SegmentedLevelScannerBase
   Optional<KeyView> min_key_;
   usize segment_i_;
   usize item_i_;
-  u32 segment_i_size_;
   i32 min_pivot_i_;
   batt::BoolStatus load_full_leaf_;
   bool hit_next_flushed_i_;
@@ -200,7 +199,6 @@ inline /*explicit*/ ShardedLevelScanner<NodeT, LevelT, PageLoaderT>::ShardedLeve
     , min_key_{min_key}
     , segment_i_{0}
     , item_i_{0}
-    , segment_i_size_{0}
     , min_pivot_i_{min_pivot_i}
     , load_full_leaf_{batt::BoolStatus::kUnknown}
     , hit_next_flushed_i_{false}
@@ -280,7 +278,6 @@ inline auto ShardedLevelScanner<NodeT, LevelT, PageLoaderT>::peek_next_impl(bool
 
         const PackedLeafPage& leaf =
             PackedLeafPage::view_of(this->full_leaf_data_->leaf_page.get_page_buffer());
-        this->segment_i_size_ = leaf.key_count;
 
         this->advance_to_pivot_full_leaf(target_pivot_i, *segment, leaf);
 
@@ -314,8 +311,6 @@ inline auto ShardedLevelScanner<NodeT, LevelT, PageLoaderT>::peek_next_impl(bool
     const void* page_start = this->head_shard_slice_.data();
     const void* payload_start = advance_pointer(page_start, sizeof(llfs::PackedPageHeader));
     const auto& packed_leaf_page = *static_cast<const PackedLeafPage*>(payload_start);
-
-    this->segment_i_size_ = packed_leaf_page.key_count;
 
     // Advance to `target_pivot_i` in this segment.
     //
@@ -356,13 +351,14 @@ inline auto ShardedLevelScanner<NodeT, LevelT, PageLoaderT>::continue_sharded_af
 
   // Compute the end item, as well as other necessary data needed for a ShardedKeyValueSlice.
   //
-  Optional<Interval<u32>> live_range =
-      segment->get_live_item_range(*this->level_,
-                                   this->segment_i_size_,
-                                   BATT_CHECKED_CAST(u32, this->item_i_));
-  BATT_CHECK(live_range);
+  BATT_CHECK_LT(this->item_i_, packed_leaf_page.key_count);
+  Interval<u32> live_range = segment->get_live_item_range(
+      *this->level_,
+      Interval<u32>{BATT_CHECKED_CAST(u32, this->item_i_),
+                    BATT_CHECKED_CAST(u32, packed_leaf_page.key_count)});
+  BATT_CHECK(!live_range.empty());
 
-  StatusOr<SliceData> slice_data = this->init_slice_data(live_range->upper_bound);
+  StatusOr<SliceData> slice_data = this->init_slice_data(live_range.upper_bound);
   if (!slice_data.ok()) {
     this->status_ = slice_data.status();
     return None;
@@ -385,14 +381,17 @@ inline auto ShardedLevelScanner<NodeT, LevelT, PageLoaderT>::continue_sharded_af
     //
     usize prev_item_i = this->item_i_;
     if (this->hit_next_flushed_i_) {
-      Optional<u32> next_live_item =
-          segment->live_lower_bound(*this->level_, this->segment_i_size_, live_range->upper_bound);
-
-      if (!next_live_item) {
+      if (live_range.upper_bound >= packed_leaf_page.key_count) {
         this->advance_segment();
       } else {
-        this->item_i_ = *next_live_item;
-        this->update_cached_items(prev_item_i);
+        u32 next_live_item = segment->live_lower_bound(*this->level_, live_range.upper_bound);
+
+        if (next_live_item >= packed_leaf_page.key_count) {
+          this->advance_segment();
+        } else {
+          this->item_i_ = next_live_item;
+          this->update_cached_items(prev_item_i);
+        }
       }
 
       this->hit_next_flushed_i_ = false;
@@ -433,21 +432,23 @@ inline auto ShardedLevelScanner<NodeT, LevelT, PageLoaderT>::continue_full_leaf_
                                 leaf_page.items_begin() + end_i};
   }
 
-  Optional<Interval<u32>> live_range =
-      segment->get_live_item_range(*this->level_,
-                                   this->segment_i_size_,
-                                   BATT_CHECKED_CAST(u32, begin_i));
+  Interval<u32> live_range = segment->get_live_item_range(
+      *this->level_,
+      Interval<u32>{BATT_CHECKED_CAST(u32, begin_i), BATT_CHECKED_CAST(u32, leaf_page.key_count)});
 
-  BATT_CHECK(live_range);
-  end_i = live_range->upper_bound;
+  BATT_CHECK(!live_range.empty());
+  end_i = live_range.upper_bound;
 
   if (advance) {
-    Optional<u32> next_live_item =
-        segment->live_lower_bound(*this->level_, this->segment_i_size_, end_i);
-    if (!next_live_item) {
+    if (end_i >= leaf_page.key_count) {
       this->advance_segment();
     } else {
-      this->item_i_ = *next_live_item;
+      u32 next_live_item = segment->live_lower_bound(*this->level_, end_i);
+      if (next_live_item >= leaf_page.key_count) {
+        this->advance_segment();
+      } else {
+        this->item_i_ = next_live_item;
+      }
     }
   }
 
@@ -460,7 +461,6 @@ template <typename NodeT, typename LevelT, typename PageLoaderT>
 inline void ShardedLevelScanner<NodeT, LevelT, PageLoaderT>::advance_segment()
 {
   ++this->segment_i_;
-  this->segment_i_size_ = 0;
 
   if (this->load_full_leaf_ == batt::BoolStatus::kTrue) {
     this->full_leaf_data_.emplace();
@@ -510,15 +510,12 @@ inline void ShardedLevelScanner<NodeT, LevelT, PageLoaderT>::advance_to_pivot_fu
   const usize lower_bound_i = std::distance(leaf_page.items_begin(),  //
                                             leaf_page.lower_bound(lower_bound_key));
 
-  Optional<u32> next_live_item = segment.live_lower_bound(*this->level_,
-                                                        this->segment_i_size_,
-                                                        BATT_CHECKED_CAST(u32, lower_bound_i));
-
-  if (next_live_item) {
-    this->item_i_ = *next_live_item;
-  } else {
+  if (lower_bound_i >= leaf_page.key_count) {
     this->item_i_ = leaf_page.key_count;
+    return;
   }
+
+  this->item_i_ = segment.live_lower_bound(*this->level_, BATT_CHECKED_CAST(u32, lower_bound_i));
 }
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
@@ -763,14 +760,12 @@ inline Status ShardedLevelScanner<NodeT, LevelT, PageLoaderT>::set_start_item(
     this->item_i_ = search_range.upper_bound;
   } else {
     usize lower_bound_key_i = search_range.lower_bound + std::distance(items_begin, found_item);
+    BATT_CHECK_LT(lower_bound_key_i, packed_leaf_page.key_count);
 
-    Optional<u32> next_live_item =
-        segment.live_lower_bound(*this->level_,
-                               this->segment_i_size_,
-                               BATT_CHECKED_CAST(u32, lower_bound_key_i));
-    BATT_CHECK(next_live_item);
+    u32 next_live_item =
+        segment.live_lower_bound(*this->level_, BATT_CHECKED_CAST(u32, lower_bound_key_i));
 
-    this->item_i_ = *next_live_item;
+    this->item_i_ = next_live_item;
   }
 
   return OkStatus();

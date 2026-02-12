@@ -736,7 +736,7 @@ Status InMemoryNode::set_pivot_items_flushed(BatchUpdateContext& update_context,
                                                         segmented_level,
                                                         update_context.page_loader,
                                                         update_context.overcommit)
-                                         .drop_key_range(flush_key_crange, pivot_i));
+                                         .drop_key_range(pivot_i, flush_key_crange.upper_bound));
 
           is_now_empty = segmented_level.empty();
         });

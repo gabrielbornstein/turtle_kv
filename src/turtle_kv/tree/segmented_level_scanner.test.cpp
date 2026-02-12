@@ -396,17 +396,16 @@ void SegmentedLevelScannerTest::Scenario::run_with_pivot_count(usize pivot_count
 
     KeyView min_key_to_flush = min_unflushed_key[pivot_i];
     KeyView max_key_to_flush = get_key(*std::prev(flush_end));
-    CInterval<KeyView> flushed_crange{min_key_to_flush, max_key_to_flush};
 
     Status flush_status = in_segmented_level(fake_node,
                                              fake_node.level_,
                                              *this->fake_page_loader,
                                              llfs::PageCacheOvercommit::not_allowed())
-                              .drop_key_range(flushed_crange, pivot_i);
+                              .drop_key_range(pivot_i, max_key_to_flush);
 
     ASSERT_TRUE(flush_status.ok()) << BATT_INSPECT(flush_status);
 
-    test_item_set.drop_key_range(flushed_crange);
+    test_item_set.drop_key_range(CInterval<KeyView>{min_key_to_flush, max_key_to_flush});
 
     fake_node.items_per_pivot_[pivot_i] -= n_items_to_drop;
     if (fake_node.items_per_pivot_[pivot_i] == 0) {

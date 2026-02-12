@@ -133,7 +133,6 @@ class SegmentedLevelScanner : private SegmentedLevelScannerBase
   PinnedPageT pinned_leaf_;
   Optional<KeyView> min_key_;
   usize segment_i_;
-  u32 segment_i_size_;
   i32 min_pivot_i_;
   usize item_i_;
   bool needs_load_;
@@ -162,7 +161,6 @@ inline /*explicit*/ SegmentedLevelScanner<NodeT, LevelT, PageLoaderT>::Segmented
     , pinned_leaf_{}
     , min_key_{min_key}
     , segment_i_{0}
-    , segment_i_size_{0}
     , min_pivot_i_{min_pivot_i}
     , item_i_{0}
     , needs_load_{true}
@@ -239,8 +237,6 @@ inline auto SegmentedLevelScanner<NodeT, LevelT, PageLoaderT>::peek_next_impl(bo
     }
 
     this->pinned_leaf_ = std::move(*loaded_page);
-    const PackedLeafPage& leaf = PackedLeafPage::view_of(this->pinned_leaf_.get_page_buffer());
-    this->segment_i_size_ = leaf.key_count;
 
     i32 target_pivot_i = std::max(first_bit(active_pivots), this->min_pivot_i_);
     while (target_pivot_i < (i32)this->node_->pivot_count() &&
@@ -267,21 +263,23 @@ inline auto SegmentedLevelScanner<NodeT, LevelT, PageLoaderT>::peek_next_impl(bo
                               leaf_page.items_begin() + end_i)};
   }
 
-  Optional<Interval<u32>> live_range =
-      segment->get_live_item_range(*this->level_,
-                                   this->segment_i_size_,
-                                   BATT_CHECKED_CAST(u32, begin_i));
+  Interval<u32> live_range = segment->get_live_item_range(
+      *this->level_,
+      Interval<u32>{BATT_CHECKED_CAST(u32, begin_i), BATT_CHECKED_CAST(u32, leaf_page.key_count)});
 
-  BATT_CHECK(live_range);
-  end_i = live_range->upper_bound;
+  BATT_CHECK(!live_range.empty());
+  end_i = live_range.upper_bound;
 
   if (advance) {
-    Optional<u32> next_live_item =
-        segment->live_lower_bound(*this->level_, this->segment_i_size_, end_i);
-    if (!next_live_item) {
+    if (end_i >= leaf_page.key_count) {
       this->advance_segment();
     } else {
-      this->item_i_ = *next_live_item;
+      u32 next_live_item = segment->live_lower_bound(*this->level_, end_i);
+      if (next_live_item >= leaf_page.key_count) {
+        this->advance_segment();
+      } else {
+        this->item_i_ = next_live_item;
+      }
     }
   }
 
@@ -295,7 +293,6 @@ template <typename NodeT, typename LevelT, typename PageLoaderT>
 inline void SegmentedLevelScanner<NodeT, LevelT, PageLoaderT>::advance_segment()
 {
   ++this->segment_i_;
-  this->segment_i_size_ = 0;
   this->needs_load_ = true;
 }
 
@@ -318,15 +315,12 @@ inline void SegmentedLevelScanner<NodeT, LevelT, PageLoaderT>::advance_to_pivot(
   const usize lower_bound_i = std::distance(leaf_page.items_begin(),  //
                                             leaf_page.lower_bound(lower_bound_key));
 
-  Optional<u32> next_live_item = segment.live_lower_bound(*this->level_,
-                                                        this->segment_i_size_,
-                                                        BATT_CHECKED_CAST(u32, lower_bound_i));
-
-  if (next_live_item) {
-    this->item_i_ = *next_live_item;
-  } else {
+  if (lower_bound_i >= leaf_page.key_count) {
     this->item_i_ = leaf_page.key_count;
+    return;
   }
+
+  this->item_i_ = segment.live_lower_bound(*this->level_, BATT_CHECKED_CAST(u32, lower_bound_i));
 }
 
 }  // namespace turtle_kv

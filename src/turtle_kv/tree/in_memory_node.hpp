@@ -130,19 +130,12 @@ struct InMemoryNode {
       void drop_key_range(const BasicInterval<Traits>& key_range,
                           const Slice<const PackedKeyValue>& items)
       {
-        auto iters = boost::range::equal_range(items, key_range, llfs::KeyRangeOrder{});
-
-        u32 start_i = BATT_CHECKED_CAST(u32, std::distance(items.begin(), iters.first));
-        u32 end_i = BATT_CHECKED_CAST(u32, std::distance(items.begin(), iters.second));
-
-        u32 total_items = BATT_CHECKED_CAST(u32, items.size());
-
-        this->filter.drop_index_range(Interval<u32>{start_i, end_i}, total_items);
+        drop_item_range(this->filter, items, key_range, llfs::KeyRangeOrder{});
       }
 
-      void drop_index_range(u32 total_items, Interval<u32> i)
+      void drop_index_range(Interval<u32> i)
       {
-        this->filter.drop_index_range(i, total_items);
+        this->filter.drop_index_range(i);
       }
 
       bool is_index_filtered(const SegmentedLevel&, u32 index) const
@@ -155,21 +148,34 @@ struct InMemoryNode {
         return !this->filter.dropped_total();
       }
 
-      Optional<u32> live_lower_bound(const SegmentedLevel&, u32 total_items, u32 item_i) const
+      u32 live_lower_bound(const SegmentedLevel&, u32 item_i) const
       {
-        return this->filter.live_lower_bound(item_i, total_items);
+        return this->filter.live_lower_bound(item_i);
       }
 
-      Optional<Interval<u32>> get_live_item_range(const SegmentedLevel&,
-                                                  u32 total_items,
-                                                  u32 start_item_i) const
+      Interval<u32> get_live_item_range(const SegmentedLevel&, Interval<u32> i) const
       {
-        return this->filter.find_live_range(start_item_i, total_items);
+        return this->filter.find_live_range(i);
       }
 
       usize num_cut_points() const
       {
-        return this->filter.cut_points_size();
+        Slice<const Interval<u32>> dropped_ranges = this->filter.dropped();
+
+        // There will be no filter cut points if no items are dropped.
+        //
+        if (!this->filter.dropped_total()) {
+          BATT_CHECK(dropped_ranges.empty());
+          return 0;
+        }
+        BATT_CHECK(!dropped_ranges.empty());
+
+        // If the first element is filtered out, don't include 0 as a cut point, only include the
+        // upper bound.
+        //
+        bool first_element_filtered = dropped_ranges[0].lower_bound == 0;
+
+        return dropped_ranges.size() * 2 - (first_element_filtered ? 1 : 0);
       }
 
       //+++++++++++-+-+--+----- --- -- -  -  -   -

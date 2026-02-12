@@ -22,7 +22,6 @@ template <typename OffsetT>
     filter.dropped_total_ += drop_range.size();
   }
 
-  filter.dropped_.clear();
   filter.dropped_.insert(filter.dropped_.end(), dropped.begin(), dropped.end());
 
   return filter;
@@ -39,13 +38,11 @@ PiecewiseFilter<OffsetT>::PiecewiseFilter() noexcept : dropped_{}
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
 template <typename OffsetT>
-void PiecewiseFilter<OffsetT>::drop_index_range(Interval<OffsetT> i, OffsetT total_items)
+void PiecewiseFilter<OffsetT>::drop_index_range(Interval<OffsetT> i)
 {
   if (i.empty()) {
     return;
   }
-
-  i.upper_bound = std::min(i.upper_bound, total_items);
 
   // Find the position to insert `i` or begin merging with other intervals.
   //
@@ -124,12 +121,8 @@ bool PiecewiseFilter<OffsetT>::live_at_index(OffsetT i) const
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
 template <typename OffsetT>
-Optional<OffsetT> PiecewiseFilter<OffsetT>::live_lower_bound(OffsetT i, OffsetT total_items) const
+OffsetT PiecewiseFilter<OffsetT>::live_lower_bound(OffsetT i) const
 {
-  if (i >= total_items) {
-    return None;
-  }
-
   // Compute the dropped interval which could contain `i`.
   //
   auto iter = std::lower_bound(this->dropped_.begin(),
@@ -138,10 +131,7 @@ Optional<OffsetT> PiecewiseFilter<OffsetT>::live_lower_bound(OffsetT i, OffsetT 
                                typename Interval<OffsetT>::LinearOrder{});
 
   if (iter != this->dropped_.end() && iter->contains(i)) {
-    i = iter->upper_bound;
-    if (i >= total_items) {
-      return None;
-    }
+    return iter->upper_bound;
   }
 
   return i;
@@ -150,48 +140,43 @@ Optional<OffsetT> PiecewiseFilter<OffsetT>::live_lower_bound(OffsetT i, OffsetT 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
 template <typename OffsetT>
-Optional<Interval<OffsetT>> PiecewiseFilter<OffsetT>::find_live_range(OffsetT start_i,
-                                                                      OffsetT total_items) const
+Interval<OffsetT> PiecewiseFilter<OffsetT>::find_live_range(Interval<OffsetT> i) const
 {
-  OffsetT end_i = total_items;
+  OffsetT start_i = i.lower_bound;
+  OffsetT end_i = i.upper_bound;
 
-  auto iter = std::upper_bound(this->dropped_.begin(),
+  BATT_CHECK_LT(start_i, end_i);
+
+  auto iter = std::lower_bound(this->dropped_.begin(),
                                this->dropped_.end(),
                                start_i,
                                typename Interval<OffsetT>::LinearOrder{});
-
-  if (iter != this->dropped_.begin()) {
-    auto prev = std::prev(iter);
-    if (prev->contains(start_i)) {
-      return None;
+  
+  // Start by finding the live lower bound of start_i. If start_i is filtered, adjust it to be the
+  // live lower bound.
+  //
+  if (iter != this->dropped_.end() && iter->contains(start_i)) {
+    start_i = iter->upper_bound;
+    if (start_i >= end_i) {
+      // If this adjustment causes start_i to exceed end_i, no live range exists to return, so
+      // return an empty interval.
+      //
+      return Interval<OffsetT>{end_i, end_i};
     }
+
+    ++iter;
   }
 
+  // If another dropped range exists after the range pointed to by iter, use its lower bound to
+  // adjust the value of end_i so that we don't cross over into another filtered range.
+  //
   if (iter != this->dropped_.end()) {
-    end_i = iter->lower_bound;
+    end_i = std::min(end_i, iter->lower_bound);
   }
+
+  BATT_CHECK_LT(start_i, end_i) << BATT_INSPECT(i);
 
   return Interval<OffsetT>{start_i, end_i};
-}
-
-//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
-//
-template <typename OffsetT>
-usize PiecewiseFilter<OffsetT>::cut_points_size() const
-{
-  // There will be no filter cut points if no items are dropped.
-  //
-  if (!this->dropped_total()) {
-    BATT_CHECK(this->dropped_.empty());
-    return 0;
-  }
-
-  // If the first element is filtered out, don't include 0 as a cut point, only include the
-  // upper bound.
-  //
-  bool first_element_filtered = this->dropped_[0].lower_bound == 0;
-
-  return this->dropped_.size() * 2 - (first_element_filtered ? 1 : 0);
 }
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -

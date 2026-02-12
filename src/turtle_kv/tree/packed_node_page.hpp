@@ -12,6 +12,7 @@
 
 #include <turtle_kv/import/bit_ops.hpp>
 #include <turtle_kv/import/int_types.hpp>
+#include <turtle_kv/import/interval.hpp>
 #include <turtle_kv/import/seq.hpp>
 #include <turtle_kv/import/slice.hpp>
 
@@ -153,13 +154,9 @@ struct PackedNodePage {
 
       bool is_index_filtered(const SegmentedLevel& level, u32 index) const;
 
-      Optional<u32> live_lower_bound(const SegmentedLevel& level,
-                                     u32 total_segment_items,
-                                     u32 item_i) const;
+      u32 live_lower_bound(const SegmentedLevel& level, u32 item_i) const;
 
-      Optional<Interval<u32>> get_live_item_range(const SegmentedLevel& level,
-                                                  u32 total_segment_items,
-                                                  u32 start_item_i) const;
+      Interval<u32> get_live_item_range(const SegmentedLevel& level, Interval<u32> i) const;
     };
 
     struct SegmentedLevel {

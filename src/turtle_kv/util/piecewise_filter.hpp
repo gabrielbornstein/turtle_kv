@@ -2,11 +2,14 @@
 
 #include <turtle_kv/import/int_types.hpp>
 #include <turtle_kv/import/interval.hpp>
-#include <turtle_kv/import/optional.hpp>
 #include <turtle_kv/import/slice.hpp>
 #include <turtle_kv/import/small_fn.hpp>
 #include <turtle_kv/import/small_vec.hpp>
 #include <turtle_kv/import/status.hpp>
+
+#include <boost/range/algorithm/equal_range.hpp>
+
+#include <type_traits>
 
 namespace turtle_kv {
 
@@ -32,9 +35,8 @@ class PiecewiseFilter
   /** \brief Filters out the item range provided by the specified interval of item indexes.
    *
    * \param i The item index range to filter out, specified as a half open interval.
-   * \param total_items The total number of items in the range.
    */
-  void drop_index_range(Interval<OffsetT> i, OffsetT total_items);
+  void drop_index_range(Interval<OffsetT> i);
 
   /** \brief Returns whether or not the item at index `i` has been filtered out.
    *
@@ -48,22 +50,21 @@ class PiecewiseFilter
   /** \brief Returns the next unfiltered index greater than or equal to `i`.
    *
    * \param i The item index being queried.
-   * \param total_items The total number of items.
    *
    * \return An index representing the next unfiltered item closest to index `i`. If `i` itself is
-   * unfiltered, `i` is returned. If everything past `i` is filtered, `None` is returned.
+   * unfiltered, `i` is returned.
    */
-  Optional<OffsetT> live_lower_bound(OffsetT i, OffsetT total_items) const;
+  OffsetT live_lower_bound(OffsetT i) const;
 
-  /** \brief Finds an unfiltered slice of items starting at item index `start_i`.
+  /** \brief Returns a range of unfiltered items within the item index boundaries defined by `i`.
    *
-   * \param start_i The starting item for the range being queried.
-   * \param total_items The total number of items.
+   * \param i A half open interval that defines the search boundaries for a slice of live items.
    *
-   * \return A half open interval representing the next slice of unfiltered item indexes starting
-   * from index `start_i`. If no such interval exists, or `start_i` is filtered, `None` is returned.
+   * \return A half open interval representing a slice of live items starting at the lower bound
+   * of `i` and extending no further than the upper bound of `i`. If no such interval exists, an
+   * empty interval is returned.
    */
-  Optional<Interval<OffsetT>> find_live_range(OffsetT start_i, OffsetT total_items) const;
+  Interval<OffsetT> find_live_range(Interval<OffsetT> i) const;
 
   /** \brief Returns a view of the filtered item intervals.
    */
@@ -72,11 +73,6 @@ class PiecewiseFilter
   /** \brief Returns the total number of filtered items.
    */
   OffsetT dropped_total() const;
-
-  /** \brief Returns the number of cut points that would be needed to represent the filter when
-   * serialized.
-   */
-  usize cut_points_size() const;
 
   SmallFn<void(std::ostream&)> dump() const;
 
@@ -89,6 +85,20 @@ class PiecewiseFilter
    */
   OffsetT dropped_total_;
 };
+
+template <typename OffsetT, typename ItemT, typename Traits, typename OrderFn>
+inline void drop_item_range(PiecewiseFilter<OffsetT>& filter,
+                            const Slice<const ItemT>& items,
+                            const BasicInterval<Traits>& item_range,
+                            OrderFn&& order_fn)
+{
+  auto iters = boost::range::equal_range(items, item_range, order_fn);
+
+  OffsetT start_i = BATT_CHECKED_CAST(OffsetT, std::distance(items.begin(), iters.first));
+  OffsetT end_i = BATT_CHECKED_CAST(OffsetT, std::distance(items.begin(), iters.second));
+
+  filter.drop_index_range(Interval<OffsetT>{start_i, end_i});
+}
 }  // namespace turtle_kv
 
 #include <turtle_kv/util/piecewise_filter.ipp>

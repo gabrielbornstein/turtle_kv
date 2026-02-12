@@ -151,22 +151,19 @@ struct SegmentAlgorithms {
     //
     PageSliceStorage page_slice_storage;
 
-    u32 total_leaf_items = 0;
-
     KeyQuery key_query{page_loader, page_slice_storage, tree_options, drop_key_range.lower_bound};
 
     BATT_ASSIGN_OK_RESULT(
         u32 start_item_index,
-        find_key_lower_bound_index(this->segment_.get_leaf_page_id(), key_query, total_leaf_items));
+        find_key_lower_bound_index(this->segment_.get_leaf_page_id(), key_query));
 
     key_query = KeyQuery{page_loader, page_slice_storage, tree_options, drop_key_range.upper_bound};
 
     BATT_ASSIGN_OK_RESULT(
         u32 end_item_index,
-        find_key_lower_bound_index(this->segment_.get_leaf_page_id(), key_query, total_leaf_items));
+        find_key_lower_bound_index(this->segment_.get_leaf_page_id(), key_query));
 
-    this->segment_.drop_index_range(total_leaf_items,
-                                    Interval<u32>{start_item_index, end_item_index});
+    this->segment_.drop_index_range(Interval<u32>{start_item_index, end_item_index});
 
     // Then, iterate through the pivots to set the active bit per pivot to 0.
     //

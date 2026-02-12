@@ -354,14 +354,9 @@ bool PackedNodePage::UpdateBuffer::Segment::is_index_filtered(const SegmentedLev
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-Optional<u32> PackedNodePage::UpdateBuffer::Segment::live_lower_bound(const SegmentedLevel& level,
-                                                                      u32 total_segment_items,
-                                                                      u32 item_i) const
+u32 PackedNodePage::UpdateBuffer::Segment::live_lower_bound(const SegmentedLevel& level,
+                                                            u32 item_i) const
 {
-  if (item_i >= total_segment_items) {
-    return None;
-  }
-
   const usize segment_i = std::distance(level.segments_slice.begin(), this);
   PackedNodePage::UpdateBuffer::SegmentFilterData filter_data =
       level.packed_node_->get_segment_filter_values(level.level_i_, segment_i);
@@ -387,22 +382,28 @@ Optional<u32> PackedNodePage::UpdateBuffer::Segment::live_lower_bound(const Segm
     return item_i;
   }
 
-  BATT_CHECK_NE(iter, filter_values.end())
-      << BATT_INSPECT(previous_cut_points) << BATT_INSPECT(item_i)
-      << BATT_INSPECT(total_segment_items) << BATT_INSPECT(filter_values);
-  return iter->value();
+  if (iter != filter_values.end()) {
+    return iter->value();
+  }
+
+  // If iter points to the end iterator here, the filter is in an invalid state; the last region
+  // of the filter should always be unfiltered.
+  //
+  BATT_PANIC() << "Filter is in an invalid state!" << BATT_INSPECT(item_i)
+               << BATT_INSPECT(filter_values);
+  BATT_UNREACHABLE();
 }
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-Optional<Interval<u32>> PackedNodePage::UpdateBuffer::Segment::get_live_item_range(
+Interval<u32> PackedNodePage::UpdateBuffer::Segment::get_live_item_range(
     const SegmentedLevel& level,
-    u32 total_segment_items,
-    u32 start_item_i) const
+    Interval<u32> i) const
 {
-  if (start_item_i >= total_segment_items) {
-    return None;
-  }
+  u32 start_i = i.lower_bound;
+  u32 end_i = i.upper_bound;
+
+  BATT_CHECK_LT(start_i, end_i);
 
   const usize segment_i = std::distance(level.segments_slice.begin(), this);
   PackedNodePage::UpdateBuffer::SegmentFilterData filter_data =
@@ -411,21 +412,33 @@ Optional<Interval<u32>> PackedNodePage::UpdateBuffer::Segment::get_live_item_ran
   const Slice<const little_u32> filter_values = filter_data.values;
 
   if (filter_values.empty()) {
-    return Interval<u32>{start_item_i, total_segment_items};
+    return i;
   }
 
-  auto iter = std::upper_bound(filter_values.begin(), filter_values.end(), start_item_i);
+  auto iter = std::upper_bound(filter_values.begin(), filter_values.end(), start_i);
 
   usize previous_cut_points = std::distance(filter_data.values.begin(), iter);
 
   bool is_filtered = (previous_cut_points % 2 == 0) == filter_data.start_is_filtered;
 
   if (is_filtered) {
-    return None;
+    BATT_CHECK_NE(iter, filter_values.end()) << BATT_INSPECT(i) << BATT_INSPECT(filter_values);
+
+    start_i = iter->value();
+    if (start_i >= end_i) {
+      return Interval<u32>{end_i, end_i};
+    }
+
+    ++iter;
   }
 
-  u32 end_item_i = iter != filter_values.end() ? iter->value() : total_segment_items;
-  return Interval<u32>{start_item_i, end_item_i};
+  if (iter != filter_values.end()) {
+    end_i = std::min(end_i, iter->value());
+  }
+
+  BATT_CHECK_LT(start_i, end_i) << BATT_INSPECT(i);
+
+  return Interval<u32>{start_i, end_i};
 }
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
