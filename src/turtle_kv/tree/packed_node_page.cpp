@@ -151,7 +151,7 @@ PackedNodePage* build_node_page(const MutableBuffer& buffer, const InMemoryNode&
 
         dst_segment.filter_start = BATT_CHECKED_CAST(u16, segment_filters_offset);
 
-        PiecewiseFilter<u32> segment_filter = src_segment.filter;
+        const PiecewiseFilter<u32>& segment_filter = src_segment.filter;
         if (!src_segment.is_unfiltered()) {
           Slice<const Interval<u32>> dropped_ranges = segment_filter.dropped();
           BATT_CHECK(!dropped_ranges.empty());
@@ -280,11 +280,12 @@ StatusOr<PiecewiseFilter<u32>> PackedNodePage::create_piecewise_filter(usize lev
   // serialized version of the filter doesn't store index 0.
   //
   if (filter_data.start_is_filtered) {
+    BATT_CHECK_NE(filter_data.values.size() % 2, 0);
     dropped_ranges.emplace_back(Interval<u32>{0, filter_data.values[i].value()});
     i++;
   }
 
-  for (; i < filter_data.values.size(); i += 2) {
+  for (; i + 1 < filter_data.values.size(); i += 2) {
     dropped_ranges.emplace_back(
         Interval<u32>{filter_data.values[i].value(), filter_data.values[i + 1].value()});
   }

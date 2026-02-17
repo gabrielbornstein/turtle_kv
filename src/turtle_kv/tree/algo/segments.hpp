@@ -153,15 +153,13 @@ struct SegmentAlgorithms {
 
     KeyQuery key_query{page_loader, page_slice_storage, tree_options, drop_key_range.lower_bound};
 
-    BATT_ASSIGN_OK_RESULT(
-        u32 start_item_index,
-        find_key_lower_bound_index(this->segment_.get_leaf_page_id(), key_query));
+    BATT_ASSIGN_OK_RESULT(u32 start_item_index,
+                          find_key_lower_bound_index(this->segment_.get_leaf_page_id(), key_query));
 
     key_query = KeyQuery{page_loader, page_slice_storage, tree_options, drop_key_range.upper_bound};
 
-    BATT_ASSIGN_OK_RESULT(
-        u32 end_item_index,
-        find_key_lower_bound_index(this->segment_.get_leaf_page_id(), key_query));
+    BATT_ASSIGN_OK_RESULT(u32 end_item_index,
+                          find_key_lower_bound_index(this->segment_.get_leaf_page_id(), key_query));
 
     this->segment_.drop_index_range(Interval<u32>{start_item_index, end_item_index});
 
@@ -180,7 +178,10 @@ struct SegmentAlgorithms {
   /** \brief Searches the segment for the given key, returning its value if found.
    */
   template <typename LevelT>
-  batt::seq::LoopControl find_key(LevelT& level, KeyQuery& query, StatusOr<ValueView>* value_out)
+  batt::seq::LoopControl find_key(LevelT& level,
+                                  i32 key_pivot_i [[maybe_unused]],
+                                  KeyQuery& query,
+                                  StatusOr<ValueView>* value_out)
   {
     usize key_index_in_leaf = ~usize{0};
 

@@ -10,19 +10,17 @@ template <typename OffsetT>
 {
   PiecewiseFilter<OffsetT> filter;
 
-  filter.dropped_total_ = 0;
-  OffsetT current_items_size = 0;
-  for (const Interval<OffsetT>& drop_range : dropped) {
-    if ((drop_range.lower_bound == 0 && current_items_size != 0) ||
-        (drop_range.lower_bound != 0 && drop_range.lower_bound <= current_items_size) ||
-        (drop_range.upper_bound <= drop_range.lower_bound)) {
-      return Status{::batt::StatusCode::kInvalidArgument};
-    }
-    current_items_size = drop_range.upper_bound;
-    filter.dropped_total_ += drop_range.size();
-  }
-
   filter.dropped_.insert(filter.dropped_.end(), dropped.begin(), dropped.end());
+  filter.dropped_total_ = std::accumulate(filter.dropped_.begin(),
+                                          filter.dropped_.end(),
+                                          0,
+                                          [](OffsetT total, const Interval<OffsetT>& i) {
+                                            return total += i.size();
+                                          });
+
+  if (!filter.check_invariants()) {
+    return Status{::batt::StatusCode::kInvalidArgument};
+  }
 
   return filter;
 }
@@ -33,6 +31,24 @@ template <typename OffsetT>
 PiecewiseFilter<OffsetT>::PiecewiseFilter() noexcept : dropped_{}
                                                      , dropped_total_{0}
 {
+}
+
+//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
+//
+template <typename OffsetT>
+bool PiecewiseFilter<OffsetT>::check_invariants() const
+{
+  OffsetT current_items_size = 0;
+  for (const Interval<OffsetT>& drop_range : this->dropped_) {
+    if ((drop_range.lower_bound == 0 && current_items_size != 0) ||
+        (drop_range.lower_bound != 0 && drop_range.lower_bound <= current_items_size) ||
+        (drop_range.upper_bound <= drop_range.lower_bound)) {
+      return false;
+    }
+    current_items_size = drop_range.upper_bound;
+  }
+
+  return true;
 }
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
@@ -108,14 +124,7 @@ Slice<const Interval<OffsetT>> PiecewiseFilter<OffsetT>::dropped() const
 template <typename OffsetT>
 bool PiecewiseFilter<OffsetT>::live_at_index(OffsetT i) const
 {
-  auto iter = std::lower_bound(this->dropped_.begin(),
-                               this->dropped_.end(),
-                               i,
-                               typename Interval<OffsetT>::LinearOrder{});
-  if (iter != this->dropped_.end() && iter->contains(i)) {
-    return false;
-  }
-  return true;
+  return this->live_lower_bound(i) == i;
 }
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
@@ -151,7 +160,7 @@ Interval<OffsetT> PiecewiseFilter<OffsetT>::find_live_range(Interval<OffsetT> i)
                                this->dropped_.end(),
                                start_i,
                                typename Interval<OffsetT>::LinearOrder{});
-  
+
   // Start by finding the live lower bound of start_i. If start_i is filtered, adjust it to be the
   // live lower bound.
   //

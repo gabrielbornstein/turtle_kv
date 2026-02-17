@@ -1689,10 +1689,7 @@ void InMemoryNode::UpdateBuffer::SegmentedLevel::check_items_sorted(
 //
 void InMemoryNode::UpdateBuffer::Segment::check_invariants(const char* file, int line) const
 {
-  // TODO [vsilai 2026-1-24] what should we check here??
-  //
-  (void)file;
-  (void)line;
+  BATT_CHECK(this->filter.check_invariants()) << BATT_INSPECT(file) << BATT_INSPECT(line);
 }
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
@@ -1732,6 +1729,11 @@ void InMemoryNode::UpdateBuffer::Segment::pop_front_pivots(i32 count)
 bool InMemoryNode::UpdateBuffer::Segment::is_inactive() const
 {
   const bool inactive = (this->active_pivots == 0);
+  if (inactive) {
+    Slice<const Interval<u32>> filter_dropped_ranges = this->filter.dropped();
+    BATT_CHECK_EQ(filter_dropped_ranges.size(), 1);
+    BATT_CHECK_EQ(filter_dropped_ranges[0].lower_bound, 0);
+  }
   return inactive;
 }
 

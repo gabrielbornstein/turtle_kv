@@ -26,8 +26,6 @@
 
 #include <batteries/assert.hpp>
 
-#include <boost/range/algorithm/equal_range.hpp>
-
 namespace turtle_kv {
 
 //=#=#==#==#===============+=+=+=+=++=++++++++++++++-++-+--+-+----+---------------
@@ -180,11 +178,7 @@ struct InMemoryNode {
 
       //+++++++++++-+-+--+----- --- -- -  -  -   -
 
-      /** \brief Panic if the following invariants are not satisfied:
-       *
-       * 1. The size of this->flushed_item_upper_bound_ is equal to the number of 1 bits in
-       *    this->flushed_pivots
-       * 2. There are no pivots marked as flushed and inactive.
+      /** \brief Panic if filter invariants are not satisfied.
        */
       void check_invariants(const char* file, int line) const;
 

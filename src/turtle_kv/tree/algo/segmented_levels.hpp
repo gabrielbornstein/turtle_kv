@@ -335,7 +335,7 @@ struct SegmentedLevelAlgorithms {
     this->for_each_active_segment_in(
         key_pivot_i,
         [&](const SegmentT& segment) -> Optional<batt::seq::LoopControl> {
-          return in_segment(segment).find_key(this->level_, query, &result);
+          return in_segment(segment).find_key(this->level_, key_pivot_i, query, &result);
         });
 
     return result;

@@ -74,6 +74,10 @@ class PiecewiseFilter
    */
   OffsetT dropped_total() const;
 
+  /** \brief Validate the state of the dropped intervals.
+   */
+  bool check_invariants() const;
+
   SmallFn<void(std::ostream&)> dump() const;
 
  private:
