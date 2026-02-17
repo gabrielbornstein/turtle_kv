@@ -265,6 +265,9 @@ batt::Status ChangeLogFile::read_blocks(SerializeFn process_block)
 
     status = this->file_.read_all(curr_file_offset, block_buffer);
 
+    // TODO: [Gabe Bornstein 2/17/26] Delay initializing ephemeral state and setting read_lock.
+    // Neccessry for right now so that destructor checks pass.
+    //
     batt::StatusOr<batt::Grant> buffer_grant =
         this->reserve_blocks(BlockCount{1}, batt::WaitForResource::kFalse);
 
@@ -275,6 +278,8 @@ batt::Status ChangeLogFile::read_blocks(SerializeFn process_block)
     Interval<i64> block_range{blocks_read, blocks_read + 1};
 
     block->set_read_lock(set_block_range_in_use(block->get_grant(), block_range));
+
+    block->set_ref_count(1);
 
     // process_block is responsible for determining when to stop reading. Usually, break once we've
     // read a block that isn't valid or if we've reached the end of the file.

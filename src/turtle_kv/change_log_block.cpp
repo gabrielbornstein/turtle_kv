@@ -3,6 +3,8 @@
 
 #include <llfs/page_cache_slot.hpp>
 
+#include <batteries/require.hpp>
+
 #include <xxhash.h>
 
 #include <pcg_random.hpp>
@@ -39,7 +41,7 @@ namespace turtle_kv {
 /*explicit*/ ChangeLogBlock::ChangeLogBlock(u64 owner_id,
                                             batt::Grant&& grant,
                                             usize block_size) noexcept
-    : magic_{reinterpret_cast<u64>(this) ^ ChangeLogBlock::kMagic}
+    : magic_{ChangeLogBlock::kMagic}
     , owner_id_{owner_id}
     , block_size_{BATT_CHECKED_CAST(u16, block_size)}
     , slot_count_{0}
@@ -74,7 +76,7 @@ ChangeLogBlock::~ChangeLogBlock() noexcept
 //
 void ChangeLogBlock::add_ref(i32 count) noexcept
 {
-  this->ephemeral_state_ptr()->ref_count_.fetch_add(count, std::memory_order_relaxed);
+  this->ref_count_.fetch_add(count, std::memory_order_relaxed);
 }
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
@@ -83,12 +85,11 @@ void ChangeLogBlock::remove_ref(i32 count) noexcept
 {
   BATT_CHECK_GE(count, 0);
 
-  const i32 old_count =
-      this->ephemeral_state_ptr()->ref_count_.fetch_sub(count, std::memory_order_release);
+  const i32 old_count = this->ref_count_.fetch_sub(count, std::memory_order_release);
   if (old_count == count) {
     // Load the ref count as a sanity check and with acquire order to complete the fence.
     //
-    BATT_CHECK_EQ(0, this->ephemeral_state_ptr()->ref_count_.load(std::memory_order_acquire));
+    BATT_CHECK_EQ(0, this->ref_count_.load(std::memory_order_acquire));
     this->~ChangeLogBlock();
     free(this);
   }
@@ -158,10 +159,13 @@ batt::Grant ChangeLogBlock::consume_grant() noexcept
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-void ChangeLogBlock::verify() const noexcept
+// TODO: [Gabe Bornstein 2/17/26] Call verify before we write to disk
+//
+batt::Status ChangeLogBlock::verify() const noexcept
 {
-  BATT_CHECK_NE(this->magic_, ChangeLogBlock::kExpired);
-  BATT_CHECK_EQ(this->magic_, reinterpret_cast<u64>(this) ^ ChangeLogBlock::kMagic);
+  BATT_REQUIRE_NE(this->magic_, ChangeLogBlock::kExpired);
+  BATT_REQUIRE_EQ(this->magic_, ChangeLogBlock::kMagic);
+  return batt::OkStatus();
 }
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -

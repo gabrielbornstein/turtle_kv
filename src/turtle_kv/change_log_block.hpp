@@ -69,6 +69,8 @@ class ChangeLogBlock
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
 
+  // TODO: [Gabe Bornstein 2/11/26] Currently doesn't mean much, needs to be updated.
+  //
   u64 owner_id() const noexcept
   {
     return this->owner_id_;
@@ -84,17 +86,20 @@ class ChangeLogBlock
 
   i32 ref_count() noexcept
   {
-    return this->ephemeral_state_ptr()->ref_count_;
+    return this->ref_count_;
+  }
+
+  void set_ref_count(i64 ref_count = 1)
+  {
+    this->ref_count_.store(ref_count);
   }
 
   /** \brief Helper function to initialize the ephemeral state of this ChangeLogBlock. Transfers
    * ownership of grant to ChangeLogBlock, and initializes the reference count to ref_count.
    */
-  void init_ephemeral_state(batt::Grant&& grant, i64 ref_count = 1)
+  void init_ephemeral_state(batt::Grant&& grant)
   {
     new (&this->ephemeral_state_storage_) EphemeralStatePtr{new EphemeralState{std::move(grant)}};
-
-    this->ephemeral_state_ptr()->ref_count_.store(ref_count);
 
     BATT_CHECK_EQ(this->ephemeral_state().grant_.size(), 1);
   }
@@ -189,7 +194,7 @@ class ChangeLogBlock
 
   /** \brief Perform basic sanity checks to make sure this is a valid ChangeLogBlock object.
    */
-  void verify() const noexcept;
+  batt::Status verify() const noexcept;
 
   /** \brief Checks to make sure all space within the buffer is accounted for.
    */
@@ -207,10 +212,6 @@ class ChangeLogBlock
   /** \brief The members of this object which live outside the block buffer.
    */
   struct EphemeralState {
-    /** \brief Atomic reference counter to manage the lifetime of the buffer.
-     */
-    std::atomic<i32> ref_count_;
-
     // TODO: [Gabe Bornstein 2/2/26] Consider turning grant and read lock into Variant
     //
     /** \brief Used to track whether this block has been flushed.
@@ -300,18 +301,17 @@ class ChangeLogBlock
    */
   u16 space_;
 
-  u8 padding0_[6];
-
-  /* \brief The number of slots in the previous MemTable (used for recovery). This change log block
-   * is part of a MemTable currently being written to disk. prev_epoch_num_slots_ corresponds to
-   * the MemTable written to disk prior to the MemTable currently being written.
-   */
-  // TODO: [Gabe Bornstein 2/3/26] Whoever constructs a Mutable ChangeLogBlock should pass this
-  // value. Whoever creates a new MemTable also needs to pass this value to the MemTable
-  // construction. Needs to be added to MemTable. Open questions if this value should live in
-  // MemTable or a level below.
+  // Pad the next field (this->ref_count_) out to (void*) this + 24 bytes;
   //
-  u32 prev_epoch_num_slots_;
+  u8 padding0_[2];
+
+  /** \brief Atomic reference counter to manage the lifetime of the buffer.
+   */
+  std::atomic<i32> ref_count_;
+
+  // Pad the next field (this->next_) out to (void*) this + 32 bytes;
+  //
+  u8 padding1_[4];
 
   /** \brief The next ChangeLogBlock in the current stack.
    */

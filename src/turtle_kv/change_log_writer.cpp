@@ -46,7 +46,7 @@ auto ChangeLogWriter::Context::pop_buffer(BlockBuffer*& observed_head) noexcept 
   BlockBuffer* buffer = this->head_.exchange(nullptr);
   BlockBuffer* old_next = buffer ? buffer->swap_next(nullptr) : nullptr;
   if (old_next != nullptr) {
-    old_next->verify();
+    BATT_CHECK_OK(old_next->verify());
     this->head_.store(old_next);
   }
   observed_head = old_next;
@@ -58,7 +58,7 @@ auto ChangeLogWriter::Context::pop_buffer(BlockBuffer*& observed_head) noexcept 
 void ChangeLogWriter::Context::push_buffer(BlockBuffer*& buffer,
                                            BlockBuffer*& observed_head) noexcept
 {
-  buffer->verify();
+  BATT_CHECK_OK(buffer->verify());
   for (;;) {
     buffer->set_next(observed_head);
     if (this->head_.compare_exchange_weak(observed_head, buffer)) {

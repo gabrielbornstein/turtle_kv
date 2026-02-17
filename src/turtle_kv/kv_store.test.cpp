@@ -563,7 +563,7 @@ TEST_F(KVStoreTest, ChangeLogRecovery)
     // TODO: [Gabe Bornstein 2/4/26] Investigate why verify is failing. It fails as soon as
     // ChangeLogBlock is recovered.
     //
-    // block->verify();
+    // ASSERT_TRUE(block->verify().ok());
     VLOG(1) << "Reading block " << i << " with owner_id() == " << block->owner_id()
             << ", and block_size() == " << block->block_size();
     ASSERT_NE(block->owner_id(), 0);

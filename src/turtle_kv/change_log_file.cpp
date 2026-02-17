@@ -279,6 +279,7 @@ ChangeLogFile::read_blocks_into_vector()
   std::vector<boost::intrusive_ptr<ChangeLogBlock>> blocks;
   batt::Status read_blocks_status = this->read_blocks([&](ChangeLogBlock* block) -> batt::Status {
     BATT_CHECK_EQ(block->ref_count(), 1);
+
     // If block size is zero, block has not been initialized. Stop reading here.
     //
     if (block->block_size() == 0) {
@@ -316,6 +317,8 @@ auto ChangeLogFile::append(batt::Grant& grant, batt::SmallVecBase<ConstBuffer>& 
     auto data_slice = batt::as_slice(data.data(), std::min(data.size(), this->max_batch_size_));
 
     StatusOr<i32> n_written = batt::Task::await<StatusOr<i32>>([&](auto&& handler) {
+      // TODO: [Gabe Bornstein 2/17/25] Call verify somewhere around here...
+      //
       this->file_.async_write_some(file_offset, data_slice, BATT_FORWARD(handler));
     });
 
