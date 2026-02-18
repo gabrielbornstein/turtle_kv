@@ -110,6 +110,13 @@ class MemTable : public batt::RefCounted<MemTable>
    */
   static constexpr u64 kDeadMagicNum = 0xc910d14e24d0a51aull;
 
+  /** \brief The number of new CacheLogBlock objects to allocate between updates to the PageCache
+   * external allocation.  This config option trades overhead for accuracy; lower values favor
+   * tighter (more accurate) tracking of cache space to the actual memory footprint of the MemTable,
+   * whereas higher values favor lower overhead per MemTable update.
+   */
+  static constexpr usize kBlocksPerExternalCacheAllocUpdate = 128;
+
   //+++++++++++-+-+--+----- --- -- -  -  -   -
 
   static constexpr u64 first_id()
@@ -143,6 +150,9 @@ class MemTable : public batt::RefCounted<MemTable>
     return id - 0x10000;
   }
 
+  /** \brief Returns an integer indicating the position (starting at 0) of MemTable id `id` in the
+   * sequence of all ids.
+   */
   static u64 ordinal_from_id(u64 id)
   {
     return (id - Self::first_id()) >> 16;
@@ -307,8 +317,17 @@ class MemTable : public batt::RefCounted<MemTable>
 
   i64 calculate_max_byte_size() const;
 
+  /** \brief Returns the number of bytes to claim (if positive) or release (negative)
+   * as external allocation from the PageCache.
+   *
+   * This function only calculates a non-zero value every `kBlocksPerExternalCacheAllocUpdate` new
+   * ChangeLogBlocks added to the MemTable.
+   */
   i64 update_external_cache_alloc();
 
+  /** \brief Increases or decreases the PageCache external alloc by the specified number of bytes
+   * `cache_alloc_delta`.
+   */
   void handle_external_cache_alloc(i64 cache_alloc_delta);
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
@@ -366,16 +385,32 @@ class MemTable : public batt::RefCounted<MemTable>
 
 #endif  // TURTLE_KV_BIG_MEM_TABLES
 
+  // The total size (in bytes) of all change log block buffers owned by this MemTable.
+  //
   usize block_size_total_ = 0;
 
+  // The total size (in bytes) of all PageCache external allocations to account for the ART index.
+  //
   i64 art_reserved_size_ = 0;
 
+  // The number of calls to update_external_cache_alloc() since we actually updated the PageCache
+  // external allocation.
+  //
   usize since_last_cache_alloc_update_ = 0;
 
+  // The total size (in bytes) of change log block buffers added to this since the last PageCache
+  // external allocation.
+  //
   usize block_size_last_update_ = 0;
 
+  // Set to true when some thread calling MemTable::put is currently updating the external cache
+  // alloc; if a thread tries to update the alloc and finds this is true, it will skip the update.
+  //
   bool cache_alloc_in_progress_ = false;
 
+  // Space in the PageCache that is allocated to cover the footprint of this MemTable, in order to
+  // bound the overall memory footprint of a KVStore.
+  //
   llfs::PageCache::ExternalAllocation total_cache_alloc_;
 };
 
@@ -422,7 +457,8 @@ void MemTable::StorageImpl::store_data(usize n_bytes, SerializeFn&& serialize_fn
 #if TURTLE_KV_BIG_MEM_TABLES
 
 //=#=#==#==#===============+=+=+=+=++=++++++++++++++-++-+--+-+----+---------------
-/** \brief
+/** \brief Produces a series of compacted key/value runs, each of which is limited to a maximum
+ * size, and can be applied to a checkpoint tree using batch update.
  */
 class MemTable::BatchCompactor
 {
@@ -445,7 +481,7 @@ class MemTable::BatchCompactor
    */
   bool has_next() const;
 
-  /** \brief
+  /** \brief Collects, consumes, and returns the next batch of compacted updates.
    */
   MergeCompactor::ResultSet</*decay_to_items=*/false> consume_next() noexcept;
 

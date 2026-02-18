@@ -588,11 +588,11 @@ Status KVStore::put(const KeyView& key, const ValueView& value) noexcept /*overr
 
     // Limit the number of deltas that can build up.
     //
-    const usize limit =
+    const usize max_deltas_size =
         this->runtime_options_.use_big_mem_tables ? 2 : (this->checkpoint_distance_.load() * 2);
 
-    BATT_REQUIRE_OK(this->deltas_size_->await_true([this, limit](usize n) {
-      return n <= limit;
+    BATT_REQUIRE_OK(this->deltas_size_->await_true([this, max_deltas_size](usize n) {
+      return n <= max_deltas_size;
     }));
 
 #if TURTLE_KV_PROFILE_UPDATES
@@ -986,9 +986,10 @@ void KVStore::info_task_main() noexcept
 //
 void KVStore::memtable_compact_thread_main(usize thread_i)
 {
-  if (TURTLE_KV_BIG_MEM_TABLES) {
-    BATT_CHECK_EQ(thread_i, 0);
-  }
+#if TURTLE_KV_BIG_MEM_TABLES
+  BATT_CHECK_EQ(thread_i, 0)
+      << "There can only be one MemTable compaction thread if TURTLE_KV_BIG_MEM_TABLES is enabled";
+#endif
 
   Status status = [this, thread_i]() -> Status {
     for (;;) {
@@ -1004,6 +1005,9 @@ void KVStore::memtable_compact_thread_main(usize thread_i)
       BATT_REQUIRE_OK(this->compact_memtable(
           std::move(*mem_table),
           [this, this_delta_batch_id](std::unique_ptr<DeltaBatch> delta_batch) -> Status {
+            // TODO [tastolfi 2026-02-18] Remove this spin-loop once "no Big MemTables" is
+            //  removed (and we can only have a single memtable compaction thread).
+            //
             while (this->next_delta_batch_to_push_.load() != this_delta_batch_id) {
               batt::spin_yield();
             }

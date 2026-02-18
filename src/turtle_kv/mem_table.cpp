@@ -431,11 +431,15 @@ Slice<const EditView> MemTable::compacted_edits_slice_impl() const
 //
 i64 MemTable::update_external_cache_alloc()
 {
+  // The number of bytes to claim (if positive) or release (negative) as external allocation
+  // from the PageCache; the return value of this function.
+  //
   i64 cache_alloc_delta = 0;
 
   ++this->since_last_cache_alloc_update_;
 
-  if (!this->cache_alloc_in_progress_ && this->since_last_cache_alloc_update_ >= 128) {
+  if (!this->cache_alloc_in_progress_ &&
+      this->since_last_cache_alloc_update_ >= MemTable::kBlocksPerExternalCacheAllocUpdate) {
     this->cache_alloc_in_progress_ = true;
     this->since_last_cache_alloc_update_ = 0;
 
