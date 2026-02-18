@@ -6,6 +6,7 @@
 #include <turtle_kv/core/key_view.hpp>
 #include <turtle_kv/core/packed_key_value.hpp>
 
+#include <turtle_kv/util/buffer_bounds_checker.hpp>
 #include <turtle_kv/util/page_buffers.hpp>
 
 #include <turtle_kv/import/buffer.hpp>
@@ -623,29 +624,6 @@ template <typename ItemsRangeT>
 
   return plan;
 }
-
-//=#=#==#==#===============+=+=+=+=++=++++++++++++++-++-+--+-+----+---------------
-//
-struct BufferBoundsChecker {
-  MutableBuffer buffer;
-
-  const void* buffer_begin() const
-  {
-    return this->buffer.data();
-  }
-
-  const void* buffer_end() const
-  {
-    return advance_pointer(this->buffer.data(), this->buffer.size());
-  }
-
-  template <typename T>
-  bool contains(const T* ptr) const
-  {
-    return ((const void*)(ptr + 0) >= this->buffer_begin()) &&  //
-           ((const void*)(ptr + 1) <= this->buffer_end());
-  }
-};
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 // NOTE: `buffer` is the *entire* page buffer, including 64-byte llfs::PackedPageHeader.
