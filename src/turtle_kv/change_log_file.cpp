@@ -253,7 +253,6 @@ ChangeLogFile::ReadLock ChangeLogFile::set_block_range_in_use(
   //
   {
     this->upper_bound_.fetch_add(blocks_written);
-
     BATT_CHECK_EQ(grant.size(), blocks_written);
 
     batt::Grant now_in_use =
@@ -273,9 +272,6 @@ ChangeLogFile::ReadLock ChangeLogFile::set_block_range_in_use(
 batt::StatusOr<std::vector<boost::intrusive_ptr<ChangeLogBlock>>>
 ChangeLogFile::read_blocks_into_vector()
 {
-  // TODO: [Gabe Bornstein 1/21/26] read_blocks_into_vector is responsible for calling remove_ref
-  // and freeing mem of ChangeLogBlock if we aren't saving it.
-  //
   std::vector<boost::intrusive_ptr<ChangeLogBlock>> blocks;
   batt::Status read_blocks_status = this->read_blocks([&](ChangeLogBlock* block) -> batt::Status {
     BATT_CHECK_EQ(block->ref_count(), 1);
@@ -317,8 +313,6 @@ auto ChangeLogFile::append(batt::Grant& grant, batt::SmallVecBase<ConstBuffer>& 
     auto data_slice = batt::as_slice(data.data(), std::min(data.size(), this->max_batch_size_));
 
     StatusOr<i32> n_written = batt::Task::await<StatusOr<i32>>([&](auto&& handler) {
-      // TODO: [Gabe Bornstein 2/17/25] Call verify somewhere around here...
-      //
       this->file_.async_write_some(file_offset, data_slice, BATT_FORWARD(handler));
     });
 
@@ -357,7 +351,9 @@ auto ChangeLogFile::append(batt::Grant& grant, batt::SmallVecBase<ConstBuffer>& 
 
   auto block_range = Interval<i64>{append_lower_bound, append_upper_bound};
 
-  return {this->set_block_range_in_use(grant, block_range)};
+  ChangeLogFile::ReadLock read_lock = this->set_block_range_in_use(grant, block_range);
+
+  return {std::move(read_lock)};
 }
 
 }  // namespace turtle_kv

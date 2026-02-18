@@ -131,10 +131,13 @@ class ChangeLogFile
   // return types?
   //
   /** \brief Read over all the blocks currently in the ChangeLogFile, calling process_block for each
-   * block. process_block is responsible for determining when to stop reading blocks, and what to do
+   * block.
+   * process_block is responsible for determining when to stop reading blocks, and what to do
    * with each recovered block.
+   * Ownership of the ChangeLogBlock's memory is transferred to `process_block`.
+   * `process_block` must free the block's memory if it plans to do nothing with it.
    */
-  template <typename SerializeFn = void(ChangeLogBlock*)>
+  template <typename SerializeFn = batt::Status(ChangeLogBlock*)>
   batt::Status read_blocks(SerializeFn process_block);
 
   StatusOr<ReadLock> append(batt::Grant& grant, batt::SmallVecBase<ConstBuffer>& data) noexcept;
@@ -255,15 +258,17 @@ batt::Status ChangeLogFile::read_blocks(SerializeFn process_block)
 
     ChangeLogBlock* block = reinterpret_cast<ChangeLogBlock*>(block_memory);
 
-    // TODO: [Gabe Bornstein 2/4/26] Investigate why verify is failing.
-    //
-    // block->verify();
-
     // Create MutableBuffer for reading from file
     //
-    batt::MutableBuffer block_buffer{block_memory, static_cast<size_t>(this->config_.block_size)};
+    batt::MutableBuffer block_buffer{block_memory, static_cast<usize>(this->config_.block_size)};
 
     status = this->file_.read_all(curr_file_offset, block_buffer);
+
+    if (!block->verify().ok()) {
+      // Break when we read an invalid block or uninitialized block.
+      //
+      break;
+    }
 
     // TODO: [Gabe Bornstein 2/17/26] Delay initializing ephemeral state and setting read_lock.
     // Neccessry for right now so that destructor checks pass.
@@ -277,17 +282,20 @@ batt::Status ChangeLogFile::read_blocks(SerializeFn process_block)
 
     Interval<i64> block_range{blocks_read, blocks_read + 1};
 
-    block->set_read_lock(set_block_range_in_use(block->get_grant(), block_range));
+    block->set_read_lock(this->set_block_range_in_use(block->get_grant(), block_range));
 
-    block->set_ref_count(1);
-
-    // process_block is responsible for determining when to stop reading. Usually, break once we've
-    // read a block that isn't valid or if we've reached the end of the file.
+    // ref_count is 2 after reading from the change log. We want to initialize it to 1.
     //
-    if (!process_block(block).ok()) {
+    block->set_ref_count(1);
+    // `process_block` is responsible for determining when to stop reading. Usually, break once
+    // we've read a block that isn't valid or if we've reached the end of the file.
+    //
+    batt::Status process_status = process_block(block);
+    if (process_status == batt::StatusCode::kLoopBreak) {
       break;
+    } else if (!process_status.ok()) {
+      return process_status;
     }
-
     ++blocks_read;
   }
   return batt::OkStatus();

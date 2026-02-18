@@ -47,14 +47,13 @@ namespace turtle_kv {
     , slot_count_{0}
     , space_{BATT_CHECKED_CAST(u16,
                                this->block_size_ - (sizeof(ChangeLogBlock) + sizeof(SlotInfo)))}
+    , ref_count_{1}
     , next_{nullptr}
     , xxh3_checksum_{0}
     , xxh3_seed_{0}
 {
   this->init_ephemeral_state(std::move(grant));
 
-  // TODO: [Gabe Bornstein 1/30/26] Do we need to initialize these things when recovering from disk?
-  //
   this->slots_rbegin()->offset = sizeof(ChangeLogBlock);
 
   this->check_buffer_invariant();

@@ -288,6 +288,7 @@ void ChangeLogWriter::writer_task_main() noexcept
       batt::SmallVec<ConstBuffer, 32> to_append;
       for (BlockBuffer* buffer : update_buffers) {
         BATT_CHECK_NOT_NULLPTR(buffer);
+        BATT_REQUIRE_OK(buffer->verify());
 
         total_bytes += buffer->slots_total_size();
         total_buffer_size += buffer->block_size();

@@ -279,7 +279,6 @@ class ChangeLogBlock
   }
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
-
   /** \brief Initialized to (int)this XOR kMagic while this object is valid; set to kExpired when
    * it is destructed.
    */
