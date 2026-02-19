@@ -53,8 +53,8 @@ class ChangeLogBlock
    */
   void operator delete(void* ptr) noexcept = delete;
 
-  /** \brief Allocates and returns a pointer of the specifed size aligned to the ChangeLogBlock
-   * default by alignment.
+  /** \brief Allocates and returns a pointer of the specifed size aligned to
+   * ChangeLogBlock::kDefaultAlign bytes.
    */
   static void* allocate_aligned(usize n_bytes) noexcept;
 
@@ -84,12 +84,12 @@ class ChangeLogBlock
    */
   void remove_ref(i32 count) noexcept;
 
-  i32 ref_count() noexcept
+  i32 ref_count() const noexcept
   {
     return this->ref_count_;
   }
 
-  void set_ref_count(i64 ref_count = 1)
+  void set_ref_count(i64 ref_count)
   {
     this->ref_count_.store(ref_count);
   }

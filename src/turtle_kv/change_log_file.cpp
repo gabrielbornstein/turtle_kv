@@ -278,12 +278,12 @@ ChangeLogFile::read_blocks_into_vector()
       // Need to free memory of untracked block here otherwise we will have a memory leak.
       //
       block->remove_ref(1);
-      return batt::StatusCode::kOutOfRange;
+      return batt::StatusCode::kLoopBreak;
     }
     // TODO: [Gabe Bornstein 1/28/26] Decide if we want to keep block, decrement ref count if not.
     //
 
-    blocks.push_back(boost::intrusive_ptr<ChangeLogBlock>{block, false});
+    blocks.emplace_back(boost::intrusive_ptr<ChangeLogBlock>{block, false});
 
     VLOG(3) << "ChangeLogBlock->block_size() == " << blocks.back()->block_size()
             << " owner_id() == " << blocks.back()->owner_id();
