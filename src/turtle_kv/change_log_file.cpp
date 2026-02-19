@@ -148,9 +148,6 @@ ChangeLogFile::~ChangeLogFile() noexcept
 {
   Interval<i64> block_range = this->active_blocks();
 
-  // TODO: [Gabe Bornstein 2/4/26] Do we need to check only active blocks, or all blocks in the
-  // ChangeLogFile?
-  //
   this->for_block_range(block_range, [](i64 block_i [[maybe_unused]], ReadLockCounter& counter) {
     BATT_CHECK_EQ(counter->load(), 0)
         << "Error when destructing ChangeLogFile, not all ReadLockCounter's are released.";
