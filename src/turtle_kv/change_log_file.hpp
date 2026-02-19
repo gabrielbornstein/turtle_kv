@@ -283,6 +283,7 @@ batt::Status ChangeLogFile::read_blocks(SerializeFn process_block)
     Interval<i64> block_range{blocks_read, blocks_read + 1};
 
     block->set_read_lock(this->set_block_range_in_use(block->get_grant(), block_range));
+    this->upper_bound_.fetch_add(block_range.size());
 
     // ref_count is 2 after reading from the change log. We want to initialize it to 1.
     //

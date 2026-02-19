@@ -249,7 +249,6 @@ ChangeLogFile::ReadLock ChangeLogFile::set_block_range_in_use(
   // Important: only do this after locking the range.
   //
   {
-    this->upper_bound_.fetch_add(blocks_written);
     BATT_CHECK_EQ(grant.size(), blocks_written);
 
     batt::Grant now_in_use =
@@ -349,6 +348,7 @@ auto ChangeLogFile::append(batt::Grant& grant, batt::SmallVecBase<ConstBuffer>& 
   auto block_range = Interval<i64>{append_lower_bound, append_upper_bound};
 
   ChangeLogFile::ReadLock read_lock = this->set_block_range_in_use(grant, block_range);
+  this->upper_bound_.fetch_add(block_range.size());
 
   return {std::move(read_lock)};
 }
