@@ -248,6 +248,7 @@ class ChangeLogBlock
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
 
+  
   SlotInfo* slots_rbegin() noexcept
   {
     return (SlotInfo*)(advance_pointer((void*)this, this->block_size_)) - 1;
