@@ -285,6 +285,9 @@ class MemTable : public batt::RefCounted<MemTable>
 template <typename SerializeFn>
 void MemTable::StorageImpl::store_data(usize n_bytes, SerializeFn&& serialize_fn) noexcept
 {
+  // TODO: [Gabe Bornstein 2/23/26] Need to update the per kv_store instance value of next_offset by
+  // incrementing it with the value of n_bytes.
+  //
   this->status = batt::to_status(this->context.append_slot(
       this->mem_table.next_block_owner_id_,
       n_bytes,

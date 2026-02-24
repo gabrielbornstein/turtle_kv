@@ -96,6 +96,8 @@ MemTable::~MemTable() noexcept
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
+// TODO: [Gabe Bornstein 2/23/26] Return size of an edit here.
+//
 Status MemTable::put(ChangeLogWriter::Context& context,
                      const KeyView& key,
                      const ValueView& value) noexcept
@@ -110,6 +112,8 @@ Status MemTable::put(ChangeLogWriter::Context& context,
         storage,
         key,
         value,
+        // TODO: [Gabe Bornstein 2/23/26] Can we remove this fetch add?
+        //
         this->version_.fetch_add(1),
     };
 

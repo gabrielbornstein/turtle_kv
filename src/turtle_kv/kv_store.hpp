@@ -246,6 +246,12 @@ class KVStore : public Table
   //
   std::atomic<usize> checkpoint_distance_;
 
+  // The total number of bytes that have been written to the database so far. Used to identify the
+  // upper bound of the most recent edit, and the lower bound the of next edit. Uniquely identifies
+  // the location of each edit.
+  //
+  std::atomic<u64> next_offset_ = 0;
+
   absl::Mutex base_checkpoint_mutex_;
 
   std::unique_ptr<llfs::Volume> checkpoint_log_;

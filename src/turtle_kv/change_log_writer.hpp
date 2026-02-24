@@ -305,6 +305,10 @@ inline auto ChangeLogWriter::Context::append_slot(u64 owner_id,
                                                   const SerializeFn& serialize_fn) noexcept
     -> StatusOr<Index>
 {
+  // TODO: [Gabe Bornstein 2/23/26] Need to update the per kv_store instance value of next_offset by
+  // incrementing it with the value of byte_size. Maybe all ChangeLogWriters can have access to a
+  // reference of next_offset?
+  //
   Context& context = *this;
   ChangeLogWriter& writer = this->writer_;
 
