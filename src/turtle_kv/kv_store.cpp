@@ -1313,16 +1313,11 @@ Status KVStore::commit_checkpoint(std::unique_ptr<CheckpointJob>&& checkpoint_jo
 
         // Find the first delta MemTable on the stack that is *not* covered by the checkpoint.
         //  (deltas_ is in oldest-to-newest order)
-        //  TODO [tastolfi 2025-11-22] binary search?
         //
-        auto iter = old_state->deltas_.begin();
-        while (iter != old_state->deltas_.end()) {
-          const boost::intrusive_ptr<MemTable>& delta_mem_table = *iter;
-          if (delta_mem_table->max_batch_id() >= checkpoint_job->batch_id_upper_bound) {
-            break;
-          }
-          ++iter;
-        }
+        auto iter = std::lower_bound(old_state->deltas_.begin(),
+                                     old_state->deltas_.end(),
+                                     checkpoint_job,
+                                     OrderByBatchUpperBound{});
 
         // Copy over references to delta MemTables _newer_ than the checkpoint.
         //

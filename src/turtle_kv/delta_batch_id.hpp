@@ -88,4 +88,40 @@ inline bool operator==(const DeltaBatchId& l, const DeltaBatchId& r) noexcept
 BATT_TOTALLY_ORDERED((inline), DeltaBatchId, DeltaBatchId)
 BATT_EQUALITY_COMPARABLE((inline), DeltaBatchId, DeltaBatchId)
 
+//=#=#==#==#===============+=+=+=+=++=++++++++++++++-++-+--+-+----+---------------
+
+/** \brief Returns the passed `id`; allows different types to be compared via their "batch upper
+ * bounds" (see OrderByBatchUpperBound).
+ */
+inline DeltaBatchId get_batch_upper_bound(const DeltaBatchId& id)
+{
+  return id;
+}
+
+/** \brief Returns the batch upper bound of the object pointed to by ptr.
+ */
+template <typename T>
+inline DeltaBatchId get_batch_upper_bound(const std::unique_ptr<T>& ptr)
+{
+  return get_batch_upper_bound(*ptr);
+}
+
+/** \brief Returns the batch upper bound of the object pointed to by ptr.
+ */
+template <typename T>
+inline DeltaBatchId get_batch_upper_bound(const boost::intrusive_ptr<T>& ptr)
+{
+  return get_batch_upper_bound(*ptr);
+}
+
+/** \brief Comparison function (i.e. "less-than") that compares objects by their batch upper bound.
+ */
+struct OrderByBatchUpperBound {
+  template <typename L, typename R>
+  bool operator()(const L& l, const R& r) const
+  {
+    return get_batch_upper_bound(l) < get_batch_upper_bound(r);
+  }
+};
+
 }  // namespace turtle_kv

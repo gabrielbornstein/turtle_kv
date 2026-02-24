@@ -2,6 +2,7 @@
 
 #include <turtle_kv/checkpoint.hpp>
 #include <turtle_kv/checkpoint_log_events.hpp>
+#include <turtle_kv/delta_batch_id.hpp>
 #include <turtle_kv/packed_checkpoint.hpp>
 
 #include <turtle_kv/import/optional.hpp>
@@ -62,5 +63,12 @@ struct CheckpointJob {
 
   usize batch_count = 0;
 };
+
+/** \brief Returns the least-ordered DeltaBatchId *not* included in the passed checkpoint.
+ */
+inline DeltaBatchId get_batch_upper_bound(const CheckpointJob& job)
+{
+  return job.batch_id_upper_bound;
+}
 
 }  // namespace turtle_kv

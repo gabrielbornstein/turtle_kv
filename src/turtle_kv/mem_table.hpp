@@ -452,6 +452,13 @@ void MemTable::StorageImpl::store_data(usize n_bytes, SerializeFn&& serialize_fn
       }));
 }
 
+/** \brief Returns the greatest ordered DeltaBatchId included in the passed MemTable.
+ */
+inline DeltaBatchId get_batch_upper_bound(const MemTable& mem_table)
+{
+  return mem_table.max_batch_id();
+}
+
 // #=##=##=#==#=#==#===#+==#+==========+==+=+=+=+=+=++=+++=+++++=-++++=-+++++++++++
 
 #if TURTLE_KV_BIG_MEM_TABLES
