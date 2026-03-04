@@ -8,6 +8,7 @@
 #include <turtle_kv/file_utils.hpp>
 #include <turtle_kv/kv_store_scanner.hpp>
 #include <turtle_kv/page_file.hpp>
+#include <turtle_kv/raii_log.hpp>
 
 #include <turtle_kv/tree/filter_builder.hpp>
 #include <turtle_kv/tree/in_memory_node.hpp>
@@ -357,6 +358,7 @@ u64 query_page_loader_reset_every_n()
     , checkpoint_distance_{this->runtime_options_.initial_checkpoint_distance}
     , checkpoint_log_{std::move(checkpoint_log)}
     , current_epoch_{0}
+    , next_offset_{0}
     , state_{[&] {
       State* state = new State{};
       state->mem_table_ = this->create_mem_table(MemTable::first_id());
@@ -527,6 +529,7 @@ boost::intrusive_ptr<MemTable> KVStore::create_mem_table(u64 mem_table_id)
   boost::intrusive_ptr<MemTable> mem_table{new MemTable{
       this->page_cache(),
       this->metrics_,
+      this->next_offset_,
       /*max_bytes_per_batch=*/this->tree_options_.flush_size(),
       max_batches_per_mem_table,
       mem_table_id,
@@ -984,6 +987,10 @@ void KVStore::info_task_main() noexcept
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
+
+// TODO: [Gabe Bornstein 3/4/26] Update this so that there's a single thread, no thread_i, no spin
+// loop, no next_delta_batch_id
+//
 void KVStore::memtable_compact_thread_main(usize thread_i)
 {
 #if TURTLE_KV_BIG_MEM_TABLES
@@ -999,25 +1006,17 @@ void KVStore::memtable_compact_thread_main(usize thread_i)
       BATT_REQUIRE_OK(mem_table);
       BATT_CHECK_NOT_NULLPTR(*mem_table);
 
-      const u64 this_delta_batch_id = (**mem_table).id();
-      const u64 next_delta_batch_id = MemTable::next_id_for(this_delta_batch_id);
+      const u64 this_delta_batch_id = (**mem_table).upper_bound();
+
+      LOG(INFO) << "memtable_compact_thread_main() this_delta_batch_id: " << this_delta_batch_id;
 
       BATT_REQUIRE_OK(this->compact_memtable(
           std::move(*mem_table),
           [this, this_delta_batch_id](std::unique_ptr<DeltaBatch> delta_batch) -> Status {
-            // TODO [tastolfi 2026-02-18] Remove this spin-loop once "no Big MemTables" is
-            //  removed (and we can only have a single memtable compaction thread).
-            //
-            while (this->next_delta_batch_to_push_.load() != this_delta_batch_id) {
-              batt::spin_yield();
-            }
-
             BATT_REQUIRE_OK(this->checkpoint_update_channel_.write(std::move(delta_batch)));
 
             return OkStatus();
           }));
-
-      this->next_delta_batch_to_push_.store(next_delta_batch_id);
     }
   }();
 
@@ -1027,9 +1026,10 @@ void KVStore::memtable_compact_thread_main(usize thread_i)
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
 template <typename Fn>
-  requires std::invocable<Fn, std::unique_ptr<DeltaBatch>>
-Status KVStore::compact_memtable(boost::intrusive_ptr<MemTable>&& mem_table, Fn&& consume_fn)
+requires std::invocable<Fn, std::unique_ptr<DeltaBatch>> Status
+KVStore::compact_memtable(boost::intrusive_ptr<MemTable>&& mem_table, Fn&& consume_fn)
 {
+  RAII_Log logging{"KVStore::compact_memtable()"};
 #if TURTLE_KV_BIG_MEM_TABLES
 
   MemTable::BatchCompactor batch_compactor{*mem_table,
@@ -1127,6 +1127,7 @@ void KVStore::checkpoint_update_thread_main()
 StatusOr<std::unique_ptr<CheckpointJob>> KVStore::apply_batch_to_checkpoint(
     std::unique_ptr<DeltaBatch>&& delta_batch)
 {
+  RAII_Log logging{"KVStore::apply_batch_to_checkpoint()"};
 #if TURTLE_KV_BIG_MEM_TABLES
   const auto batch_id = delta_batch                                            //
                             ? Optional<DeltaBatchId>{delta_batch->batch_id()}  //
@@ -1244,6 +1245,7 @@ void KVStore::checkpoint_flush_thread_main()
 //
 Status KVStore::commit_checkpoint(std::unique_ptr<CheckpointJob>&& checkpoint_job)
 {
+  RAII_Log logging{"KVStore::commit_checkpoint()"};
   // Durably commit the checkpoint.
   //
   StatusOr<llfs::SlotRange> checkpoint_slot_range =

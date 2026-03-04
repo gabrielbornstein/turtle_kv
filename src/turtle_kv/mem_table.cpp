@@ -1,6 +1,8 @@
 #include <turtle_kv/mem_table.hpp>
 //
 
+#include <turtle_kv/raii_log.hpp>
+
 #include <turtle_kv/on_page_cache_overcommit.hpp>
 
 #include <turtle_kv/import/env.hpp>
@@ -28,12 +30,14 @@ namespace turtle_kv {
 //
 /*explicit*/ MemTable::MemTable(llfs::PageCache& page_cache,
                                 KVStoreMetrics& metrics,
+                                std::atomic<u64>& next_offset,
                                 usize max_bytes_per_batch,
                                 usize max_batch_count,
                                 Optional<u64> id) noexcept
     : page_cache_{page_cache}
     , metrics_{metrics}
     , art_metrics_{}
+    , next_offset_{next_offset}
     , is_finalized_{false}
     , hash_index_{}
     , ordered_index_{}
@@ -106,6 +110,8 @@ Status MemTable::put(ChangeLogWriter::Context& context,
 
     const i64 old_mem_table_size = this->current_byte_size_.fetch_add(item_size);
     const i64 new_mem_table_size = old_mem_table_size + item_size;
+
+    this->next_offset_.fetch_add(item_size);
 
     if (new_mem_table_size > this->max_byte_size_.load()) {
       this->current_byte_size_.fetch_sub(item_size);
@@ -251,7 +257,10 @@ usize MemTable::scan_keys_impl(const KeyView& min_key,
 //
 bool MemTable::finalize() noexcept
 {
+  RAII_Log logging{"MemTable::finalize()"};
   const bool prior_value = this->is_finalized_.exchange(true);
+  this->edit_offset_upper_bound_ = this->next_offset_.load();
+  LOG(INFO) << "edit_offset_upper_bound_: " << this->edit_offset_upper_bound_;
   return prior_value == false;
 }
 
@@ -550,12 +559,15 @@ i64 MemTable::calculate_max_byte_size() const
     : mem_table_{mem_table}
     , byte_size_limit_{byte_size_limit}
     , batch_count_{0}
-    , scanner_{[this]() -> auto& {
-                 BATT_CHECK(this->mem_table_.art_index_)
-                     << "BatchCompactor can only be used with art_index_! (no hash)";
-                 return *this->mem_table_.art_index_;
-               }(),
-               /*min_key=*/std::string_view{}}
+    , scanner_{[this]() -> auto& {BATT_CHECK(this->mem_table_.art_index_)
+                                  << "BatchCompactor can only be used with art_index_! (no hash)";
+return *this->mem_table_.art_index_;
+}
+(),
+    /*min_key=*/std::string_view
+{
+}
+}
 {
   BATT_CHECK(this->mem_table_.is_finalized());
 }

@@ -162,6 +162,7 @@ class MemTable : public batt::RefCounted<MemTable>
 
   explicit MemTable(llfs::PageCache& page_cache,
                     KVStoreMetrics& metrics,
+                    std::atomic<u64>& next_offset,
                     usize max_bytes_per_batch,
                     usize max_batch_count,
                     Optional<u64> id = None) noexcept;
@@ -176,6 +177,11 @@ class MemTable : public batt::RefCounted<MemTable>
   u64 id() const noexcept
   {
     return this->self_id_;
+  }
+
+  u64 upper_bound() const noexcept
+  {
+    return this->edit_offset_upper_bound_;
   }
 
   Status put(ChangeLogWriter::Context& context,
@@ -339,6 +345,17 @@ class MemTable : public batt::RefCounted<MemTable>
   KVStoreMetrics& metrics_;
 
   ARTBase::Metrics art_metrics_;
+
+  // A reference to the KVStore's next_offset. The KVStore owns this MemTable.
+  //
+  std::atomic<u64>& next_offset_;
+
+  // Exclusive upper bound offset of the last edit included in this mem table.
+  //
+  // TODO: [Gabe Bornstein 3/4/26] Consider making this optional<T>. It is only set when mem_table
+  // is finalized.
+  //
+  u64 edit_offset_upper_bound_;
 
   std::atomic<bool> is_finalized_;
 

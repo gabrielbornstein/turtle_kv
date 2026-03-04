@@ -201,8 +201,8 @@ class KVStore : public Table
   void info_task_main() noexcept;
 
   template <typename Fn>
-    requires std::invocable<Fn, std::unique_ptr<DeltaBatch>>
-  Status compact_memtable(boost::intrusive_ptr<MemTable>&& mem_table, Fn&& consume_fn);
+  requires std::invocable<Fn, std::unique_ptr<DeltaBatch>> Status
+  compact_memtable(boost::intrusive_ptr<MemTable>&& mem_table, Fn&& consume_fn);
 
   void memtable_compact_thread_main(usize thread_i);
 
@@ -258,6 +258,12 @@ class KVStore : public Table
 
   std::atomic<i64> current_epoch_;
 
+  // The total number of bytes that have been written to the database so far. Used to identify the
+  // upper bound of the most recent edit, and the lower bound the of next edit. Uniquely identifies
+  // the location of each edit.
+  //
+  std::atomic<u64> next_offset_;
+
   std::atomic<const State*> state_;
 
   batt::CpuCacheLineIsolated<batt::Watch<usize>> deltas_size_;
@@ -277,8 +283,6 @@ class KVStore : public Table
       memtable_compact_channels_storage_;
 
   Slice<PipelineChannel<boost::intrusive_ptr<MemTable>>> memtable_compact_channels_;
-
-  std::atomic<u64> next_delta_batch_to_push_{MemTable::first_id()};
 
   //----- --- -- -  -  -   -
   // Checkpoint Update State.

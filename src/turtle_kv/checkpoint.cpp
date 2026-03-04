@@ -1,6 +1,8 @@
 #include <turtle_kv/checkpoint.hpp>
 //
 
+#include <turtle_kv/raii_log.hpp>
+
 #include <turtle_kv/tree/in_memory_leaf.hpp>
 #include <turtle_kv/tree/in_memory_node.hpp>
 
@@ -169,6 +171,7 @@ StatusOr<Checkpoint> Checkpoint::flush_batch(batt::WorkerPool& worker_pool,
                                              std::unique_ptr<DeltaBatch>&& delta_batch,
                                              const batt::CancelToken& cancel_token) noexcept
 {
+  RAII_Log logging{"Checkpoint::flush_batch()"};
   BatchUpdate update{
       .context =
           BatchUpdateContext{
