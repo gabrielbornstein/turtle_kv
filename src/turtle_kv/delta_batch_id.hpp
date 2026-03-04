@@ -14,75 +14,48 @@ namespace turtle_kv {
 struct DeltaBatchId {
   using Self = DeltaBatchId;
 
-  //----- --- -- -  -  -   -
-
-  static constexpr i32 kBatchIndexBits = 16;
-  static constexpr i32 kMemTableIdBits = 64 - kBatchIndexBits;
-  static constexpr u64 kMaxDifference = (u64{1} << 63) - 1;
-  static constexpr u64 kBatchIndexMask = (u64{1} << 16) - 1;
-  static constexpr u64 kMemTableIdMask = ~kBatchIndexMask;
-
-  //----- --- -- -  -  -   -
-
-  static Self from_u64(u64 i)
-  {
-    return Self{
-        .value_ = i,
-    };
-  }
+  //+++++++++++-+-+--+----- --- -- -  -  -   --
 
   static Self min_value()
   {
-    return Self::from_u64(0);
+    return Self{0, 0};
   }
 
-  static Self from_mem_table_id(u64 mem_table_id, u64 batch_index = 0) noexcept
+  u64 edit_offset() const noexcept
   {
-    return Self{
-        .value_ = (mem_table_id & kMemTableIdMask) | (batch_index & kBatchIndexMask),
-    };
+    return this->edit_offset_;
   }
 
-  //+++++++++++-+-+--+----- --- -- -  -  -   --
-
-  u64 value_;
-
-  //+++++++++++-+-+--+----- --- -- -  -  -   -
-
-  u64 int_value() const noexcept
+  u64 index() const noexcept
   {
-    return this->value_;
-  }
-
-  u64 to_mem_table_id() const noexcept
-  {
-    return this->value_ & kMemTableIdMask;
-  }
-
-  u64 to_mem_table_ordinal() const noexcept
-  {
-    return this->value_ >> kBatchIndexBits;
+    return this->index_;
   }
 
   DeltaBatchId next() const noexcept
   {
-    return Self{this->value_ + 1};
+    return Self{this->edit_offset_, static_cast<u64>(this->index_ + 1)};
   }
+
+  //+++++++++++-+-+--+----- --- -- -  -  -   --
+
+  u64 edit_offset_;
+  u64 index_;
 };
 
 inline std::ostream& operator<<(std::ostream& out, const DeltaBatchId& t) noexcept
 {
-  return out << t.value_;
+  return out << t.edit_offset_ << ", " << t.index_;
 }
 
 inline bool operator<(const DeltaBatchId& l, const DeltaBatchId& r) noexcept
 {
-  return (r.value_ - (l.value_ + 1)) < DeltaBatchId::kMaxDifference;
+  return (l.edit_offset_ < r.edit_offset_) ||
+         (l.edit_offset_ == r.edit_offset_ && l.index_ < r.index_);
 }
 
 inline bool operator==(const DeltaBatchId& l, const DeltaBatchId& r) noexcept
 {
-  return l.value_ == r.value_;
+  return l.edit_offset_ == r.edit_offset_ && l.index_ == r.index_;
 }
 
 BATT_TOTALLY_ORDERED((inline), DeltaBatchId, DeltaBatchId)

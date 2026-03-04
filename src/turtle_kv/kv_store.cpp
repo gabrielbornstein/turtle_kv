@@ -362,7 +362,7 @@ u64 query_page_loader_reset_every_n()
     , state_{[&] {
       State* state = new State{};
       state->mem_table_ = this->create_mem_table(MemTable::first_id());
-      state->base_checkpoint_ = Checkpoint::empty_at_batch(DeltaBatchId::from_u64(0));
+      state->base_checkpoint_ = Checkpoint::empty_at_batch(DeltaBatchId::min_value());
       state->base_checkpoint_.tree()->lock();
 
       BATT_CHECK_EQ(state->use_count(), 0);
@@ -821,6 +821,7 @@ Status KVStore::remove(const KeyView& key) noexcept /*override*/
 //
 Status KVStore::update_checkpoint(const State* observed_state)
 {
+  RAII_Log logging{"KVStore::update_checkpoint()"};
 #if TURTLE_KV_PROFILE_UPDATES
   LatencyTimer memtable_create_timer{this->metrics_.put_memtable_create_latency};
 #endif
@@ -895,6 +896,9 @@ Status KVStore::update_checkpoint(const State* observed_state)
     LatencyTimer queue_push_timer{this->metrics_.put_memtable_queue_push_latency};
 #endif
 
+    // TODO: [Gabe Bornstein 3/4/26] Should only have one mem table channel at a time. Should need
+    // to calculate num mem tables.
+    //
     const usize i =
         MemTable::ordinal_from_id(this_mem_table_id) % this->memtable_compact_channels_.size();
 
@@ -968,7 +972,7 @@ using CheckpointEvent = llfs::PackedVariant<turtle_kv::PackedCheckpoint>;
   // Return empty checkpoint if no checkpoints are found
   //
   if (prev_checkpoint.second.batch_upper_bound == 0) {
-    return Checkpoint::empty_at_batch(DeltaBatchId::from_u64(0));
+    return Checkpoint::empty_at_batch(DeltaBatchId::min_value());
   }
 
   return turtle_kv::Checkpoint::recover(checkpoint_log_volume,
@@ -987,10 +991,6 @@ void KVStore::info_task_main() noexcept
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-
-// TODO: [Gabe Bornstein 3/4/26] Update this so that there's a single thread, no thread_i, no spin
-// loop, no next_delta_batch_id
-//
 void KVStore::memtable_compact_thread_main(usize thread_i)
 {
 #if TURTLE_KV_BIG_MEM_TABLES
@@ -1000,6 +1000,7 @@ void KVStore::memtable_compact_thread_main(usize thread_i)
 
   Status status = [this, thread_i]() -> Status {
     for (;;) {
+      RAII_Log logging{"The loop in KVStore::memtable_compact_thread_main()"};
       StatusOr<boost::intrusive_ptr<MemTable>> mem_table =
           this->memtable_compact_channels_[thread_i].read();
 
@@ -1040,10 +1041,17 @@ KVStore::compact_memtable(boost::intrusive_ptr<MemTable>&& mem_table, Fn&& consu
   // Handle empty MemTable case specially.
   //
   if (!has_next) {
-    auto empty_batch =
-        std::make_unique<DeltaBatch>(DeltaBatchId::from_mem_table_id(mem_table->id()),
-                                     batt::make_copy(mem_table),
-                                     DeltaBatch::ResultSet{});
+    // TODO: [Gabe Bornstein 3/4/26] CURRENTLY NOT WRITTEN ACCURATELY. Do we know
+    // mem_table->upper_bound() here? Need to replace mem_table->id() with
+    // mem_table->upper_bound()... but upper_bound is zero. Conflicts with a check in
+    // CheckpointGenerator::apply_batch() (batch->batch_id() <=
+    // this->base_checkpoint_.batch_upper_bound()
+    //
+    LOG(INFO) << "mem_table->id() == " << mem_table->id()
+              << ", mem_table->upper_bound() == " << mem_table->upper_bound();
+    auto empty_batch = std::make_unique<DeltaBatch>(DeltaBatchId{mem_table->id(), 0},
+                                                    batt::make_copy(mem_table),
+                                                    DeltaBatch::ResultSet{});
 
     return consume_fn(std::move(empty_batch));
   }
@@ -1051,7 +1059,7 @@ KVStore::compact_memtable(boost::intrusive_ptr<MemTable>&& mem_table, Fn&& consu
   while (has_next) {
     auto delta_batch = TURTLE_KV_COLLECT_LATENCY(
         this->metrics_.compact_batch_latency,
-        std::make_unique<DeltaBatch>(DeltaBatchId::from_mem_table_id(mem_table->id(), batch_index),
+        std::make_unique<DeltaBatch>(DeltaBatchId{mem_table->upper_bound(), batch_index},
                                      batt::make_copy(mem_table),
                                      batch_compactor.consume_next()));
     ++batch_index;
@@ -1100,6 +1108,7 @@ void KVStore::checkpoint_update_thread_main()
 {
   Status status = [this]() -> Status {
     for (;;) {
+      RAII_Log logging{"The loop in KVStore::checkpoint_update_thread_main()"};
       StatusOr<std::unique_ptr<DeltaBatch>> delta_batch = this->checkpoint_update_channel_.read();
       if (delta_batch.status() == batt::StatusCode::kPoke) {
         delta_batch = std::unique_ptr<DeltaBatch>{nullptr};
@@ -1231,6 +1240,7 @@ void KVStore::checkpoint_flush_thread_main()
 {
   Status status = [this]() -> Status {
     for (;;) {
+      RAII_Log logging{"The loop in KVStore::checkpoint_flush_thread_main()"};
       BATT_ASSIGN_OK_RESULT(std::unique_ptr<CheckpointJob> checkpoint_job,
                             this->checkpoint_flush_channel_.read());
 

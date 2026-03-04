@@ -256,7 +256,7 @@ class MemTable : public batt::RefCounted<MemTable>
    */
   DeltaBatchId max_batch_id() const
   {
-    return DeltaBatchId::from_mem_table_id(this->id(), this->max_batch_index());
+    return DeltaBatchId{this->upper_bound(), this->max_batch_index()};
   }
 
 #else

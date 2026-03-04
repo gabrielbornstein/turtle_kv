@@ -47,7 +47,11 @@ namespace turtle_kv {
       tree_root_id,
       std::make_shared<Subtree>(std::move(tree)),
       *height,
-      DeltaBatchId::from_u64(packed_checkpoint.batch_upper_bound),
+      // TODO: [Gabe Bornstein 3/4/26] packed_checkpoint.batch_upper_bound used to be {mem_table_id,
+      // index}. Now it's only {edit_offset_upper_bound}. Is that ok, or do we still need to include
+      // index? May need to update PackedCheckpoint serialization to also serialize batch index.
+      //
+      DeltaBatchId{packed_checkpoint.batch_upper_bound, 0},
       CheckpointLock::make_durable(std::move(slot_read_lock)),
   };
 }
@@ -69,7 +73,7 @@ Checkpoint::Checkpoint() noexcept
     : root_id_{llfs::PageId{llfs::kInvalidPageId}}
     , tree_{std::make_shared<Subtree>(Subtree::make_empty())}
     , tree_height_{0}
-    , batch_upper_bound_{0}
+    , batch_upper_bound_{DeltaBatchId{0, 0}}
     , checkpoint_lock_{CheckpointLock::make_durable_detached()}
 {
 }

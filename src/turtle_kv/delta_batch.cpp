@@ -51,7 +51,7 @@ void DeltaBatch::merge_compact_edits()
 //
 DeltaBatchId DeltaBatch::batch_id() const noexcept
 {
-  return DeltaBatchId::from_mem_table_id(this->mem_table_->id());
+  return DeltaBatchId{this->mem_table_->id(), 0};
 }
 
 #endif  // !TURTLE_KV_BIG_MEM_TABLES

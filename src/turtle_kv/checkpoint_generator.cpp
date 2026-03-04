@@ -68,6 +68,8 @@ StatusOr<usize> CheckpointGenerator::apply_batch(std::unique_ptr<DeltaBatch>&& b
                                                  llfs::PageCacheOvercommit& overcommit) noexcept
 {
   RAII_Log logging{"CheckpointGenerator::apply_batch()"};
+  LOG(INFO) << "Applying batch with batch.batch_id(): { upper_bound = "
+            << batch->batch_id().edit_offset() << ", index = " << batch->batch_id().index() << "}";
   VLOG(1) << "CheckpointGenerator::apply_batch()" << BATT_INSPECT(batch->debug_info());
 
   if (batch->batch_id() >= this->batch_id_upper_bound_) {
@@ -226,7 +228,11 @@ StatusOr<std::unique_ptr<CheckpointJob>> CheckpointGenerator::finalize_checkpoin
   checkpoint_job->packed_checkpoint.emplace(
       llfs::PackAsVariant<CheckpointLogEvent, PackedCheckpoint>{
           PackedCheckpoint{
-              .batch_upper_bound = this->base_checkpoint_.batch_upper_bound().int_value(),
+              // TODO: [Gabe Bornstein 3/4/26] Consider, we aren't including batch index in the
+              // serialization right now. Just upper_bound. Is that ok, or do we also need to
+              // serialize index?
+              //
+              .batch_upper_bound = this->base_checkpoint_.batch_upper_bound().edit_offset(),
               .new_tree_root = llfs::PackedPageId::from(this->base_checkpoint_.root_id()),
           },
       });
