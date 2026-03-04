@@ -55,7 +55,7 @@ class ChangeLogBlock
 
   /** \brief Allocates and returns a buffer of the specifed size.
    */
-  static ChangeLogBlock* allocate(u64 owner_id, batt::Grant&& grant, usize n_bytes) noexcept;
+  static ChangeLogBlock* allocate(batt::Grant&& grant, usize n_bytes) noexcept;
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
 
@@ -63,11 +63,6 @@ class ChangeLogBlock
   ChangeLogBlock& operator=(const ChangeLogBlock&) = delete;
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
-
-  u64 owner_id() const noexcept
-  {
-    return this->owner_id_;
-  }
 
   /** \brief Adds `count` references to this buffer.
    */
@@ -80,6 +75,16 @@ class ChangeLogBlock
   i32 ref_count() const noexcept
   {
     return this->ref_count_;
+  }
+
+  u64 lower_bound_offset()
+  {
+    return this->lower_bound_offset_;
+  }
+
+  u64 upper_bound_offset()
+  {
+    return this->lower_bound_offset_ + this->upper_bound_delta_;
   }
 
   usize slot_count() const noexcept
@@ -128,7 +133,7 @@ class ChangeLogBlock
    * end of the "ready" region, and assigns the given index (sequence number or logical timestamp)
    * to the data.
    */
-  void commit_slot(usize n_bytes) noexcept;
+  void commit_slot(usize n_bytes, u64 lower_bound) noexcept;
 
   /** \brief Returns the next ChangeLogBlock in the stack/linked-list (if any).
    */
@@ -209,7 +214,7 @@ class ChangeLogBlock
   /** \brief Constructs a new ChangeLogBlock; must only be called from (static)
    * ChangeLogBlock::allocate.
    */
-  explicit ChangeLogBlock(u64 owner_id, batt::Grant&& grant, usize block_size) noexcept;
+  explicit ChangeLogBlock(batt::Grant&& grant, usize block_size) noexcept;
 
   /** \brief Marks the ChangeLogBlock as expired; the Grant is released.
    */
@@ -254,9 +259,10 @@ class ChangeLogBlock
    */
   u64 magic_;
 
-  /** \brief The id of the MemTable that owns this block.
-   */
-  u64 owner_id_;  // TODO [tastolfi 2025-12-16] rename: GBID (global block id)
+  // The lowest offset of all edits in this ChangeLogBlock. Offset is the byte offset of all edits
+  // from the start of the database.
+  //
+  u64 lower_bound_offset_;  // TODO [tastolfi 2025-12-16] rename: GBID (global block id)
 
   /** \brief The total size of the block, including this object.
    */
@@ -270,6 +276,10 @@ class ChangeLogBlock
    */
   u16 space_;
 
+  // TODO: [Gabe Bornstein 2/25/26] Add a EditOffset range to track the total delta range of edits
+  // in this block. Should be the upper and lower bound union of edits stored in this block.
+  //
+
   // Pad the next field (this->ref_count_) out to (void*) this + 24 bytes;
   //
   u8 padding0_[2];
@@ -278,9 +288,10 @@ class ChangeLogBlock
    */
   std::atomic<i32> ref_count_;  // TODO [tastolfi 2025-12-16] move to ephemeral state
 
-  // Pad the next field (this->next_) out to (void*) this + 32 bytes;
+  // Difference between the edit with the lowest offset and the edit with the highest offset in the
+  // ChangeLogBlock. Offset is the byte offset of all edits from the start of the database.
   //
-  u8 padding1_[4];
+  u32 upper_bound_delta_;
 
   /** \brief The next ChangeLogBlock in the current stack.
    */

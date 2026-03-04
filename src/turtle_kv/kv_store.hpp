@@ -201,8 +201,8 @@ class KVStore : public Table
   void info_task_main() noexcept;
 
   template <typename Fn>
-    requires std::invocable<Fn, std::unique_ptr<DeltaBatch>>
-  Status compact_memtable(boost::intrusive_ptr<MemTable>&& mem_table, Fn&& consume_fn);
+  requires std::invocable<Fn, std::unique_ptr<DeltaBatch>> Status
+  compact_memtable(boost::intrusive_ptr<MemTable>&& mem_table, Fn&& consume_fn);
 
   void memtable_compact_thread_main(usize thread_i);
 
@@ -257,6 +257,14 @@ class KVStore : public Table
   ObjectThreadStorage<KVStore::ThreadContext>::ScopedSlot per_thread_;
 
   std::atomic<i64> current_epoch_;
+
+  // The total number of bytes that have been written to the database so far. Used to identify the
+  // upper bound of the most recent edit, and the lower bound the of next edit. Uniquely identifies
+  // the location of each edit.
+  //
+  std::atomic<u64> next_offset_;
+
+  u64 num_mem_tables_created;
 
   std::atomic<const State*> state_;
 

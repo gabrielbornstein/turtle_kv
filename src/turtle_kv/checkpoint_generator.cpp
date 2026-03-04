@@ -67,15 +67,19 @@ StatusOr<usize> CheckpointGenerator::apply_batch(std::unique_ptr<DeltaBatch>&& b
                                                  llfs::PageCacheOvercommit& overcommit) noexcept
 {
   VLOG(1) << "CheckpointGenerator::apply_batch()" << BATT_INSPECT(batch->debug_info());
-
+  LOG(INFO) << "batch->batch_id() == " << batch->batch_id()
+            << ", this->base_checkpoint_.batch_upper_bound() == "
+            << this->base_checkpoint_.batch_upper_bound();
   if (batch->batch_id() >= this->batch_id_upper_bound_) {
     this->batch_id_upper_bound_ = batch->batch_id().next();
     BATT_CHECK_LT(batch->batch_id(), this->batch_id_upper_bound_);
   }
 
+  // TODO: [Gabe Bornstein 2/26/26] Trying to compare delta_offsets and checkpoint upper_bounds
+  //
   // Skip unless base_checkpoint.rollup_slot_upper_bound() <= batch->slot_range.lower_bound
   //
-  if (batch->batch_id() <= this->base_checkpoint_.batch_upper_bound()) {
+  if (batch->batch_id() < this->base_checkpoint_.batch_upper_bound()) {
     LOG(INFO) << " -- Old batch; ignoring...";
     return {0u};
   }
@@ -102,6 +106,7 @@ StatusOr<usize> CheckpointGenerator::apply_batch(std::unique_ptr<DeltaBatch>&& b
     *this->cancel_token_.lock() = batt::None;
   });
 
+  LOG(INFO) << "In apply_batch(), flushing batch with id " << batch->batch_id();
   StatusOr<Checkpoint> new_checkpoint =
       this->base_checkpoint_.flush_batch(this->worker_pool_,
                                          *this->job_,

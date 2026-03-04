@@ -11,6 +11,9 @@
 
 namespace turtle_kv {
 
+// TODO: [Gabe Bornstein 3/2/26] Can we basically delete this? Just replace it with a struct that
+// has mem_table_upper_bound and an index?
+//
 struct DeltaBatchId {
   using Self = DeltaBatchId;
 
@@ -45,6 +48,13 @@ struct DeltaBatchId {
 
   //+++++++++++-+-+--+----- --- -- -  -  -   --
 
+  // TODO: [Gabe Bornstein 3/3/26] Is 48 bits enough for mem_table_id? Technically, it could be 64
+  // bits.
+  //
+  // The upper 48 bits are the mem_table_id that this batch is a part of. The lower 16 bits are the
+  // index of this batch. The index is relative to other batches in the MemTable with ID
+  // mem_table_id.
+  //
   u64 value_;
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
@@ -59,9 +69,9 @@ struct DeltaBatchId {
     return this->value_ & kMemTableIdMask;
   }
 
-  u64 to_mem_table_ordinal() const noexcept
+  u64 to_batch_index()
   {
-    return this->value_ >> kBatchIndexBits;
+    return this->value_ & kBatchIndexMask;
   }
 
   DeltaBatchId next() const noexcept

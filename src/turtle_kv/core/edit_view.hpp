@@ -95,6 +95,9 @@ struct EditView {
 
   KeyView key;
   ValueView value;
+  // TODO: [Gabe Bornstein 2/25/26] Consider, do we also need to start tracking the edit lower bound
+  // here? Maybe just in the packed edit?
+  //
 };
 
 // Assert the properties that make it safe to convert between EditView and ItemView by casting.

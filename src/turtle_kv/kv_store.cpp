@@ -357,6 +357,8 @@ u64 query_page_loader_reset_every_n()
     , checkpoint_distance_{this->runtime_options_.initial_checkpoint_distance}
     , checkpoint_log_{std::move(checkpoint_log)}
     , current_epoch_{0}
+    , next_offset_{0}
+    , num_mem_tables_created{0}
     , state_{[&] {
       State* state = new State{};
       state->mem_table_ = this->create_mem_table(MemTable::first_id());
@@ -527,6 +529,7 @@ boost::intrusive_ptr<MemTable> KVStore::create_mem_table(u64 mem_table_id)
   boost::intrusive_ptr<MemTable> mem_table{new MemTable{
       this->page_cache(),
       this->metrics_,
+      this->next_offset_,
       /*max_bytes_per_batch=*/this->tree_options_.flush_size(),
       max_batches_per_mem_table,
       mem_table_id,
@@ -604,7 +607,6 @@ Status KVStore::put(const KeyView& key, const ValueView& value) noexcept /*overr
     //
     return this->put(key, value);
   }
-
   return status;
 }
 
@@ -622,9 +624,7 @@ Status KVStore::force_checkpoint()
   boost::intrusive_ptr<const State> pinned_state{observed_state};
   boost::intrusive_ptr<MemTable> pinned_mem_table = observed_state->mem_table_;
   BATT_CHECK_GT(pinned_state->use_count(), 1);
-
   BATT_REQUIRE_OK(this->update_checkpoint(observed_state));
-
   BATT_REQUIRE_OK(this->deltas_size_->await_true([this](usize n) {
     return n < 2;
   }));
@@ -833,8 +833,15 @@ Status KVStore::update_checkpoint(const State* observed_state)
   BATT_CHECK_EQ(new_state->use_count(), 0);
   intrusive_ptr_add_ref(new_state);
   BATT_CHECK_EQ(new_state->use_count(), 1);
+  // TODO: [Gabe Bornstein 2/26/26] Need to re-do how we do id calculations since they're based on
+  // edit offsets
+  //
+  const u64 next_mem_table_id = this->next_offset_.load();
+  // this->next_delta_batch_to_push_.store(next_mem_table_id);
+  ++num_mem_tables_created;
 
-  const u64 next_mem_table_id = MemTable::next_id_for(old_mem_table->id());
+  LOG(INFO) << "update_checkpoint, next_mem_table_id == " << next_mem_table_id
+            << ", num_mem_tables_created == " << num_mem_tables_created;
   new_state->mem_table_ = this->create_mem_table(next_mem_table_id);
 
   for (;;) {
@@ -853,7 +860,6 @@ Status KVStore::update_checkpoint(const State* observed_state)
     new_state->deltas_ = observed_state->deltas_;
     new_state->deltas_.emplace_back(observed_state->mem_table_);
     new_state->base_checkpoint_ = observed_state->base_checkpoint_;
-
     // Try to swap our new state object for the current one.
     //
     if (this->state_.compare_exchange_weak(observed_state, new_state)) {
@@ -873,7 +879,6 @@ Status KVStore::update_checkpoint(const State* observed_state)
   auto on_scope_exit = batt::finally([&] {
     this->add_obsolete_state(observed_state);
   });
-
   // Finalize the old mem table and hand it off to be compacted, applied to checkpoint, etc.
   //
   const bool finalize_ok = old_mem_table->finalize();
@@ -882,18 +887,28 @@ Status KVStore::update_checkpoint(const State* observed_state)
   // Wait for any previous MemTables to be consumed by the compactor task.
   //
   const u64 this_mem_table_id = old_mem_table->id();
+  LOG(INFO) << "old_mem_table->id() == " << old_mem_table->id()
+            << ", this->next_mem_table_id_to_push_.load() == "
+            << this->next_mem_table_id_to_push_.load();
   while (this->next_mem_table_id_to_push_.load() != this_mem_table_id) {
+    // LOG(INFO) << "Spinning while this->next_mem_table_id_to_push_.load() != this_mem_table_id\n "
+    //              "next_mem_table_id_to_push_ == "
+    //           << this->next_mem_table_id_to_push_.load()
+    //           << ", this_mem_table_id == " << this_mem_table_id;
+    // TODO: [Gabe Bornstein] 2/26/26 Add a timeout here if we spin for too long.
+    //
+
     batt::spin_yield();
   }
-
   //----- --- -- -  -  -   -
   if (this->runtime_options_.use_threaded_checkpoint_pipeline) {
 #if TURTLE_KV_PROFILE_UPDATES
     LatencyTimer queue_push_timer{this->metrics_.put_memtable_queue_push_latency};
 #endif
-
-    const usize i =
-        MemTable::ordinal_from_id(this_mem_table_id) % this->memtable_compact_channels_.size();
+    // TODO: [Gabe Bornstein 2/26/26] Need to re-do how we do id calculations since they're based on
+    // edit offsets
+    //
+    const usize i = this->num_mem_tables_created % this->memtable_compact_channels_.size();
 
     BATT_REQUIRE_OK(this->memtable_compact_channels_[i].write(std::move(old_mem_table)));
 
@@ -917,7 +932,6 @@ Status KVStore::update_checkpoint(const State* observed_state)
   // thread who succeeded in the CAS loop above is allowed to do this.
   //
   this->next_mem_table_id_to_push_.store(next_mem_table_id);
-
   return OkStatus();
 }
 
@@ -999,8 +1013,19 @@ void KVStore::memtable_compact_thread_main(usize thread_i)
       BATT_REQUIRE_OK(mem_table);
       BATT_CHECK_NOT_NULLPTR(*mem_table);
 
+      // TODO: [Gabe Bornstein 3/2/26] Need to get rid of delta_batch_id. Likely replace it with
+      // mem_table_offset_upper_bound
+      //
       const u64 this_delta_batch_id = (**mem_table).id();
-      const u64 next_delta_batch_id = MemTable::next_id_for(this_delta_batch_id);
+      // TODO: [Gabe Bornstein 2/26/26] Replace delt_batch_id with an identifier that denotes
+      // which group it's in, and which index it is in the group.
+      //
+      // Kinda replace this with the upper_bound of a memtable edit offsets. All batches in a
+      // traunch should have the same MemTable.edit_offset_upper_bound
+      //
+      // const u64 next_delta_batch_id = MemTable::next_id_for(this_delta_batch_id);
+      // LOG(INFO) << "memtable_compact_thread_main, this_delta_batch_id == " << this_delta_batch_id
+      //           << ", next_delta_batch_id == " << next_delta_batch_id;
 
       BATT_REQUIRE_OK(this->compact_memtable(
           std::move(*mem_table),
@@ -1009,6 +1034,10 @@ void KVStore::memtable_compact_thread_main(usize thread_i)
             //  removed (and we can only have a single memtable compaction thread).
             //
             while (this->next_delta_batch_to_push_.load() != this_delta_batch_id) {
+              // LOG(INFO) << "Spinning because this->next_delta_batch_to_push_.load() != "
+              //              "this_delta_batch_id\n next_delta_batch_to_push_ == "
+              //           << this->next_delta_batch_to_push_.load()
+              //           << ", this_delta_batch_id == " << this_delta_batch_id;
               batt::spin_yield();
             }
 
@@ -1016,8 +1045,6 @@ void KVStore::memtable_compact_thread_main(usize thread_i)
 
             return OkStatus();
           }));
-
-      this->next_delta_batch_to_push_.store(next_delta_batch_id);
     }
   }();
 
@@ -1027,8 +1054,8 @@ void KVStore::memtable_compact_thread_main(usize thread_i)
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
 template <typename Fn>
-  requires std::invocable<Fn, std::unique_ptr<DeltaBatch>>
-Status KVStore::compact_memtable(boost::intrusive_ptr<MemTable>&& mem_table, Fn&& consume_fn)
+requires std::invocable<Fn, std::unique_ptr<DeltaBatch>> Status
+KVStore::compact_memtable(boost::intrusive_ptr<MemTable>&& mem_table, Fn&& consume_fn)
 {
 #if TURTLE_KV_BIG_MEM_TABLES
 
@@ -1049,12 +1076,20 @@ Status KVStore::compact_memtable(boost::intrusive_ptr<MemTable>&& mem_table, Fn&
   }
 
   while (has_next) {
+    // TODO: [Gabe Bornstein 3/3/26] I want to update the DeltaBatch here s.t. DeltaBatchId is the
+    // MemTable's edit_offset_upper_bound. This will enable us to pass the edit_offset_upper_bound
+    // to be the checkpoint.batch_upper_bound_ later when apply_batch_to_checkpoint -> apply_batch
+    // -> flush_batch is eventually called.
+    //
     auto delta_batch = TURTLE_KV_COLLECT_LATENCY(
         this->metrics_.compact_batch_latency,
         std::make_unique<DeltaBatch>(DeltaBatchId::from_mem_table_id(mem_table->id(), batch_index),
                                      batt::make_copy(mem_table),
                                      batch_compactor.consume_next()));
     ++batch_index;
+
+    LOG(INFO) << "compact_memtable(), delta_batch.id() == " << delta_batch->batch_id()
+              << ", batch_index == " << batch_index;
 
     this->metrics_.batch_count.add(1);
     this->metrics_.batch_edits_count.add(delta_batch->result_set_size());
@@ -1127,6 +1162,7 @@ void KVStore::checkpoint_update_thread_main()
 StatusOr<std::unique_ptr<CheckpointJob>> KVStore::apply_batch_to_checkpoint(
     std::unique_ptr<DeltaBatch>&& delta_batch)
 {
+  LOG(INFO) << "Entering apply_batch_to_checkpoint";
 #if TURTLE_KV_BIG_MEM_TABLES
   const auto batch_id = delta_batch                                            //
                             ? Optional<DeltaBatchId>{delta_batch->batch_id()}  //
@@ -1143,9 +1179,12 @@ StatusOr<std::unique_ptr<CheckpointJob>> KVStore::apply_batch_to_checkpoint(
   overcommit.allow(true);
   BATT_CHECK(!overcommit.is_triggered());
 
+  LOG(INFO) << "1 apply_batch_to_checkpoint";
   // A MemTable has filled up.
   //
   if (delta_batch) {
+    LOG(INFO) << "apply_batch_to_checkpoint, batch_id == " << batch_id;
+
     // Apply the finalized MemTable to the current checkpoint (in-memory).
     //
     StatusOr<usize> push_status = TURTLE_KV_COLLECT_LATENCY(
@@ -1153,9 +1192,15 @@ StatusOr<std::unique_ptr<CheckpointJob>> KVStore::apply_batch_to_checkpoint(
         this->checkpoint_generator_.apply_batch(std::move(delta_batch), overcommit));
 
     BATT_REQUIRE_OK(push_status);
+    LOG(INFO) << "*push_status == " << *push_status;
     BATT_CHECK_EQ(*push_status, 1);
 
     this->checkpoint_batch_count_ += 1;
+
+    // TODO: [Gabe Bornstein 3/3/26] Set offset_upper_bound here for mem_table.
+    //
+
+    // this->next_delta_batch_to_push_.store(this->next_offset_.load());
   }
 
   // If the batch count is below the checkpoint distance, we are done.

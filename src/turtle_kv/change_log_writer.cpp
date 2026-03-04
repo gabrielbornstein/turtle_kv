@@ -179,15 +179,13 @@ void ChangeLogWriter::remove_context(Context& context) noexcept
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-auto ChangeLogWriter::allocate_buffer(u64 owner_id) noexcept -> StatusOr<BlockBuffer*>
+auto ChangeLogWriter::allocate_buffer() noexcept -> StatusOr<BlockBuffer*>
 {
   BATT_ASSIGN_OK_RESULT(
       batt::Grant buffer_grant,
       this->change_log_->reserve_blocks(BlockCount{1}, batt::WaitForResource::kTrue));
 
-  return BlockBuffer::allocate(owner_id,
-                               std::move(buffer_grant),
-                               this->change_log_->config().block_size);
+  return BlockBuffer::allocate(std::move(buffer_grant), this->change_log_->config().block_size);
 }
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -

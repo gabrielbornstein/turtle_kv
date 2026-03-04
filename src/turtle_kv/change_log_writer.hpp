@@ -132,7 +132,7 @@ class ChangeLogWriter
      * this Context. \return the sequence number (index) of the newly formatted slot.
      */
     template <typename SerializeFn = void(BlockBuffer*, MutableBuffer buffer)>
-    StatusOr<Index> append_slot(u64 owner_id,
+    StatusOr<Index> append_slot(u64 lower_bound,
                                 usize byte_size,
                                 const SerializeFn& serialize_fn) noexcept;
 
@@ -255,7 +255,7 @@ class ChangeLogWriter
   /** \brief Allocates and returns a new BlockBuffer of the configured size.  This function may
    * block waiting to acquire Grant from the Volume (i.e. Volume::reserve).
    */
-  auto allocate_buffer(u64 owner_id) noexcept -> StatusOr<BlockBuffer*>;
+  auto allocate_buffer() noexcept -> StatusOr<BlockBuffer*>;
 
   /** \brief The background writer task; continuously polls all associated Contexts for new
    * data. When new data is found, it is merged in index-order and written in batches (as large
@@ -300,7 +300,7 @@ class ChangeLogWriter
 // #=##=##=#==#=#==#===#+==#+==========+==+=+=+=+=+=++=+++=+++++=-++++=-+++++++++++
 
 template <typename SerializeFn>
-inline auto ChangeLogWriter::Context::append_slot(u64 owner_id,
+inline auto ChangeLogWriter::Context::append_slot(u64 lower_bound,
                                                   usize byte_size,
                                                   const SerializeFn& serialize_fn) noexcept
     -> StatusOr<Index>
@@ -323,7 +323,7 @@ inline auto ChangeLogWriter::Context::append_slot(u64 owner_id,
     // If no buffer, allocate one.
     //
     if (no_buffer) {
-      BATT_ASSIGN_OK_RESULT(buffer, writer.allocate_buffer(owner_id));
+      BATT_ASSIGN_OK_RESULT(buffer, writer.allocate_buffer());
       writer.metrics_.block_alloc_count.add(1);
     }
     BATT_CHECK_NOT_NULLPTR(buffer);
@@ -355,7 +355,7 @@ inline auto ChangeLogWriter::Context::append_slot(u64 owner_id,
       //
       if (result.ok()) {
         const i64 slot_index = writer.next_index_.fetch_add(1);
-        buffer->commit_slot(/*n_bytes=*/*result);
+        buffer->commit_slot(/*n_bytes=*/*result, lower_bound);
         return slot_index;
 
       } else {
@@ -367,7 +367,6 @@ inline auto ChangeLogWriter::Context::append_slot(u64 owner_id,
     if (no_retry) {
       return result.status();
     }
-
     // Volume::format_slot only fails if there wasn't enough space; reset the buffer pointer and
     // retry (we will allocate a new buffer at the top of loop).
     //

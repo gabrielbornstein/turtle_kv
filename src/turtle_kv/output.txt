@@ -1,0 +1,4 @@
+(environment variable COR_VERSION not bound)
+version=0.18.2 (src=/home/gbornste/Projects/mps/turtle_kv/cor.yml)
+cor-pipx run --index-url https://gitlab.com/api/v4/projects/67547546/packages/pypi/simple --quiet --spec cor-toolkit==0.18.2 cor test --filter=*CheckpointRecovery*
+Error: "conanfile.py" not found in current working dir

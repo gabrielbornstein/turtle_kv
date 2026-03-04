@@ -182,6 +182,9 @@ TEST(KVStoreTest, ScanStressTest)
   batt::StatusOr<std::filesystem::path> root = turtle_kv::data_root();
   ASSERT_TRUE(root.ok());
 
+  LOG(INFO) << "root == " << root;
+  LOG(INFO) << "1";
+
   std::filesystem::path test_kv_store_dir = *root / "turtle_kv_Test" / "kv_scan_stress";
 
   const usize kNumKeys = 1 * 1000 * 1000;
@@ -193,7 +196,7 @@ TEST(KVStoreTest, ScanStressTest)
   RandomStringGenerator generate_key;
   SequentialStringGenerator generate_value{100};
   std::uniform_int_distribution<usize> pick_scan_len_log2{kMinScanLenLog2, kMaxScanLenLog2};
-
+  LOG(INFO) << "2";
   StdMapTable expected_table;
 
   KVStore::Config kv_store_config = KVStore::Config::with_default_values();
@@ -207,19 +210,19 @@ TEST(KVStoreTest, ScanStressTest)
   tree_options.set_leaf_size(1 * kMiB);
   tree_options.set_key_size_hint(24);
   tree_options.set_value_size_hint(10);
-
+  LOG(INFO) << "3";
   Status create_status = KVStore::create(test_kv_store_dir, kv_store_config, RemoveExisting{true});
-
+  LOG(INFO) << "4";
   ASSERT_TRUE(create_status.ok()) << BATT_INSPECT(create_status);
-
+  LOG(INFO) << "5";
   StatusOr<std::unique_ptr<KVStore>> open_result = KVStore::open(test_kv_store_dir, tree_options);
-
+  LOG(INFO) << "6";
   ASSERT_TRUE(open_result.ok()) << BATT_INSPECT(open_result.status());
-
+  LOG(INFO) << "7";
   KVStore& actual_table = **open_result;
 
   actual_table.set_checkpoint_distance(5);
-
+  LOG(INFO) << "8";
   // Keep a histogram of scans per scan length (log scale).
   //
   std::array<usize, kMaxScanLenLog2 + 1> hist;
@@ -229,7 +232,7 @@ TEST(KVStoreTest, ScanStressTest)
 
   for (usize i = 0; i < kNumKeys; ++i) {
     LOG_EVERY_N(INFO, kNumKeys / 10) << BATT_INSPECT(i) << BATT_INSPECT_RANGE(hist);
-
+    LOG(INFO) << "9";
     std::string key = generate_key(rng);
     std::string value = generate_value();
 
@@ -414,7 +417,9 @@ TEST_P(CheckpointTest, CheckpointRecovery)
     if (keys_since_checkpoint >= keys_per_checkpoint && this->num_checkpoints_to_create != 0) {
       keys_since_checkpoint = 0;
       ++num_checkpoints_created;
+
       BATT_CHECK_OK(actual_table.force_checkpoint());
+
       VLOG(2) << "Created " << num_checkpoints_created << " checkpoints";
       if (num_checkpoints_created == this->num_checkpoints_to_create) {
         break;

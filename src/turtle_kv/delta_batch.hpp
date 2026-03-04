@@ -142,12 +142,22 @@ class DeltaBatch
 
 #endif  // TURTLE_KV_BIG_MEM_TABLES
 
+  // A group of delta_batches that are part of the same mem table have the same
+  // mem_table->final_offset
+  //
+  // All the batches in the same mem_table need to be finalized before a checkpoint can be
+  // finalized. A traunch of batches has the same MemTable.edit_offset_upper_bound. The individual
+  // batch could track index of traunch for sanity checks.
+  //
   boost::intrusive_ptr<MemTable> mem_table_;
 
   /** \brief The merged/compacted edits from the log.
    */
   Optional<ResultSet> result_set_;
 
+  // Used to identify the last DeltaBatch in a group of delta batches that belong to the same
+  // MemTable.
+  //
   BoolStatus checkpoint_after_ = BoolStatus::kUnknown;
 };
 

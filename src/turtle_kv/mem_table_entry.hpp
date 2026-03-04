@@ -477,7 +477,6 @@ struct MemTableValueEntryInserter {
 
     this->storage.store_data(update_size, [&](u32 locator, const MutableBuffer& buffer) {
       this->stored_locator = locator;
-
       auto* header = place_first<PackedValueUpdate>(buffer.data());
 
       header->key_len = 0;
@@ -496,7 +495,6 @@ struct MemTableValueEntryInserter {
       p_entry->value_size_ = value_len;
       p_entry->locator_ = locator;
     });
-
     return OkStatus();
   }
 };

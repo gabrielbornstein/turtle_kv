@@ -11,32 +11,32 @@ namespace turtle_kv {
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-/*static*/ ChangeLogBlock* ChangeLogBlock::allocate(u64 owner_id,
-                                                    batt::Grant&& grant,
-                                                    usize n_bytes) noexcept
+/*static*/ ChangeLogBlock* ChangeLogBlock::allocate(batt::Grant&& grant, usize n_bytes) noexcept
 {
   BATT_CHECK_GE(n_bytes, Self::kMinSize);
 
   void* const memory = std::aligned_alloc(Self::kDefaultAlign, n_bytes);
   BATT_CHECK_NOT_NULLPTR(memory);
 
-  ChangeLogBlock* buffer = new (memory) ChangeLogBlock{owner_id, std::move(grant), n_bytes};
+  // TODO: [Gabe Bornstein 2/25/26] I don't think we actually know the lower_bound of the block
+  // until the first edit is added. Might have to delay initialization of this.
+  //
+  ChangeLogBlock* buffer = new (memory) ChangeLogBlock{std::move(grant), n_bytes};
 
   return buffer;
 }
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-/*explicit*/ ChangeLogBlock::ChangeLogBlock(u64 owner_id,
-                                            batt::Grant&& grant,
-                                            usize block_size) noexcept
+/*explicit*/ ChangeLogBlock::ChangeLogBlock(batt::Grant&& grant, usize block_size) noexcept
     : magic_{reinterpret_cast<u64>(this) ^ ChangeLogBlock::kMagic}
-    , owner_id_{owner_id}
+    , lower_bound_offset_{0}
     , block_size_{BATT_CHECKED_CAST(u16, block_size)}
     , slot_count_{0}
     , space_{BATT_CHECKED_CAST(u16,
                                this->block_size_ - (sizeof(ChangeLogBlock) + sizeof(SlotInfo)))}
     , ref_count_{1}
+    , upper_bound_delta_{0}
     , next_{nullptr}
     , xxh3_checksum_{0}
     , xxh3_seed_{0}
@@ -87,12 +87,20 @@ void ChangeLogBlock::remove_ref(i32 count) noexcept
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-void ChangeLogBlock::commit_slot(usize n_bytes) noexcept
+void ChangeLogBlock::commit_slot(usize n_bytes, u64 lower_bound) noexcept
 {
   BATT_CHECK_EQ(this->xxh3_seed_, 0);
   BATT_CHECK_GT(n_bytes, 0);
   BATT_CHECK_LE(n_bytes, this->space());
 
+  // TODO: [Gabe Bornstein 2/25/26] Are we guaranteed the first edit will have the min lower_bound?
+  // Or do we need to do min(lower_bound, this->lower_bound_offset_)?
+  //
+  if (this->slot_count_ == 0) {
+    LOG(INFO) << "Updating this->lower_bound_offset_ to " << lower_bound;
+    this->lower_bound_offset_ =
+        lower_bound;  // TODO: [Gabe Bornstein 2/25/26] Update to actual lower_bound_offset_ value
+  }
   // Need to add a new SlotInfo.  One SlotInfo is always pre-allocated at the end of
   // the available buffer, so it is valid to just back up the `slots_rend_` pointer.
   //

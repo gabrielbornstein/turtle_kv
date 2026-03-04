@@ -121,14 +121,14 @@ class MemTable : public batt::RefCounted<MemTable>
 
   static constexpr u64 first_id()
   {
-    return 0x10000;
+    return 0;
   }
 
-  static u64 next_id()
-  {
-    static std::atomic<u64> next{MemTable::first_id()};
-    return next.fetch_add(0x10000);
-  }
+  // static u64 next_id()
+  // {
+  //   static std::atomic<u64> next{MemTable::first_id()};
+  //   return next.fetch_add(0x10000);
+  // }
 
   static u64 batch_id_from(u64 id)
   {
@@ -140,28 +140,29 @@ class MemTable : public batt::RefCounted<MemTable>
     return id & u64{0xffff};
   }
 
-  static u64 next_id_for(u64 id)
-  {
-    return id + 0x10000;
-  }
+  // static u64 next_id_for(u64 id)
+  // {
+  //   return id + 0x10000;
+  // }
 
-  static u64 prev_id_for(u64 id)
-  {
-    return id - 0x10000;
-  }
+  // static u64 prev_id_for(u64 id)
+  // {
+  //   return id - 0x10000;
+  // }
 
   /** \brief Returns an integer indicating the position (starting at 0) of MemTable id `id` in the
    * sequence of all ids.
    */
-  static u64 ordinal_from_id(u64 id)
-  {
-    return (id - Self::first_id()) >> 16;
-  }
+  // static u64 ordinal_from_id(u64 id)
+  // {
+  //   return (id - Self::first_id()) >> 16;
+  // }
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
 
   explicit MemTable(llfs::PageCache& page_cache,
                     KVStoreMetrics& metrics,
+                    std::atomic<u64>& next_offset,
                     usize max_bytes_per_batch,
                     usize max_batch_count,
                     Optional<u64> id = None) noexcept;
@@ -298,11 +299,6 @@ class MemTable : public batt::RefCounted<MemTable>
   usize scan_keys_impl(const KeyView& min_key,
                        const Slice<std::pair<KeyView, ValueView>>& items_out) noexcept;
 
-  u64 get_next_block_owner_id() const noexcept
-  {
-    return this->self_id_ | (this->blocks_.size() & 0xffff);
-  }
-
   ConstBuffer fetch_slot(u32 locator) const noexcept;
 
 #if !TURTLE_KV_BIG_MEM_TABLES
@@ -338,6 +334,10 @@ class MemTable : public batt::RefCounted<MemTable>
 
   KVStoreMetrics& metrics_;
 
+  // A reference to the KVStore's next_offset. The KVStore owns this MemTable.
+  //
+  std::atomic<u64>& next_offset_;
+
   ARTBase::Metrics art_metrics_;
 
   std::atomic<bool> is_finalized_;
@@ -363,9 +363,15 @@ class MemTable : public batt::RefCounted<MemTable>
 
   std::atomic<i64> current_byte_size_;
 
+  // TODO: [Gabe Bornstein 2/27/26] Need to capture ending offset for MemTable once MemTable is
+  // finalized.
+  //
+
+  // This is the starting offset for when the mem table is initialized.
+  //
   u64 self_id_;
 
-  u64 next_block_owner_id_;
+  u64 edit_offset_upper_bound_;
 
   std::atomic<u32> version_;
 
@@ -422,12 +428,17 @@ template <typename SerializeFn>
 void MemTable::StorageImpl::store_data(usize n_bytes, SerializeFn&& serialize_fn) noexcept
 {
   this->status = batt::to_status(this->context.append_slot(
-      this->mem_table.next_block_owner_id_,
+      // Do I need to call .load()?
+      //
+      this->mem_table.next_offset_.load(),
       n_bytes,
       [&](ChangeLogWriter::BlockBuffer* buffer, const MutableBuffer& dst) {
         MemTable& mem_table = this->mem_table;
 
-        BATT_CHECK_EQ(MemTable::batch_id_from(buffer->owner_id()), mem_table.self_id_);
+        // TODO: [Gabe Bornstein 2/26/26] Need to re-do how we do id calculations since they're
+        // based on edit offsets
+        //
+        // BATT_CHECK_EQ(MemTable::batch_id_from(buffer->lower_bound_offset()), mem_table.self_id_);
 
         if (buffer->ref_count() == 1) {
           buffer->add_ref(1);
@@ -439,12 +450,16 @@ void MemTable::StorageImpl::store_data(usize n_bytes, SerializeFn&& serialize_fn
             mem_table.block_size_total_ += buffer->block_size();
             cache_alloc_delta = mem_table.update_external_cache_alloc();
             mem_table.blocks_.emplace_back(buffer);
-            mem_table.next_block_owner_id_ = mem_table.get_next_block_owner_id();
           }
           mem_table.handle_external_cache_alloc(cache_alloc_delta);
         }
 
-        const u32 block_id = MemTable::block_id_from(buffer->owner_id());
+        // TODO: [Gabe Bornstein 2/26/26] Need to re-do how we do id calculations since they're
+        // based on edit offsets
+        //
+        // const u32 block_id = MemTable::block_id_from(buffer->owner_id());
+        const u32 block_id = MemTable::block_id_from(buffer->lower_bound_offset());
+
         const u32 slot_index = buffer->slot_count();
         const u32 slot_locator = (block_id << 16) | (slot_index & 0xffff);
 

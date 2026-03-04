@@ -194,6 +194,8 @@ StatusOr<Checkpoint> Checkpoint::flush_batch(batt::WorkerPool& worker_pool,
       /*root_page_id=*/this->tree_->get_page_id(),
       batt::make_copy(this->tree_),
       /*tree_height=*/new_tree_height,
+      // TODO: [Gabe Bornstein 3/3/26] Is it valid to use a batch_id()?
+      //
       delta_batch->batch_id(),
       CheckpointLock::make_speculative(std::move(delta_batch),
                                        batt::make_copy(this->checkpoint_lock_)),

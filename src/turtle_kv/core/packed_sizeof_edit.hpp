@@ -32,6 +32,10 @@ struct PackedSizeOfEdit {
         //
         kPackedValueOpSize +  //
         value_size;
+
+    // TODO: [Gabe Bornstein 2/25/26] Consider adding size of EditOffset lowerbound to the packed
+    // size of edit here. Is it necessary? Should be enough bits to represent that max edit size.
+    //
   }
 
   template <typename T>
