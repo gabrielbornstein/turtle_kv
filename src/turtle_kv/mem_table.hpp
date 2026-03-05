@@ -295,6 +295,19 @@ class MemTable : public batt::RefCounted<MemTable>
 
     template <typename SerializeFn = void(u32 /*locator*/, const MutableBuffer&)>
     void store_data(usize n_bytes, SerializeFn&& serialize_fn) noexcept;
+
+    u32 locator_from_buffer(ChangeLogWriter::BlockBuffer* buffer)
+    {
+      // Lower 16 bits of buffer->owner_id.
+      //
+      const u32 block_id = MemTable::block_id_from(buffer->owner_id());
+      const u32 slot_index = buffer->slot_count();
+      // TODO: [Gabe Bornstein 3/5/26] Figure out how slot_locator is used. Add it somewhere
+      // outside of owner_id.
+      //
+
+      return (block_id << 16) | (slot_index & 0xffff);
+    }
   };
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
@@ -306,6 +319,11 @@ class MemTable : public batt::RefCounted<MemTable>
 
   u64 get_next_block_owner_id() const noexcept
   {
+    // TODO: [Gabe Bornstein 3/5/26] Update this to use edit_offset instead of mem_table->self_id_.
+    // I think we need to save the index_ of the block (blocks_.size()) in our ChangeLogBlock, along
+    // with edit_offset, unless index_ can be calculated from edit_offset. I think locator can be
+    // replaced with edit_offset.
+    //
     return this->self_id_ | (this->blocks_.size() & 0xffff);
   }
 
@@ -439,6 +457,8 @@ template <typename SerializeFn>
 void MemTable::StorageImpl::store_data(usize n_bytes, SerializeFn&& serialize_fn) noexcept
 {
   this->status = batt::to_status(this->context.append_slot(
+      // TODO: [Gabe Bornstein 3/5/26] Figure out how to replace this with an edit_offset.
+      //
       this->mem_table.next_block_owner_id_,
       n_bytes,
       [&](ChangeLogWriter::BlockBuffer* buffer, const MutableBuffer& dst) {
@@ -456,15 +476,17 @@ void MemTable::StorageImpl::store_data(usize n_bytes, SerializeFn&& serialize_fn
             mem_table.block_size_total_ += buffer->block_size();
             cache_alloc_delta = mem_table.update_external_cache_alloc();
             mem_table.blocks_.emplace_back(buffer);
+            // TODO: [Gabe Bornstein 3/5/26] Figure out how to replace this with an edit_offset.
+            //
             mem_table.next_block_owner_id_ = mem_table.get_next_block_owner_id();
           }
           mem_table.handle_external_cache_alloc(cache_alloc_delta);
         }
 
-        const u32 block_id = MemTable::block_id_from(buffer->owner_id());
-        const u32 slot_index = buffer->slot_count();
-        const u32 slot_locator = (block_id << 16) | (slot_index & 0xffff);
-
+        // TODO: [Gabe Bornstein 3/5/26] Figure out how slot_locator is used. Add it somewhere
+        // outside of owner_id.
+        //
+        const u32 slot_locator = 0 /* this->locator_from_buffer(buffer) */;
         serialize_fn(slot_locator, dst);
       }));
 }

@@ -1042,14 +1042,14 @@ KVStore::compact_memtable(boost::intrusive_ptr<MemTable>&& mem_table, Fn&& consu
   //
   if (!has_next) {
     // TODO: [Gabe Bornstein 3/4/26] CURRENTLY NOT WRITTEN ACCURATELY. Do we know
-    // mem_table->upper_bound() here? Need to replace mem_table->id() with
+    // mem_table->upper_bound() here? Need to replace "1" with
     // mem_table->upper_bound()... but upper_bound is zero. Conflicts with a check in
     // CheckpointGenerator::apply_batch() (batch->batch_id() <=
     // this->base_checkpoint_.batch_upper_bound()
     //
     LOG(INFO) << "mem_table->id() == " << mem_table->id()
               << ", mem_table->upper_bound() == " << mem_table->upper_bound();
-    auto empty_batch = std::make_unique<DeltaBatch>(DeltaBatchId{mem_table->id(), 0},
+    auto empty_batch = std::make_unique<DeltaBatch>(DeltaBatchId{1, 0},
                                                     batt::make_copy(mem_table),
                                                     DeltaBatch::ResultSet{});
 

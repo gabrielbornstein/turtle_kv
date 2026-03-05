@@ -46,9 +46,12 @@ namespace turtle_kv {
     , max_batch_count_{BATT_CHECKED_CAST(i64, max_batch_count)}
     , max_byte_size_{this->calculate_max_byte_size()}
     , current_byte_size_{0}
+    // TODO: [Gabe Bornstein 3/5/26] Figure out how to replace this with an edit_offset.
+    //
     , self_id_{id.or_else([&] {
       return MemTable::next_id();
-    })}
+    })}  // TODO: [Gabe Bornstein 3/5/26] Figure out how to replace this with an edit_offset.
+         //
     , next_block_owner_id_{this->get_next_block_owner_id()}
     , version_{0}
     , block_list_mutex_{}
@@ -264,178 +267,6 @@ bool MemTable::finalize() noexcept
   return prior_value == false;
 }
 
-#if !TURTLE_KV_BIG_MEM_TABLES
-
-//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
-//
-MergeCompactor::ResultSet</*decay_to_items=*/false> MemTable::compact() noexcept
-{
-  BATT_CHECK(this->is_finalized_);
-
-  for (;;) {
-    const u32 observed = this->compaction_state_.fetch_or(Self::kCompactionState_InProgress);
-    if (observed == Self::kCompactionState_Todo) {
-      break;
-    }
-    if (observed == Self::kCompactionState_Complete) {
-      return this->compacted_edits_;
-    }
-    BATT_CHECK_EQ(observed, Self::kCompactionState_InProgress);
-  }
-
-  auto on_scope_exit = batt::finally([&] {
-    const u32 locked_state = this->compaction_state_.fetch_or(kCompactionState_Complete);
-    BATT_CHECK_EQ(locked_state, Self::kCompactionState_InProgress);
-  });
-
-  std::vector<EditView> edits_out;
-
-  if (this->hash_index_) {
-    edits_out = this->compact_hash_index();
-  } else {
-    edits_out = this->compact_art_index();
-  }
-
-  this->compacted_edits_.append(std::move(edits_out));
-
-  return this->compacted_edits_;
-}
-
-//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
-//
-std::vector<EditView> MemTable::compact_hash_index()
-{
-  std::vector<EditView> edits_out;
-  usize total_keys = this->hash_index_->size();
-  edits_out.reserve(total_keys);
-
-  const auto value_from_entry = [this](const MemTableEntry& entry) {
-    ValueView value = entry.value_;
-    if (value.needs_combine()) {
-      ConstBuffer slot_buffer = this->fetch_slot(entry.locator_);
-      auto* packed_update = static_cast<const PackedValueUpdate*>(slot_buffer.data());
-      if (packed_update->key_len == 0) {
-        do {
-          slot_buffer = this->fetch_slot(packed_update->prev_locator);
-          packed_update = static_cast<const PackedValueUpdate*>(slot_buffer.data());
-
-          if (packed_update->key_len == 0) {
-            ConstBuffer value_buffer = slot_buffer + sizeof(PackedValueUpdate);
-
-            value = combine(value, ValueView::from_buffer(value_buffer));
-
-          } else {
-            ConstBuffer value_buffer =
-                slot_buffer + (sizeof(little_u16) + packed_update->key_len + sizeof(big_u32));
-
-            value = combine(value, ValueView::from_buffer(value_buffer));
-            break;
-          }
-
-        } while (value.needs_combine());
-      }
-      // else (key_len == 0) - the current revision is also the first; nothing else can be done.
-    }
-    return value;
-  };
-
-  if (this->ordered_index_) {
-    ART<void>::Scanner<ARTBase::Synchronized::kFalse> scanner{
-        *this->ordered_index_,
-        /*lower_bound_key=*/std::string_view{}};
-
-    while (!scanner.is_done()) {
-      const std::string_view& tmp_key = scanner.get_key();
-
-      const MemTableEntry* entry = this->hash_index_->unsynchronized_find_key(tmp_key);
-      BATT_CHECK_NOT_NULLPTR(entry);
-
-      edits_out.emplace_back(get_key(*entry), value_from_entry(*entry));
-
-      scanner.advance();
-    }
-
-  } else {
-    this->hash_index_->for_each(  //
-        [&](const MemTableEntry& entry) {
-          KeyView key = get_key(entry);
-          ValueView value = value_from_entry(entry);
-          edits_out.emplace_back(key, value);
-        });
-
-    std::sort(edits_out.begin(), edits_out.end(), KeyOrder{});
-  }
-
-  return edits_out;
-}
-
-//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
-//
-std::vector<EditView> MemTable::compact_art_index()
-{
-  std::vector<EditView> edits_out;
-
-  ART<MemTableValueEntry>::Scanner<ARTBase::Synchronized::kFalse,  //
-                                   /*kValuesOnly=*/true>
-      scanner{*this->art_index_,
-              /*min_key=*/std::string_view{}};
-
-  for (; !scanner.is_done(); scanner.advance()) {
-    const MemTableValueEntry& entry = scanner.get_value();
-    edits_out.emplace_back(entry.key_view(), entry.value_view());
-    //
-    // TODO [tastolfi 2025-07-24] compact merge-op values
-  }
-
-  return edits_out;
-}
-
-//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
-//
-Optional<Slice<const EditView>> MemTable::poll_compacted_edits() const
-{
-  if (this->compaction_state_.load() != Self::kCompactionState_Complete) {
-    return None;
-  }
-  return this->compacted_edits_slice_impl();
-}
-
-//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
-//
-Slice<const EditView> MemTable::await_compacted_edits() const
-{
-  while (this->compaction_state_.load() != Self::kCompactionState_Complete) {
-    continue;
-  }
-  return this->compacted_edits_slice_impl();
-}
-
-//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
-//
-Slice<const EditView> MemTable::compacted_edits_slice_impl() const
-{
-  MergeCompactor::ResultSet</*decay_to_items=*/false>::range_type flat_edits =
-      this->compacted_edits_.get();
-
-  Flatten<const Chunk<const EditView*>*, const EditView*> flat_edits_begin = flat_edits.begin();
-  Flatten<const Chunk<const EditView*>*, const EditView*> flat_edits_end = flat_edits.end();
-
-  const Chunk<const EditView*>* chunks_begin = flat_edits_begin.chunk_iter_;
-  const Chunk<const EditView*>* chunks_end = flat_edits_end.chunk_iter_;
-
-  const isize n_chunks = std::distance(chunks_begin, chunks_end);
-
-  if (n_chunks == 1) {
-    BATT_CHECK_EQ(flat_edits_begin.cached_chunk_.offset, 0);
-    return flat_edits_begin.cached_chunk_.items;
-  }
-
-  BATT_CHECK_EQ(n_chunks, 0);
-  return {};
-}
-
-#endif  // !TURTLE_KV_BIG_MEM_TABLES
-
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
 i64 MemTable::update_external_cache_alloc()
@@ -522,19 +353,6 @@ void MemTable::handle_external_cache_alloc(i64 cache_alloc_delta)
     BATT_CHECK_OK(alloc_to_release)
         << BATT_INSPECT(cache_alloc_delta) << BATT_INSPECT(this->total_cache_alloc_.size());
   }
-}
-
-//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
-//
-ConstBuffer MemTable::fetch_slot(u32 locator) const noexcept
-{
-  //
-  // MUST only be called once the MemTable is finalized.
-
-  const usize block_index = (locator >> 16);
-  const usize slot_index = (locator & 0xffff);
-
-  return this->blocks_[block_index]->get_slot(slot_index);
 }
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -

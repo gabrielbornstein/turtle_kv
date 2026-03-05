@@ -168,6 +168,9 @@ struct MemTableEntryInserter {
 
     BATT_REQUIRE_OK(this->update_table_size(table_size_delta));
 
+    // TODO: [Gabe Bornstein 3/5/26] Verify we correctly `combine` updates to a key that's already
+    // in the MemTable. We're no longer saving `base_locator` or `prev_locator` in header.
+    //
     this->storage.store_data(update_size, [&](u32 locator, const MutableBuffer& buffer) {
       this->stored_locator = locator;
 
@@ -179,6 +182,9 @@ struct MemTableEntryInserter {
       header->prev_locator = prev_locator;
       header->version = this->version;
 
+      // TODO: [Gabe Bornstein 3/5/26] This is ultimately where base_locator & prev_locator are
+      // used.
+      //
       auto* value_dst = place_next<char>(header, 1);
       std::memcpy(value_dst, this->value.data(), value_len);
       this->stored_value = ValueView::from_str(std::string_view{value_dst, value_len});
