@@ -33,13 +33,10 @@ struct PackedValueUpdate {
    */
   little_u16 revision;
 
-  /** \brief The locator of the first slot for this key in this MemTable/batch.
-   */
-  little_u32 base_locator;
-
-  /** \brief The locator of the slot for the previous version of this key.
-   */
-  little_u32 prev_locator;
+  // TODO: [Gabe Bornstein 3/5/26] Can we get rid of this padding? Without it, we don't properly
+  // store data.
+  //
+  little_u8 padding[8];
 
   /** \brief The (reader) version for this update.
    */
@@ -97,7 +94,6 @@ struct MemTableEntryInserter {
   // Outputs (set by store_insert or store_update).
 
   ValueView stored_value;
-  u32 stored_locator;
   bool inserted = false;
   const MemTableEntry* entry = nullptr;
 
@@ -128,9 +124,7 @@ struct MemTableEntryInserter {
 
     BATT_REQUIRE_OK(this->update_table_size(insert_size));
 
-    this->storage.store_data(insert_size, [&](u32 locator, const MutableBuffer& buffer) {
-      this->stored_locator = locator;
-
+    this->storage.store_data(insert_size, [&](const MutableBuffer& buffer) {
       auto* header_dst = place_first<little_u16>(buffer.data());
       *header_dst = key_len;
 
@@ -150,10 +144,7 @@ struct MemTableEntryInserter {
     return std::string_view{key_dst, key_len};
   }
 
-  Status store_update(const ValueView& prev_value,
-                      u32 revision,
-                      u32 base_locator,
-                      u32 prev_locator) noexcept
+  Status store_update(const ValueView& prev_value, u32 revision) noexcept
   {
     const usize value_len = this->value.size();
     const usize update_size = sizeof(PackedValueUpdate)  // header
@@ -171,20 +162,13 @@ struct MemTableEntryInserter {
     // TODO: [Gabe Bornstein 3/5/26] Verify we correctly `combine` updates to a key that's already
     // in the MemTable. We're no longer saving `base_locator` or `prev_locator` in header.
     //
-    this->storage.store_data(update_size, [&](u32 locator, const MutableBuffer& buffer) {
-      this->stored_locator = locator;
-
+    this->storage.store_data(update_size, [&](const MutableBuffer& buffer) {
       auto* header = place_first<PackedValueUpdate>(buffer.data());
 
       header->key_len = 0;
       header->revision = static_cast<u16>(revision);
-      header->base_locator = base_locator;
-      header->prev_locator = prev_locator;
       header->version = this->version;
 
-      // TODO: [Gabe Bornstein 3/5/26] This is ultimately where base_locator & prev_locator are
-      // used.
-      //
       auto* value_dst = place_next<char>(header, 1);
       std::memcpy(value_dst, this->value.data(), value_len);
       this->stored_value = ValueView::from_str(std::string_view{value_dst, value_len});
@@ -226,8 +210,6 @@ class MemTableEntry
   explicit MemTableEntry(MemTableEntryInserter<StorageT>& i) noexcept
       : key_{i.store_insert()}
       , value_{i.stored_value}
-      , locator_{i.stored_locator}
-      , base_locator_{this->locator_}
       , revision_{0}
   {
   }
@@ -240,8 +222,6 @@ class MemTableEntry
 
     this->key_ = *stored_key;
     this->value_ = i.stored_value;
-    this->locator_ = i.stored_locator;
-    this->base_locator_ = this->locator_;
     this->revision_ = 0;
 
     i.entry = this;
@@ -252,12 +232,10 @@ class MemTableEntry
   template <typename StorageT>
   Status update(MemTableEntryInserter<StorageT>& i) const noexcept
   {
-    BATT_REQUIRE_OK(
-        i.store_update(this->value_, this->revision_ + 1, this->base_locator_, this->locator_));
+    BATT_REQUIRE_OK(i.store_update(this->value_, this->revision_ + 1));
 
     this->revision_ += 1;
     this->value_ = i.stored_value;
-    this->locator_ = i.stored_locator;
 
     i.entry = this;
 
@@ -268,8 +246,6 @@ class MemTableEntry
 
   std::string_view key_;
   mutable ValueView value_;
-  mutable u32 locator_;
-  u32 base_locator_;
   mutable u32 revision_;
 
   u32 get_version() const
@@ -359,14 +335,10 @@ class MemTableValueEntry
   MemTableValueEntry(const MemTableValueEntry&) = default;
   MemTableValueEntry& operator=(const MemTableValueEntry&) = default;
 
-  explicit MemTableValueEntry(const char* key_data,
-                              const char* value_data,
-                              u32 value_size,
-                              u32 locator) noexcept
+  explicit MemTableValueEntry(const char* key_data, const char* value_data, u32 value_size) noexcept
       : key_data_{key_data}
       , value_data_{value_data}
       , value_size_{value_size}
-      , locator_{locator}
   {
   }
 
@@ -375,7 +347,6 @@ class MemTableValueEntry
   const char* key_data_;
   const char* value_data_;
   mutable u32 value_size_;
-  mutable u32 locator_;
 
   u32 get_version() const
   {
@@ -434,7 +405,6 @@ struct MemTableValueEntryInserter {
   // Outputs (set by store_insert or store_update).
 
   ValueView stored_value;
-  u32 stored_locator;
   bool inserted = false;
   const MemTableValueEntry* entry = nullptr;
 
@@ -450,9 +420,7 @@ struct MemTableValueEntryInserter {
                               + sizeof(big_u32)   // version-suffix
                               + value_len;        // value
 
-    this->storage.store_data(insert_size, [&](u32 locator, const MutableBuffer& buffer) {
-      this->stored_locator = locator;
-
+    this->storage.store_data(insert_size, [&](const MutableBuffer& buffer) {
       auto* header_dst = place_first<little_u16>(buffer.data());
       *header_dst = key_len;
 
@@ -466,8 +434,7 @@ struct MemTableValueEntryInserter {
       std::memcpy(value_dst, this->value.data(), value_len);
       this->stored_value = ValueView::from_str(std::string_view{value_dst, value_len});
 
-      this->entry =
-          new (entry_memory) MemTableValueEntry{key_dst, value_dst, (u32)value_len, locator};
+      this->entry = new (entry_memory) MemTableValueEntry{key_dst, value_dst, (u32)value_len};
     });
 
     this->inserted = true;
@@ -481,15 +448,11 @@ struct MemTableValueEntryInserter {
     const usize update_size = sizeof(PackedValueUpdate)  // header
                               + value_len;               // value
 
-    this->storage.store_data(update_size, [&](u32 locator, const MutableBuffer& buffer) {
-      this->stored_locator = locator;
-
+    this->storage.store_data(update_size, [&](const MutableBuffer& buffer) {
       auto* header = place_first<PackedValueUpdate>(buffer.data());
 
       header->key_len = 0;
-      header->revision = 0;      // TODO [tastolfi 2025-07-24]
-      header->base_locator = 0;  // TODO [tastolfi 2025-07-24]
-      header->prev_locator = p_entry->locator_;
+      header->revision = 0;  // TODO [tastolfi 2025-07-24]
       header->version = this->version;
 
       auto* value_dst = place_next<char>(header, 1);
@@ -500,7 +463,6 @@ struct MemTableValueEntryInserter {
 
       p_entry->value_data_ = value_dst;
       p_entry->value_size_ = value_len;
-      p_entry->locator_ = locator;
     });
 
     return OkStatus();

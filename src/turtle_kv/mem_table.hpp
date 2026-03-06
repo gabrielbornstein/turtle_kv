@@ -293,21 +293,8 @@ class MemTable : public batt::RefCounted<MemTable>
     ChangeLogWriter::Context& context;
     Status status;
 
-    template <typename SerializeFn = void(u32 /*locator*/, const MutableBuffer&)>
+    template <typename SerializeFn = void(const MutableBuffer&)>
     void store_data(usize n_bytes, SerializeFn&& serialize_fn) noexcept;
-
-    u32 locator_from_buffer(ChangeLogWriter::BlockBuffer* buffer)
-    {
-      // Lower 16 bits of buffer->owner_id.
-      //
-      const u32 block_id = MemTable::block_id_from(buffer->owner_id());
-      const u32 slot_index = buffer->slot_count();
-      // TODO: [Gabe Bornstein 3/5/26] Figure out how slot_locator is used. Add it somewhere
-      // outside of owner_id.
-      //
-
-      return (block_id << 16) | (slot_index & 0xffff);
-    }
   };
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
@@ -326,8 +313,6 @@ class MemTable : public batt::RefCounted<MemTable>
     //
     return this->self_id_ | (this->blocks_.size() & 0xffff);
   }
-
-  ConstBuffer fetch_slot(u32 locator) const noexcept;
 
 #if !TURTLE_KV_BIG_MEM_TABLES
 
@@ -483,11 +468,7 @@ void MemTable::StorageImpl::store_data(usize n_bytes, SerializeFn&& serialize_fn
           mem_table.handle_external_cache_alloc(cache_alloc_delta);
         }
 
-        // TODO: [Gabe Bornstein 3/5/26] Figure out how slot_locator is used. Add it somewhere
-        // outside of owner_id.
-        //
-        const u32 slot_locator = 0 /* this->locator_from_buffer(buffer) */;
-        serialize_fn(slot_locator, dst);
+        serialize_fn(dst);
       }));
 }
 
