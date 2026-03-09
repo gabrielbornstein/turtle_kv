@@ -838,7 +838,9 @@ Status KVStore::update_checkpoint(const State* observed_state)
   intrusive_ptr_add_ref(new_state);
   BATT_CHECK_EQ(new_state->use_count(), 1);
 
-  const u64 next_mem_table_id = MemTable::next_id_for(old_mem_table->id());
+  // TODO: [Gabe Bornstein 3/6/26] Instead of using next_offset might be able to use ->upper_bound()
+  //
+  const u64 next_mem_table_id = old_mem_table->next_offset();
   new_state->mem_table_ = this->create_mem_table(next_mem_table_id);
 
   for (;;) {
@@ -883,6 +885,10 @@ Status KVStore::update_checkpoint(const State* observed_state)
   const bool finalize_ok = old_mem_table->finalize();
   BATT_CHECK(finalize_ok);
 
+  // As long as no puts are concurrently happening, this variant holds true.
+  //
+  BATT_CHECK_EQ(old_mem_table->next_offset(), old_mem_table->upper_bound());
+
   // Wait for any previous MemTables to be consumed by the compactor task.
   //
   const u64 this_mem_table_id = old_mem_table->id();
@@ -896,13 +902,7 @@ Status KVStore::update_checkpoint(const State* observed_state)
     LatencyTimer queue_push_timer{this->metrics_.put_memtable_queue_push_latency};
 #endif
 
-    // TODO: [Gabe Bornstein 3/4/26] Should only have one mem table channel at a time. Should need
-    // to calculate num mem tables.
-    //
-    const usize i =
-        MemTable::ordinal_from_id(this_mem_table_id) % this->memtable_compact_channels_.size();
-
-    BATT_REQUIRE_OK(this->memtable_compact_channels_[i].write(std::move(old_mem_table)));
+    BATT_REQUIRE_OK(this->memtable_compact_channels_[0].write(std::move(old_mem_table)));
 
   } else {
     BATT_REQUIRE_OK(this->compact_memtable(  //

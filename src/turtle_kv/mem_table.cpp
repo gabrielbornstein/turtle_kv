@@ -33,11 +33,12 @@ namespace turtle_kv {
                                 std::atomic<u64>& next_offset,
                                 usize max_bytes_per_batch,
                                 usize max_batch_count,
-                                Optional<u64> id) noexcept
+                                u64 id) noexcept
     : page_cache_{page_cache}
     , metrics_{metrics}
     , art_metrics_{}
     , next_offset_{next_offset}
+    , edit_offset_lower_bound_{id}
     , is_finalized_{false}
     , hash_index_{}
     , ordered_index_{}
@@ -48,11 +49,10 @@ namespace turtle_kv {
     , current_byte_size_{0}
     // TODO: [Gabe Bornstein 3/5/26] Figure out how to replace this with an edit_offset.
     //
-    , self_id_{id.or_else([&] {
-      return MemTable::next_id();
-    })}  // TODO: [Gabe Bornstein 3/5/26] Figure out how to replace this with an edit_offset.
-         //
-    , next_block_owner_id_{this->get_next_block_owner_id()}
+    , self_id_{id}
+    // TODO: [Gabe Bornstein 3/5/26] Figure out how to replace this with an edit_offset.
+    //
+    , next_block_owner_id_{id}
     , version_{0}
     , block_list_mutex_{}
     , blocks_{}

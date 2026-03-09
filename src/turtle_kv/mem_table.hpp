@@ -121,41 +121,7 @@ class MemTable : public batt::RefCounted<MemTable>
 
   static constexpr u64 first_id()
   {
-    return 0x10000;
-  }
-
-  static u64 next_id()
-  {
-    static std::atomic<u64> next{MemTable::first_id()};
-    return next.fetch_add(0x10000);
-  }
-
-  static u64 batch_id_from(u64 id)
-  {
-    return id & ~u64{0xffff};
-  }
-
-  static u64 block_id_from(u64 id)
-  {
-    return id & u64{0xffff};
-  }
-
-  static u64 next_id_for(u64 id)
-  {
-    return id + 0x10000;
-  }
-
-  static u64 prev_id_for(u64 id)
-  {
-    return id - 0x10000;
-  }
-
-  /** \brief Returns an integer indicating the position (starting at 0) of MemTable id `id` in the
-   * sequence of all ids.
-   */
-  static u64 ordinal_from_id(u64 id)
-  {
-    return (id - Self::first_id()) >> 16;
+    return 0;
   }
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
@@ -165,7 +131,7 @@ class MemTable : public batt::RefCounted<MemTable>
                     std::atomic<u64>& next_offset,
                     usize max_bytes_per_batch,
                     usize max_batch_count,
-                    Optional<u64> id = None) noexcept;
+                    u64 id) noexcept;
 
   MemTable(const MemTable&) = delete;
   MemTable& operator=(const MemTable&) = delete;
@@ -177,6 +143,11 @@ class MemTable : public batt::RefCounted<MemTable>
   u64 id() const noexcept
   {
     return this->self_id_;
+  }
+
+  u64 next_offset() const noexcept
+  {
+    return this->next_offset_.load();
   }
 
   u64 upper_bound() const noexcept
@@ -304,16 +275,6 @@ class MemTable : public batt::RefCounted<MemTable>
   usize scan_keys_impl(const KeyView& min_key,
                        const Slice<std::pair<KeyView, ValueView>>& items_out) noexcept;
 
-  u64 get_next_block_owner_id() const noexcept
-  {
-    // TODO: [Gabe Bornstein 3/5/26] Update this to use edit_offset instead of mem_table->self_id_.
-    // I think we need to save the index_ of the block (blocks_.size()) in our ChangeLogBlock, along
-    // with edit_offset, unless index_ can be calculated from edit_offset. I think locator can be
-    // replaced with edit_offset.
-    //
-    return this->self_id_ | (this->blocks_.size() & 0xffff);
-  }
-
 #if !TURTLE_KV_BIG_MEM_TABLES
 
   Slice<const EditView> compacted_edits_slice_impl() const;
@@ -352,6 +313,8 @@ class MemTable : public batt::RefCounted<MemTable>
   // A reference to the KVStore's next_offset. The KVStore owns this MemTable.
   //
   std::atomic<u64>& next_offset_;
+
+  u64 edit_offset_lower_bound_;
 
   // Exclusive upper bound offset of the last edit included in this mem table.
   //
@@ -442,14 +405,16 @@ template <typename SerializeFn>
 void MemTable::StorageImpl::store_data(usize n_bytes, SerializeFn&& serialize_fn) noexcept
 {
   this->status = batt::to_status(this->context.append_slot(
-      // TODO: [Gabe Bornstein 3/5/26] Figure out how to replace this with an edit_offset.
+      // TODO: [Gabe Bornstein 3/5/26] Consider delaying setting this. Instead, set it when we
+      // apply the first edit to the block. I need to better understand concurrency here to make
+      // sure this is valid. Can multiple blocks be grabbing this value? If yes, it's an issue.
       //
       this->mem_table.next_block_owner_id_,
       n_bytes,
       [&](ChangeLogWriter::BlockBuffer* buffer, const MutableBuffer& dst) {
         MemTable& mem_table = this->mem_table;
 
-        BATT_CHECK_EQ(MemTable::batch_id_from(buffer->owner_id()), mem_table.self_id_);
+        BATT_CHECK_GE(buffer->owner_id(), mem_table.self_id_);
 
         if (buffer->ref_count() == 1) {
           buffer->add_ref(1);
@@ -461,9 +426,10 @@ void MemTable::StorageImpl::store_data(usize n_bytes, SerializeFn&& serialize_fn
             mem_table.block_size_total_ += buffer->block_size();
             cache_alloc_delta = mem_table.update_external_cache_alloc();
             mem_table.blocks_.emplace_back(buffer);
-            // TODO: [Gabe Bornstein 3/5/26] Figure out how to replace this with an edit_offset.
+            // TODO: [Gabe Bornstein 3/5/26] Consider delaying setting this. Instead, set it when we
+            // apply the first edit to the block.
             //
-            mem_table.next_block_owner_id_ = mem_table.get_next_block_owner_id();
+            mem_table.next_block_owner_id_ = mem_table.next_offset();
           }
           mem_table.handle_external_cache_alloc(cache_alloc_delta);
         }
