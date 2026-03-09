@@ -254,44 +254,37 @@ batt::Status ChangeLogFile::read_blocks(SerializeFn process_block)
     //
     i64 curr_file_offset = this->config_.block0_offset + curr_block_offset;
 
-    void* block_memory = ChangeLogBlock::allocate_aligned(this->config_.block_size);
-
-    ChangeLogBlock* block = reinterpret_cast<ChangeLogBlock*>(block_memory);
-
-    // Create MutableBuffer for reading from file
-    //
-    batt::MutableBuffer block_buffer{block_memory, static_cast<usize>(this->config_.block_size)};
-
-    status = this->file_.read_all(curr_file_offset, block_buffer);
-
-    if (!block->verify().ok()) {
-      // Break when we read an invalid block or uninitialized block.
-      //
-      break;
-    }
-
-    // TODO: [Gabe Bornstein 2/17/26] Delay initializing ephemeral state and setting read_lock.
-    // Neccessry for right now so that destructor checks pass.
-    //
     batt::StatusOr<batt::Grant> buffer_grant =
         this->reserve_blocks(BlockCount{1}, batt::WaitForResource::kFalse);
 
     BATT_REQUIRE_OK(buffer_grant);
 
-    block->init_ephemeral_state(std::move(*buffer_grant));
+    batt::MutableBuffer block_buffer{};
+    batt::StatusOr<ChangeLogBlock*> block = ChangeLogBlock::recover(block_buffer,
+                                                                    std::move(*buffer_grant),
+                                                                    this->file_,
+                                                                    this->config_.block_size,
+                                                                    curr_file_offset);
+
+    // TODO: [Gabe Bornstein 3/9/26] Handle case where we reach a corrupt block, but need to keep
+    // reading and reach correct blocks that come after it.
+    //
+    if (block.status() == batt::StatusCode::kOutOfRange ||
+        block.status() == batt::StatusCode::kDataLoss) {
+      LOG(INFO) << "Recovered " << blocks_read
+                << " blocks. Stopped reading with status:" << BATT_INSPECT(block.status());
+      return batt::OkStatus();
+    }
 
     Interval<i64> block_range{blocks_read, blocks_read + 1};
 
-    block->set_read_lock(this->set_block_range_in_use(block->get_grant(), block_range));
+    (*block)->set_read_lock(this->set_block_range_in_use((*block)->get_grant(), block_range));
+
     this->upper_bound_.fetch_add(block_range.size());
 
-    // ref_count is 2 after reading from the change log. We want to initialize it to 1.
+    // `process_block` is responsible for determining when to stop reading.
     //
-    block->set_ref_count(1);
-    // `process_block` is responsible for determining when to stop reading. Usually, break once
-    // we've read a block that isn't valid or if we've reached the end of the file.
-    //
-    batt::Status process_status = process_block(block);
+    batt::Status process_status = process_block(*block);
     if (process_status == batt::StatusCode::kLoopBreak) {
       break;
     } else if (!process_status.ok()) {

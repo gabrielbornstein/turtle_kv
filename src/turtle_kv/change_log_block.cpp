@@ -13,14 +13,14 @@ namespace turtle_kv {
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-/*static*/ void* ChangeLogBlock::allocate_aligned(usize n_bytes) noexcept
+/*static*/ MutableBuffer* ChangeLogBlock::allocate_aligned(usize n_bytes) noexcept
 {
   BATT_CHECK_GE(n_bytes, Self::kMinSize);
 
   void* const memory = std::aligned_alloc(Self::kDefaultAlign, n_bytes);
   BATT_CHECK_NOT_NULLPTR(memory);
 
-  return memory;
+  return reinterpret_cast<MutableBuffer*>(memory);
 }
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
@@ -29,11 +29,59 @@ namespace turtle_kv {
                                                     batt::Grant&& grant,
                                                     usize n_bytes) noexcept
 {
-  void* const memory = ChangeLogBlock::allocate_aligned(n_bytes);
+  MutableBuffer* const memory = ChangeLogBlock::allocate_aligned(n_bytes);
 
   ChangeLogBlock* buffer = new (memory) ChangeLogBlock{owner_id, std::move(grant), n_bytes};
 
   return buffer;
+}
+
+//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
+//
+/*static*/ StatusOr<ChangeLogBlock*> ChangeLogBlock::recover(MutableBuffer& buf,
+                                                             batt::Grant&& grant,
+                                                             llfs::IoRing::File& file,
+                                                             u64 block_size,
+                                                             u64 file_offset)
+{
+  MutableBuffer* block_memory = ChangeLogBlock::allocate_aligned(block_size);
+
+  ChangeLogBlock* block = reinterpret_cast<ChangeLogBlock*>(block_memory);
+
+  // Create MutableBuffer for reading from file
+  //
+  buf = batt::MutableBuffer{block_memory, static_cast<usize>(block_size)};
+
+  batt::Status read_status = file.read_all(file_offset, buf);
+
+  // Need to check if block_size is zero. It indicates we have read an unitialized block.
+  //
+  if (!read_status.ok() || block->block_size() == 0) {
+    ChangeLogBlock::free_allocated(block);
+    return {batt::StatusCode::kOutOfRange};
+  }
+
+  batt::Status verify_status = block->verify();
+
+  if (!verify_status.ok()) {
+    ChangeLogBlock::free_allocated(block);
+    return {batt::StatusCode::kDataLoss};
+  }
+
+  batt::Status hash_status = block->verify_hash();
+
+  if (!hash_status.ok()) {
+    ChangeLogBlock::free_allocated(block);
+    return {batt::StatusCode::kDataLoss};
+  }
+
+  block->init_ephemeral_state(std::move(grant));
+
+  // ref_count is 2 after reading from the change log. We want to initialize it to 1.
+  //
+  block->set_ref_count(1);
+
+  return block;
 }
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
@@ -89,8 +137,7 @@ void ChangeLogBlock::remove_ref(i32 count) noexcept
     // Load the ref count as a sanity check and with acquire order to complete the fence.
     //
     BATT_CHECK_EQ(0, this->ref_count_.load(std::memory_order_acquire));
-    this->~ChangeLogBlock();
-    free(this);
+    ChangeLogBlock::free_allocated(this);
   }
 }
 
@@ -164,6 +211,17 @@ batt::Status ChangeLogBlock::verify() const noexcept
 {
   BATT_REQUIRE_NE(this->magic_, ChangeLogBlock::kExpired);
   BATT_REQUIRE_EQ(this->magic_, ChangeLogBlock::kMagic);
+  return batt::OkStatus();
+}
+
+//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
+//
+batt::Status ChangeLogBlock::verify_hash() const noexcept
+{
+  BATT_CHECK_GE(this->block_size() - sizeof(ChangeLogBlock), 0);
+
+  u64 xxh3_hash = XXH3_64bits(this + 1, this->block_size() - sizeof(ChangeLogBlock));
+  BATT_REQUIRE_EQ(this->xxh3_checksum_, xxh3_hash);
   return batt::OkStatus();
 }
 

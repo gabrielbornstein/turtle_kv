@@ -11,6 +11,8 @@
 #include <batteries/async/grant.hpp>
 #include <batteries/async/latch.hpp>
 
+#include <llfs/ioring_file.hpp>
+
 #include <boost/intrusive_ptr.hpp>
 
 namespace turtle_kv {
@@ -56,11 +58,28 @@ class ChangeLogBlock
   /** \brief Allocates and returns a pointer of the specifed size aligned to
    * ChangeLogBlock::kDefaultAlign bytes.
    */
-  static void* allocate_aligned(usize n_bytes) noexcept;
+  static MutableBuffer* allocate_aligned(usize n_bytes) noexcept;
 
   /** \brief Allocates and returns a buffer of the specifed size.
    */
   static ChangeLogBlock* allocate(u64 owner_id, batt::Grant&& grant, usize n_bytes) noexcept;
+
+  /** \brief Deallocates the dynamic memory of block.
+   */
+  static void free_allocated(ChangeLogBlock* block)
+  {
+    block->~ChangeLogBlock();
+    free(block);
+  }
+
+  /** \brief Read a ChangeLogBlock from the ChangeLogFile into the buffer, buf. Returns an error
+   * status if malformed or unsuccessful.
+   */
+  static StatusOr<ChangeLogBlock*> recover(MutableBuffer& buf,
+                                           batt::Grant&& grant,
+                                           llfs::IoRing::File& file,
+                                           u64 block_size,
+                                           u64 file_offset);
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
 
@@ -196,6 +215,10 @@ class ChangeLogBlock
    */
   batt::Status verify() const noexcept;
 
+  /** \brief Recomputes the xxh3 hash and verifies that it matches the saved xxh3 hash.
+   */
+  batt::Status verify_hash() const noexcept;
+
   /** \brief Checks to make sure all space within the buffer is accounted for.
    */
   void check_buffer_invariant() const noexcept;
@@ -248,7 +271,6 @@ class ChangeLogBlock
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
 
-  
   SlotInfo* slots_rbegin() noexcept
   {
     return (SlotInfo*)(advance_pointer((void*)this, this->block_size_)) - 1;

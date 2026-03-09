@@ -275,13 +275,8 @@ ChangeLogFile::read_blocks_into_vector()
     // If block size is zero, block has not been initialized. Stop reading here.
     //
     if (block->block_size() == 0) {
-      // Need to free memory of untracked block here otherwise we will have a memory leak.
-      //
-      block->remove_ref(1);
       return batt::StatusCode::kLoopBreak;
     }
-    // TODO: [Gabe Bornstein 1/28/26] Decide if we want to keep block, decrement ref count if not.
-    //
 
     blocks.emplace_back(boost::intrusive_ptr<ChangeLogBlock>{block, false});
 
