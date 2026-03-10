@@ -13,14 +13,14 @@ namespace turtle_kv {
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-/*static*/ MutableBuffer* ChangeLogBlock::allocate_aligned(usize n_bytes) noexcept
+/*static*/ MutableBuffer ChangeLogBlock::allocate_aligned(usize n_bytes) noexcept
 {
   BATT_CHECK_GE(n_bytes, Self::kMinSize);
 
   void* const memory = std::aligned_alloc(Self::kDefaultAlign, n_bytes);
   BATT_CHECK_NOT_NULLPTR(memory);
 
-  return reinterpret_cast<MutableBuffer*>(memory);
+  return MutableBuffer{memory, n_bytes};
 }
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
@@ -29,34 +29,23 @@ namespace turtle_kv {
                                                     batt::Grant&& grant,
                                                     usize n_bytes) noexcept
 {
-  MutableBuffer* const memory = ChangeLogBlock::allocate_aligned(n_bytes);
+  MutableBuffer const memory = ChangeLogBlock::allocate_aligned(n_bytes);
 
-  ChangeLogBlock* buffer = new (memory) ChangeLogBlock{owner_id, std::move(grant), n_bytes};
+  ChangeLogBlock* buffer = new (memory.data()) ChangeLogBlock{owner_id, std::move(grant), n_bytes};
 
   return buffer;
 }
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-/*static*/ StatusOr<ChangeLogBlock*> ChangeLogBlock::recover(MutableBuffer& buf,
-                                                             batt::Grant&& grant,
-                                                             llfs::IoRing::File& file,
-                                                             u64 block_size,
-                                                             u64 file_offset)
+/*static*/ StatusOr<ChangeLogBlock*> ChangeLogBlock::recover(MutableBuffer buffer,
+                                                             batt::Grant&& grant)
 {
-  MutableBuffer* block_memory = ChangeLogBlock::allocate_aligned(block_size);
-
-  ChangeLogBlock* block = reinterpret_cast<ChangeLogBlock*>(block_memory);
-
-  // Create MutableBuffer for reading from file
-  //
-  buf = batt::MutableBuffer{block_memory, static_cast<usize>(block_size)};
-
-  batt::Status read_status = file.read_all(file_offset, buf);
+  ChangeLogBlock* block = reinterpret_cast<ChangeLogBlock*>(buffer.data());
 
   // Need to check if block_size is zero. It indicates we have read an unitialized block.
   //
-  if (!read_status.ok() || block->block_size() == 0) {
+  if (block->block_size() == 0) {
     ChangeLogBlock::free_allocated(block);
     return {batt::StatusCode::kOutOfRange};
   }

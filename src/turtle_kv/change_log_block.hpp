@@ -58,7 +58,7 @@ class ChangeLogBlock
   /** \brief Allocates and returns a pointer of the specifed size aligned to
    * ChangeLogBlock::kDefaultAlign bytes.
    */
-  static MutableBuffer* allocate_aligned(usize n_bytes) noexcept;
+  static MutableBuffer allocate_aligned(usize n_bytes) noexcept;
 
   /** \brief Allocates and returns a buffer of the specifed size.
    */
@@ -75,11 +75,7 @@ class ChangeLogBlock
   /** \brief Read a ChangeLogBlock from the ChangeLogFile into the buffer, buf. Returns an error
    * status if malformed or unsuccessful.
    */
-  static StatusOr<ChangeLogBlock*> recover(MutableBuffer& buf,
-                                           batt::Grant&& grant,
-                                           llfs::IoRing::File& file,
-                                           u64 block_size,
-                                           u64 file_offset);
+  static StatusOr<ChangeLogBlock*> recover(MutableBuffer buf, batt::Grant&& grant);
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
 

@@ -259,12 +259,18 @@ batt::Status ChangeLogFile::read_blocks(SerializeFn process_block)
 
     BATT_REQUIRE_OK(buffer_grant);
 
-    batt::MutableBuffer block_buffer{};
-    batt::StatusOr<ChangeLogBlock*> block = ChangeLogBlock::recover(block_buffer,
-                                                                    std::move(*buffer_grant),
-                                                                    this->file_,
-                                                                    this->config_.block_size,
-                                                                    curr_file_offset);
+    MutableBuffer block_memory = ChangeLogBlock::allocate_aligned(this->config_.block_size);
+
+    batt::Status read_status = this->file_.read_all(curr_file_offset, block_memory);
+
+    if (!read_status.ok()) {
+      LOG(INFO) << "Recovered " << blocks_read << " blocks. Stopped reading with status:"
+                << BATT_INSPECT(batt::StatusCode::kOutOfRange);
+      return batt::OkStatus();
+    }
+
+    batt::StatusOr<ChangeLogBlock*> block =
+        ChangeLogBlock::recover(block_memory, std::move(*buffer_grant));
 
     // TODO: [Gabe Bornstein 3/9/26] Handle case where we reach a corrupt block, but need to keep
     // reading and reach correct blocks that come after it.

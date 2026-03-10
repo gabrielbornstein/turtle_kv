@@ -155,7 +155,7 @@ class KVStoreTest : public ::testing::Test
   }
 
   std::filesystem::path data_root;
-  KVStore::Config kv_store_config;
+  KVStore::Config kv_store_config = KVStore::Config::with_default_values();
   std::optional<llfs::ScopedIoRing> scoped_io_ring;
   boost::intrusive_ptr<llfs::StorageContext> storage_context = nullptr;
   KVStore::RuntimeOptions runtime_options;
