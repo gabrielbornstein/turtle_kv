@@ -60,6 +60,7 @@ using turtle_kv::NeedsSplit;
 using turtle_kv::None;
 using turtle_kv::OkStatus;
 using turtle_kv::Optional;
+using turtle_kv::PageSliceStorage;
 using turtle_kv::ParentNodeHeight;
 using turtle_kv::PinningPageLoader;
 using turtle_kv::Slice;
@@ -186,86 +187,41 @@ struct SubtreeBatchUpdateScenario {
   void run();
 };
 
-//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
-//
-TEST(InMemoryNodeTest, Segment)
-{
-  InMemoryNode::UpdateBuffer::Segment segment;
-  InMemoryNode::UpdateBuffer::SegmentedLevel level;
+struct BatchUpdateGenerator {
+  StableStringStore strings;
+  RandomResultSetGenerator result_set_generator;
+  std::vector<KeyView> pending_deletes;
+  usize delete_frequency;
 
-  // Verify initial state.
-  //
-  segment.check_invariants(__FILE__, __LINE__);
-  for (i32 pivot_i = 0; pivot_i < 64; ++pivot_i) {
-    EXPECT_EQ(segment.get_flushed_item_upper_bound(level, pivot_i), 0);
-    EXPECT_FALSE(segment.is_pivot_active(pivot_i));
+  explicit BatchUpdateGenerator(usize delete_frequency_param,
+                                const RandomResultSetGenerator& gen) noexcept
+      : result_set_generator{gen}
+      , delete_frequency{delete_frequency_param}
+  {
   }
-  EXPECT_EQ(segment.get_active_pivots(), u64{0});
-  EXPECT_EQ(segment.get_flushed_pivots(), u64{0});
 
-  // Keep a baseline to verify observed results.
-  //
-  std::array<u32, 64> expected_flushed_item_upper_bound;
-  expected_flushed_item_upper_bound.fill(0);
+  template <typename Rng>
+  ResultSet<false> next_batch(usize batch_i, Rng& rng, bool update_pending_deletes = false)
+  {
+    ResultSet<false> result_set =
+        result_set_generator(DecayToItem<false>{}, rng, this->strings, this->pending_deletes);
 
-  const auto get_expected_flushed_count = [&expected_flushed_item_upper_bound]() -> usize {
-    usize total = 0;
-    for (u32 value : expected_flushed_item_upper_bound) {
-      if (value != 0) {
-        ++total;
+    if (update_pending_deletes) {
+      if (!this->pending_deletes.empty()) {
+        this->pending_deletes.clear();
       }
-    }
-    return total;
-  };
 
-  for (i32 pivot_i = 0; pivot_i < 64; ++pivot_i) {
-    segment.set_pivot_active(pivot_i, true);
-  }
-
-  // Perform random modifications to `segment`, verifying the resulting state at each step.
-  //
-  std::default_random_engine rng{/*seed=*/1};
-  std::uniform_int_distribution<int> pick_percent{0, 99};
-  std::uniform_int_distribution<i32> pick_bit{0, 63};
-  std::uniform_int_distribution<u32> pick_upper_bound{1, 10};
-
-  for (usize i = 0; i < 1000000; ++i) {
-    // Reset the segment with probability 1%.
-    //
-    if (pick_percent(rng) < 1) {
-      expected_flushed_item_upper_bound.fill(0);
-      segment.flushed_pivots = 0;
-      segment.flushed_item_upper_bound_.clear();
-
-    } else {
-      // Pick a pivot to change.
-      //
-      const i32 pivot_i = pick_bit(rng);
-
-      // Set to zero with probability 20%.
-      //
-      if (pick_percent(rng) < 20) {
-        expected_flushed_item_upper_bound[pivot_i] = 0;
-        segment.set_flushed_item_upper_bound(pivot_i, 0);
-
-      } else {
-        // Pick a new non-zero upper bound.
-        //
-        const u32 new_upper_bound = pick_upper_bound(rng);
-
-        expected_flushed_item_upper_bound[pivot_i] = new_upper_bound;
-        segment.set_flushed_item_upper_bound(pivot_i, new_upper_bound);
+      if (batch_i % this->delete_frequency == 0) {
+        BATT_CHECK(this->pending_deletes.empty());
+        for (const EditView& edit : result_set.get()) {
+          pending_deletes.emplace_back(edit.key);
+        }
       }
     }
 
-    EXPECT_EQ(bit_count(segment.get_flushed_pivots()), get_expected_flushed_count());
-    EXPECT_EQ(segment.flushed_item_upper_bound_.size(), get_expected_flushed_count());
-    for (i32 pivot_i = 0; pivot_i < 64; ++pivot_i) {
-      EXPECT_EQ(segment.get_flushed_item_upper_bound(level, pivot_i),
-                expected_flushed_item_upper_bound[pivot_i]);
-    }
+    return result_set;
   }
-}
+};
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
@@ -341,11 +297,11 @@ void SubtreeBatchUpdateScenario::run()
                              tree_options,
                              /*byte_capacity=*/1500 * kMiB);
 
-  StableStringStore strings;
   RandomResultSetGenerator result_set_generator;
-  turtle_kv::OrderedMapTable<absl::btree_map<std::string_view, std::string_view>> expected_table;
-
   result_set_generator.set_key_size(24).set_value_size(100).set_size(items_per_leaf);
+  BatchUpdateGenerator update_generator{/*delete_frequency=*/5, /*gen=*/result_set_generator};
+
+  turtle_kv::OrderedMapTable<absl::btree_map<std::string_view, std::string_view>> expected_table;
 
   Subtree tree = Subtree::make_empty();
 
@@ -365,6 +321,8 @@ void SubtreeBatchUpdateScenario::run()
 
   usize total_items = 0;
 
+  turtle_kv::BatchUpdateMetrics metrics;
+
   for (usize i = 0; i < max_i; ++i) {
     BatchUpdate update{
         .context =
@@ -372,8 +330,12 @@ void SubtreeBatchUpdateScenario::run()
                 .worker_pool = worker_pool,
                 .page_loader = *page_loader,
                 .cancel_token = batt::CancelToken{},
+                .metrics = metrics,
+                .overcommit = llfs::PageCacheOvercommit::not_allowed(),
             },
-        .result_set = result_set_generator(DecayToItem<false>{}, rng, strings),
+        // TODO [vsilai 2026-01-09] Enable delete support for batch generation.
+        //
+        .result_set = update_generator.next_batch(i, rng, /*update_pending_deletes=*/false),
         .edit_size_totals = None,
     };
     update.update_edit_size_totals();
@@ -386,7 +348,8 @@ void SubtreeBatchUpdateScenario::run()
     Status table_update_status = update_table(expected_table, update.result_set);
     ASSERT_TRUE(table_update_status.ok()) << BATT_INSPECT(table_update_status);
 
-    StatusOr<i32> tree_height = tree.get_height(*page_loader);
+    StatusOr<i32> tree_height =
+        tree.get_height(*page_loader, llfs::PageCacheOvercommit::not_allowed());
     ASSERT_TRUE(tree_height.ok()) << BATT_INSPECT(tree_height);
 
     Status status =  //
@@ -415,7 +378,12 @@ void SubtreeBatchUpdateScenario::run()
       }
 
       std::unique_ptr<llfs::PageCacheJob> page_job = page_cache->new_job();
-      TreeSerializeContext context{tree_options, *page_job, worker_pool};
+      TreeSerializeContext context{
+          tree_options,
+          *page_job,
+          worker_pool,
+          llfs::PageCacheOvercommit::not_allowed(),
+      };
 
       Status start_status = tree.start_serialize(context);
       ASSERT_TRUE(start_status.ok()) << BATT_INSPECT(start_status);
@@ -446,12 +414,16 @@ void SubtreeBatchUpdateScenario::run()
         std::array<std::pair<KeyView, ValueView>, kMaxScanSize> scan_items_buffer;
         KeyView min_key = update.result_set.get_min_key();
 
-        KVStoreScanner kv_scanner{*page_loader,
-                                  root_ptr->page_id_slot_or_panic(),
-                                  BATT_OK_RESULT_OR_PANIC(root_ptr->get_height(*page_loader)),
-                                  min_key,
-                                  tree_options.trie_index_sharded_view_size(),
-                                  None};
+        PageSliceStorage page_slice_storage;
+
+        KVStoreScanner kv_scanner{
+            *page_loader,
+            root_ptr->page_id_slot_or_panic(),
+            BATT_OK_RESULT_OR_PANIC(root_ptr->get_height(*page_loader,  //
+                                                         llfs::PageCacheOvercommit::not_allowed())),
+            min_key,
+            tree_options.trie_index_sharded_view_size(),
+            &page_slice_storage};
 
         usize n_read = 0;
         {

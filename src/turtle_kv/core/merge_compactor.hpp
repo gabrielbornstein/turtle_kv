@@ -1,5 +1,8 @@
 #pragma once
 
+#include <turtle_kv/config.hpp>
+//
+
 #include <turtle_kv/core/edit_view.hpp>
 #include <turtle_kv/core/merge_compactor_base.hpp>
 #include <turtle_kv/core/merge_frame.hpp>
@@ -55,11 +58,26 @@ class MergeCompactor : public MergeCompactorBase
     StatsMetric<i64> result_set_waste;
     CountMetric<usize> result_set_compact_count;
     CountMetric<usize> result_set_compact_byte_count;
+    CountMetric<i64> result_set_bytes_alloc;
+    CountMetric<i64> result_set_bytes_freed;
+    StatsMetric<i64> output_buffer_byte_size_stats;
+
+#if TURTLE_KV_PROFILE_UPDATES
+    LatencyMetric compact_latency;
+#endif  // TURTLE_KV_PROFILE_UPDATES
 
     double average_bytes_per_compaction() const
     {
       return (double)this->result_set_compact_byte_count.get() /
              (double)this->result_set_compact_count.get();
+    }
+
+    i64 bytes_in_use() const
+    {
+      const i64 observed_freed = this->result_set_bytes_freed.get();
+      const i64 observed_alloc = this->result_set_bytes_alloc.get();
+
+      return observed_alloc - observed_freed;
     }
   };
 
@@ -128,11 +146,13 @@ class MergeCompactor : public MergeCompactorBase
 
     ResultSet() = default;
 
-    ResultSet(const ResultSet&) = default;
-    ResultSet& operator=(const ResultSet&) = default;
+    ResultSet(const ResultSet&) noexcept;
+    ResultSet& operator=(const ResultSet&) noexcept;
 
-    ResultSet(ResultSet&&) = default;
-    ResultSet& operator=(ResultSet&&) = default;
+    ResultSet(ResultSet&&) noexcept;
+    ResultSet& operator=(ResultSet&&) noexcept;
+
+    ~ResultSet() noexcept;
 
     range_type get() const
     {

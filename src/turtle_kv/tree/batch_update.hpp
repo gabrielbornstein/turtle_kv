@@ -1,5 +1,7 @@
 #pragma once
 
+#include <turtle_kv/tree/batch_update_metrics.hpp>
+
 #include <turtle_kv/core/algo/compute_running_total.hpp>
 
 #include <turtle_kv/core/merge_compactor.hpp>
@@ -23,23 +25,31 @@ struct BatchUpdateContext {
   batt::WorkerPool& worker_pool;
   llfs::PageLoader& page_loader;
   batt::CancelToken cancel_token;
+  BatchUpdateMetrics& metrics;
+  llfs::PageCacheOvercommit& overcommit;
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
 
   /** \brief Uses the worker_pool to perform a parallel merge-compaction of the lines
    * produced by the passed `generator_fn`, up to and including (but stopping at) `max_key`.
    */
-  template <typename GeneratorFn>
-  StatusOr<MergeCompactor::ResultSet</*decay_to_items=*/false>> merge_compact_edits(
+  template <bool kDecayToItems, typename GeneratorFn>
+  StatusOr<MergeCompactor::ResultSet<kDecayToItems>> merge_compact_edits(
       const KeyView& max_key,
       GeneratorFn&& generator_fn);
 
   /** \brief Computes and returns the running total (prefix sum) of the edit sizes in result_set.
    */
+  template <bool kDecayToItems>
   batt::RunningTotal compute_running_total(
-      const MergeCompactor::ResultSet</*decay_to_items=*/false>& result_set) const
+      const MergeCompactor::ResultSet<kDecayToItems>& result_set) const
   {
-    return ::turtle_kv::compute_running_total(this->worker_pool, result_set);
+#if TURTLE_KV_PROFILE_UPDATES
+    this->metrics.running_total_count.add(1);
+    LatencyTimer timer{this->metrics.latency_sample_rate, this->metrics.running_total_latency};
+#endif  // TURTLE_KV_PROFILE_UPDATES
+
+    return ::turtle_kv::compute_running_total<kDecayToItems>(this->worker_pool, result_set);
   }
 };
 
@@ -90,20 +100,41 @@ std::ostream& operator<<(std::ostream& out, const BatchUpdate::TrimResult& t);
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-template <typename GeneratorFn>
-inline StatusOr<MergeCompactor::ResultSet</*decay_to_items=*/false>>
-BatchUpdateContext::merge_compact_edits(const KeyView& max_key, GeneratorFn&& generator_fn)
+template <bool kDecayToItems, typename GeneratorFn>
+inline StatusOr<MergeCompactor::ResultSet<kDecayToItems>> BatchUpdateContext::merge_compact_edits(
+    const KeyView& max_key,
+    GeneratorFn&& generator_fn)
 {
+#if TURTLE_KV_PROFILE_UPDATES
+  this->metrics.merge_compact_count.add(1);
+  LatencyTimer timer{this->metrics.latency_sample_rate, this->metrics.merge_compact_latency};
+#endif  // TURTLE_KV_PROFILE_UPDATES
+
   MergeCompactor compactor{this->worker_pool};
 
   compactor.start_push_levels();
   BATT_REQUIRE_OK(BATT_FORWARD(generator_fn)(compactor));
   compactor.finish_push_levels();
 
-  MergeCompactor::EditBuffer edit_buffer;
+  MergeCompactor::OutputBuffer<kDecayToItems> edit_buffer;
 
   this->worker_pool.reset();
-  return compactor.read(edit_buffer, max_key);
+  StatusOr<MergeCompactor::ResultSet<kDecayToItems>> result_set =
+      compactor.read(edit_buffer, max_key);
+
+#if TURTLE_KV_PROFILE_UPDATES
+
+  if (result_set.ok()) {
+    const usize result_size = result_set->size();
+    this->metrics.merge_compact_key_count.add(result_size);
+    this->metrics.merge_compact_key_count_stats.update(result_size);
+  } else {
+    this->metrics.merge_compact_failures.add(1);
+  }
+
+#endif  // TURTLE_KV_PROFILE_UPDATES
+
+  return result_set;
 }
 
 }  // namespace turtle_kv

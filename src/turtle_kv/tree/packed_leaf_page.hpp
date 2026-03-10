@@ -6,6 +6,7 @@
 #include <turtle_kv/core/key_view.hpp>
 #include <turtle_kv/core/packed_key_value.hpp>
 
+#include <turtle_kv/util/buffer_bounds_checker.hpp>
 #include <turtle_kv/util/page_buffers.hpp>
 
 #include <turtle_kv/import/buffer.hpp>
@@ -246,7 +247,9 @@ struct PackedLeafPage {
   //
   const PackedKeyValue* find_key(const std::string_view& key) const
   {
+#if TURTLE_KV_PROFILE_QUERIES
     LatencyTimer timer{Every2ToTheConst<16>{}, PackedLeafPage::metrics().find_key_latency};
+#endif
 
     Interval<usize> search_range = this->calculate_search_range(key);
 
@@ -320,6 +323,8 @@ struct PackedLeafLayoutPlan {
   usize page_size;
   usize key_count;
   usize trie_index_reserved_size;
+  usize avg_key_len;
+  usize drop_count;
 
   usize trie_index_begin;
   usize trie_index_end;
@@ -342,6 +347,11 @@ struct PackedLeafLayoutPlan {
   usize value_data_begin;
   usize value_data_end;
 
+  BATT_ALWAYS_INLINE usize get_key_value_data_end() const
+  {
+    return this->value_data_end;
+  }
+
   //+++++++++++-+-+--+----- --- -- -  -  -   -
 
   template <typename ItemsRangeT>
@@ -357,10 +367,12 @@ struct PackedLeafLayoutPlan {
 
   bool is_valid() const
   {
-    return this->value_data_end <= this->page_size;
+    return this->get_key_value_data_end() <= this->page_size;
   }
 
   void check_valid(std::string_view label) const;
+
+  usize compute_trie_step_size() const;
 };
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
@@ -370,6 +382,8 @@ BATT_OBJECT_PRINT_IMPL((inline),
                        (page_size,
                         key_count,
                         trie_index_reserved_size,
+                        avg_key_len,
+                        drop_count,
                         trie_index_begin,
                         trie_index_end,
                         leaf_header_begin,
@@ -390,6 +404,46 @@ BATT_OBJECT_PRINT_IMPL((inline),
 inline void PackedLeafLayoutPlan::check_valid(std::string_view label) const
 {
   BATT_CHECK(this->is_valid()) << *this << BATT_INSPECT_STR(label);
+}
+
+//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
+//
+inline usize PackedLeafLayoutPlan::compute_trie_step_size() const
+{
+  BATT_CHECK_GT(this->key_count, 0);
+
+  // Determine the number of pivot keys to intialize the trie with by using the size of the trie
+  // buffer and the average key length across the items in the leaf.
+  //
+  usize step_size = [&]() -> usize {
+    // If there are no deleted items in this leaf, return 16.
+    //
+    if (this->drop_count == 0) {
+      return 16;
+    }
+    const usize trie_buffer_size = this->trie_index_end - this->trie_index_begin;
+    BATT_CHECK_GT(trie_buffer_size, 0);
+
+    BATT_CHECK_GT(this->avg_key_len, 0);
+    const usize pivot_count = trie_buffer_size / this->avg_key_len;
+    return (this->key_count + pivot_count - 1) / pivot_count;
+  }();
+
+  BATT_CHECK_GT(step_size, 0);
+
+  // Round down to the nearest power of 2.
+  //
+  step_size = (usize{1} << batt::log2_floor(step_size));
+
+  // Handle edge cases.
+  //
+  if (this->key_count <= step_size) {
+    step_size = 1;
+  } else if (this->key_count < 256) {
+    step_size = this->key_count / 16;
+  }
+
+  return step_size;
 }
 
 //=#=#==#==#===============+=+=+=+=++=++++++++++++++-++-+--+-+----+---------------
@@ -423,6 +477,7 @@ class PackedLeafLayoutPlanBuilder
     plan.page_size = this->page_size;
     plan.key_count = BATT_CHECKED_CAST(u32, this->key_count);
     plan.trie_index_reserved_size = this->trie_index_reserved_size;
+    plan.avg_key_len = plan.key_count > 0 ? this->key_data_size / plan.key_count : 0;
 
     usize offset = 0;
     const auto append = [&offset](usize size) {
@@ -463,11 +518,12 @@ class PackedLeafLayoutPlanBuilder
     }
 
     if (plan.trie_index_reserved_size > 0) {
-      BATT_CHECK_GE(this->page_size - plan.value_data_end, plan.trie_index_reserved_size - 63);
+      BATT_CHECK_GE(this->page_size - plan.get_key_value_data_end(),
+                    plan.trie_index_reserved_size - 63);
 
       const usize space_for_trie =
           batt::round_down_bits(6,
-                                std::min(this->page_size - plan.value_data_end,  //
+                                std::min(this->page_size - plan.get_key_value_data_end(),  //
                                          plan.trie_index_reserved_size));
 
       offset = plan.leaf_header_end;
@@ -513,23 +569,21 @@ struct LeafItemsSummary {
 struct AddLeafItemsSummary {
   LeafItemsSummary operator()(const LeafItemsSummary& prior, const EditView& edit) const noexcept
   {
-    if (!decays_to_item(edit.value)) {
-      LOG(ERROR) << "TODO [tastolfi 2025-05-27] support deletes:" << BATT_INSPECT(edit);
-
-      return LeafItemsSummary{
-          .drop_count = prior.drop_count + 1,
-          .key_count = prior.key_count,
-          .key_data_size = prior.key_data_size,
-          .value_data_size = prior.value_data_size,
-      };
-    } else {
-      return LeafItemsSummary{
-          .drop_count = prior.drop_count,
-          .key_count = prior.key_count + 1,
-          .key_data_size = prior.key_data_size + (edit.key.size() + 4),
-          .value_data_size = prior.value_data_size + (1 + edit.value.size()),
-      };
+    usize drop_count = prior.drop_count;
+    if (!decays_to_item(edit)) {
+      drop_count++;
     }
+    return LeafItemsSummary{
+        .drop_count = drop_count,
+        .key_count = prior.key_count + 1,
+        .key_data_size = prior.key_data_size + (edit.key.size() + 4),
+        .value_data_size = prior.value_data_size + (1 + edit.value.size()),
+    };
+  }
+
+  LeafItemsSummary operator()(const LeafItemsSummary& prior, const ItemView& edit) const noexcept
+  {
+    return AddLeafItemsSummary{}(BATT_FORWARD(prior), EditView::from_item_view(edit));
   }
 
   LeafItemsSummary operator()(const LeafItemsSummary& left,
@@ -556,8 +610,6 @@ template <typename ItemsRangeT>
                                              LeafItemsSummary{},
                                              AddLeafItemsSummary{});
 
-  BATT_CHECK_EQ(summary.drop_count, 0);
-
   PackedLeafLayoutPlanBuilder plan_builder;
 
   plan_builder.page_size = page_size;
@@ -568,31 +620,10 @@ template <typename ItemsRangeT>
 
   PackedLeafLayoutPlan plan = plan_builder.build();
 
+  plan.drop_count = summary.drop_count;
+
   return plan;
 }
-
-//=#=#==#==#===============+=+=+=+=++=++++++++++++++-++-+--+-+----+---------------
-//
-struct BufferBoundsChecker {
-  MutableBuffer buffer;
-
-  const void* buffer_begin() const
-  {
-    return this->buffer.data();
-  }
-
-  const void* buffer_end() const
-  {
-    return advance_pointer(this->buffer.data(), this->buffer.size());
-  }
-
-  template <typename T>
-  bool contains(const T* ptr) const
-  {
-    return ((const void*)(ptr + 0) >= this->buffer_begin()) &&  //
-           ((const void*)(ptr + 1) <= this->buffer_end());
-  }
-};
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 // NOTE: `buffer` is the *entire* page buffer, including 64-byte llfs::PackedPageHeader.
@@ -603,13 +634,13 @@ inline PackedLeafPage* build_leaf_page(MutableBuffer buffer,
                                        const Items& items)
 {
   BATT_CHECK_EQ(plan.key_count, std::end(items) - std::begin(items));
-  BATT_CHECK_LE(plan.value_data_end, buffer.size());
+  BATT_CHECK_LE(plan.get_key_value_data_end(), buffer.size());
 
   auto* const p_header = plan.place<PackedLeafPage>(buffer, plan.leaf_header_begin);
 
   p_header->magic = PackedLeafPage::kMagic;
   p_header->key_count = plan.key_count;
-  p_header->total_packed_size = plan.value_data_end - plan.leaf_header_begin;
+  p_header->total_packed_size = plan.get_key_value_data_end() - plan.leaf_header_begin;
 
   PackedLeafPage::Metrics& metrics = PackedLeafPage::metrics();
 
@@ -693,18 +724,32 @@ inline PackedLeafPage* build_leaf_page(MutableBuffer buffer,
   if (plan.trie_index_reserved_size > 0) {
     const MutableBuffer trie_buffer{(void*)advance_pointer(buffer.data(), plan.trie_index_begin),
                                     plan.trie_index_end - plan.trie_index_begin};
-    usize step_size = 16;
+
+    usize step_size = plan.compute_trie_step_size();
+
     bool retried = false;
+    batt::SmallVec<char, 64> upper_bound_key;
     batt::SmallVec<std::string_view, 1024> pivot_keys;
     for (;;) {
       BATT_CHECK_GT(step_size, 0);
-      for (usize i = step_size; i < plan.key_count; i += step_size) {
-        std::string_view k0 = p_header->key_at(i - 1);
-        std::string_view k1 = p_header->key_at(i);
-        std::string_view prefix = llfs::find_common_prefix(0, k0, k1);
-        std::string_view pivot = std::string_view{k1.data(), prefix.size() + 1};
+      if (plan.key_count == 1) {
+        // Construct an artificial upper bound by just appending a character to the one key.
+        //
+        std::string_view k0 = p_header->key_at(0);
+        upper_bound_key.resize(k0.size() + 1);
+        std::memcpy(upper_bound_key.data(), k0.data(), k0.size());
+        upper_bound_key.back() = '~';
+        pivot_keys.emplace_back(std::string_view{upper_bound_key.data(), upper_bound_key.size()});
 
-        pivot_keys.emplace_back(pivot);
+      } else {
+        for (usize i = step_size; i < plan.key_count; i += step_size) {
+          std::string_view k0 = p_header->key_at(i - 1);
+          std::string_view k1 = p_header->key_at(i);
+          std::string_view prefix = llfs::find_common_prefix(0, k0, k1);
+          std::string_view pivot = std::string_view{k1.data(), prefix.size() + 1};
+
+          pivot_keys.emplace_back(pivot);
+        }
       }
 
       // If there are too few keys to build a trie index, then stop here.
@@ -752,6 +797,9 @@ inline PackedLeafPage* build_leaf_page(MutableBuffer buffer,
     BATT_CHECK_LE(p_header->trie_index_size, trie_buffer.size());
 
     metrics.packed_trie_wasted_stats.update(trie_buffer.size() - p_header->trie_index_size);
+
+    BATT_CHECK_NE(p_header->trie_index.offset, 0)
+        << BATT_INSPECT(pivot_keys.size()) << BATT_INSPECT(plan.key_count);
   }
 
   return p_header;

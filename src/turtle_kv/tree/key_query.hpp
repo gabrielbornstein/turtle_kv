@@ -149,7 +149,9 @@ struct KeyQuery {
   BoolStatus reject_page(llfs::PageId page_id_to_reject [[maybe_unused]],
                          const Optional<llfs::PageId>& filter_page_id)
   {
+#if TURTLE_KV_PROFILE_QUERIES
     LatencyTimer timer{Every2ToTheConst<16>{}, Self::metrics().reject_page_latency};
+#endif
 
     Self::metrics().total_filter_query_count.add(1);
 
@@ -250,6 +252,13 @@ struct KeyQuery {
   {
     return this->reject_page(page_id_to_reject, this->filter_page_id_for(page_id_to_reject));
   }
+
+  /** \brief Always disallows cache overcommit; this is where we would change this for queries.
+   */
+  llfs::PageCacheOvercommit& overcommit() const
+  {
+    return llfs::PageCacheOvercommit::not_allowed();
+  }
 };
 
 StatusOr<ValueView> find_key_in_leaf(llfs::PageId leaf_page_id,
@@ -259,5 +268,8 @@ StatusOr<ValueView> find_key_in_leaf(llfs::PageId leaf_page_id,
 StatusOr<ValueView> find_key_in_leaf(const llfs::PageIdSlot& leaf_page_id,
                                      KeyQuery& query,
                                      usize& item_index_out);
+
+StatusOr<u32> find_key_lower_bound_index(llfs::PageId leaf_page_id,
+                                         KeyQuery& query);
 
 }  // namespace turtle_kv

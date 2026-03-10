@@ -2,6 +2,7 @@
 
 #include <turtle_kv/checkpoint.hpp>
 #include <turtle_kv/checkpoint_log_events.hpp>
+#include <turtle_kv/delta_batch_id.hpp>
 #include <turtle_kv/packed_checkpoint.hpp>
 
 #include <turtle_kv/import/optional.hpp>
@@ -24,6 +25,14 @@ struct CheckpointJob {
   CheckpointJob& operator=(const CheckpointJob&) = delete;
   //+++++++++++-+-+--+----- --- -- -  -  -   -
 
+  const llfs::PageCacheJob& job() const
+  {
+    BATT_CHECK(this->appendable_job);
+    return this->appendable_job->get_const_job();
+  }
+
+  //+++++++++++-+-+--+----- --- -- -  -  -   -
+
   // This object retains a shared ownership reference to the token issuer to guarantee correct
   // teardown order.  IMPORTANT: this field must be before `token` so its scope will be wider.
   //
@@ -40,7 +49,7 @@ struct CheckpointJob {
 
   Optional<llfs::PackAsVariant<CheckpointLogEvent, PackedCheckpoint>> packed_checkpoint;
 
-  //+++++++++++-+-+--+----- --- -- -  -  -   -
+  //----- --- -- -  -  -   -
 
   Optional<batt::Grant> append_job_grant;
 
@@ -50,7 +59,16 @@ struct CheckpointJob {
 
   batt::Promise<llfs::SlotRange> promise;
 
+  DeltaBatchId batch_id_upper_bound = DeltaBatchId::min_value();
+
   usize batch_count = 0;
 };
+
+/** \brief Returns the least-ordered DeltaBatchId *not* included in the passed checkpoint.
+ */
+inline DeltaBatchId get_batch_upper_bound(const CheckpointJob& job)
+{
+  return job.batch_id_upper_bound;
+}
 
 }  // namespace turtle_kv
