@@ -13,14 +13,15 @@ namespace turtle_kv {
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-/*static*/ MutableBuffer ChangeLogBlock::allocate_aligned(usize n_bytes) noexcept
+/*static*/ ChangeLogBlock::ChangeLogBlockMemory ChangeLogBlock::allocate_aligned(
+    usize n_bytes) noexcept
 {
   BATT_CHECK_GE(n_bytes, Self::kMinSize);
 
   void* const memory = std::aligned_alloc(Self::kDefaultAlign, n_bytes);
   BATT_CHECK_NOT_NULLPTR(memory);
 
-  return MutableBuffer{memory, n_bytes};
+  return ChangeLogBlock::ChangeLogBlockMemory{memory, n_bytes};
 }
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
@@ -29,38 +30,42 @@ namespace turtle_kv {
                                                     batt::Grant&& grant,
                                                     usize n_bytes) noexcept
 {
-  MutableBuffer const memory = ChangeLogBlock::allocate_aligned(n_bytes);
+  ChangeLogBlock::ChangeLogBlockMemory memory = ChangeLogBlock::allocate_aligned(n_bytes);
 
-  ChangeLogBlock* buffer = new (memory.data()) ChangeLogBlock{owner_id, std::move(grant), n_bytes};
+  void* data = memory.release_ownership();
+
+  ChangeLogBlock* buffer = new (data) ChangeLogBlock{owner_id, std::move(grant), n_bytes};
 
   return buffer;
 }
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-/*static*/ StatusOr<ChangeLogBlock*> ChangeLogBlock::recover(MutableBuffer buffer,
-                                                             batt::Grant&& grant)
+/*static*/ StatusOr<boost::intrusive_ptr<ChangeLogBlock>> ChangeLogBlock::recover(
+    ChangeLogBlock::ChangeLogBlockMemory&& memory,
+    batt::Grant&& grant)
 {
-  ChangeLogBlock* block = reinterpret_cast<ChangeLogBlock*>(buffer.data());
+  ChangeLogBlock* block = reinterpret_cast<ChangeLogBlock*>(memory.data());
+
+  if (block->block_size() != memory.size() || sizeof(ChangeLogBlock) != memory.size()) {
+    return {batt::StatusCode::kDataLoss};
+  }
 
   // Need to check if block_size is zero. It indicates we have read an unitialized block.
   //
   if (block->block_size() == 0) {
-    ChangeLogBlock::free_allocated(block);
     return {batt::StatusCode::kOutOfRange};
   }
 
   batt::Status verify_status = block->verify();
 
   if (!verify_status.ok()) {
-    ChangeLogBlock::free_allocated(block);
     return {batt::StatusCode::kDataLoss};
   }
 
   batt::Status hash_status = block->verify_hash();
 
   if (!hash_status.ok()) {
-    ChangeLogBlock::free_allocated(block);
     return {batt::StatusCode::kDataLoss};
   }
 
@@ -70,7 +75,9 @@ namespace turtle_kv {
   //
   block->set_ref_count(1);
 
-  return block;
+  return boost::intrusive_ptr<ChangeLogBlock>{
+      reinterpret_cast<ChangeLogBlock*>(memory.release_ownership()),
+      false};
 }
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
@@ -194,8 +201,6 @@ batt::Grant ChangeLogBlock::consume_grant() noexcept
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-// TODO: [Gabe Bornstein 2/17/26] Call verify before we write to disk
-//
 batt::Status ChangeLogBlock::verify() const noexcept
 {
   BATT_REQUIRE_NE(this->magic_, ChangeLogBlock::kExpired);
@@ -207,6 +212,8 @@ batt::Status ChangeLogBlock::verify() const noexcept
 //
 batt::Status ChangeLogBlock::verify_hash() const noexcept
 {
+  // XXH3_64bits requires a size >= 0 or else it will segfault
+  //
   BATT_CHECK_GE(this->block_size() - sizeof(ChangeLogBlock), 0);
 
   u64 xxh3_hash = XXH3_64bits(this + 1, this->block_size() - sizeof(ChangeLogBlock));

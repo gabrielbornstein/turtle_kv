@@ -50,6 +50,64 @@ class ChangeLogBlock
     u16 offset;
   };
 
+  class ChangeLogBlockMemory
+  {
+   public:
+    using Self = ChangeLogBlockMemory;
+
+    explicit ChangeLogBlockMemory(void* ptr, usize size) noexcept : buffer_{ptr, size}
+    {
+    }
+
+    ChangeLogBlockMemory(const Self&) = delete;
+    Self& operator=(const Self&) = delete;
+
+    ChangeLogBlockMemory(Self&& other) noexcept : buffer_{std::exchange(other.buffer_, {})}
+    {
+    }
+
+    Self& operator=(Self&& other) noexcept
+    {
+      if (this != &other) {
+        // Free any memory currently owned by *this beore overwriting it.
+        //
+        if (this->buffer_.data() != nullptr) {
+          free(this->buffer_.data());
+        }
+
+        this->buffer_ = std::exchange(other.buffer_, {});
+      }
+      return *this;
+    }
+
+    ~ChangeLogBlockMemory() noexcept
+    {
+      if (this->buffer_.data() != nullptr) {
+        free(this->buffer_.data());
+      }
+    }
+
+    void* data() const
+    {
+      return this->buffer_.data();
+    }
+
+    usize size() const
+    {
+      return this->buffer_.size();
+    }
+
+    void* release_ownership()
+    {
+      void* released_ptr = this->buffer_.data();
+      this->buffer_ = MutableBuffer{};
+      return released_ptr;
+    }
+
+   private:
+    MutableBuffer buffer_;
+  };
+
   /** \brief ChangeLogBlock objects must be deallocated by calling ChangeLogBlock::remove_ref(); the
    * delete operator is disabled to enforce this.
    */
@@ -58,7 +116,7 @@ class ChangeLogBlock
   /** \brief Allocates and returns a pointer of the specifed size aligned to
    * ChangeLogBlock::kDefaultAlign bytes.
    */
-  static MutableBuffer allocate_aligned(usize n_bytes) noexcept;
+  static ChangeLogBlockMemory allocate_aligned(usize n_bytes) noexcept;
 
   /** \brief Allocates and returns a buffer of the specifed size.
    */
@@ -75,7 +133,8 @@ class ChangeLogBlock
   /** \brief Read a ChangeLogBlock from the ChangeLogFile into the buffer, buf. Returns an error
    * status if malformed or unsuccessful.
    */
-  static StatusOr<ChangeLogBlock*> recover(MutableBuffer buf, batt::Grant&& grant);
+  static StatusOr<boost::intrusive_ptr<ChangeLogBlock>> recover(ChangeLogBlockMemory&& memory,
+                                                                batt::Grant&& grant);
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
 

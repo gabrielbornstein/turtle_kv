@@ -269,22 +269,23 @@ batt::StatusOr<std::vector<boost::intrusive_ptr<ChangeLogBlock>>>
 ChangeLogFile::read_blocks_into_vector()
 {
   std::vector<boost::intrusive_ptr<ChangeLogBlock>> blocks;
-  batt::Status read_blocks_status = this->read_blocks([&](ChangeLogBlock* block) -> batt::Status {
-    BATT_CHECK_EQ(block->ref_count(), 1);
+  batt::Status read_blocks_status =
+      this->read_blocks([&](boost::intrusive_ptr<ChangeLogBlock> block) -> batt::Status {
+        BATT_CHECK_EQ(block->ref_count(), 1);
 
-    // If block size is zero, block has not been initialized. Stop reading here.
-    //
-    if (block->block_size() == 0) {
-      return batt::StatusCode::kLoopBreak;
-    }
+        // If block size is zero, block has not been initialized. Stop reading here.
+        //
+        if (block->block_size() == 0) {
+          return batt::StatusCode::kLoopBreak;
+        }
 
-    blocks.emplace_back(boost::intrusive_ptr<ChangeLogBlock>{block, false});
+        blocks.push_back(block);
 
-    VLOG(3) << "ChangeLogBlock->block_size() == " << blocks.back()->block_size()
-            << " owner_id() == " << blocks.back()->owner_id();
+        VLOG(3) << "ChangeLogBlock->block_size() == " << blocks.back()->block_size()
+                << " owner_id() == " << blocks.back()->owner_id();
 
-    return batt::OkStatus();
-  });
+        return batt::OkStatus();
+      });
 
   BATT_REQUIRE_OK(read_blocks_status);
   return blocks;
