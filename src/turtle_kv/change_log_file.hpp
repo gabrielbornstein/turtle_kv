@@ -137,7 +137,7 @@ class ChangeLogFile
    * Ownership of the ChangeLogBlock's memory is transferred to `process_block`.
    * `process_block` must free the block's memory if it plans to do nothing with it.
    */
-  template <typename SerializeFn = batt::Status(ChangeLogBlock*)>
+  template <typename SerializeFn = batt::Status(boost::intrusive_ptr<ChangeLogBlock>)>
   batt::Status read_blocks(SerializeFn process_block);
 
   StatusOr<ReadLock> append(batt::Grant& grant, batt::SmallVecBase<ConstBuffer>& data) noexcept;
@@ -197,7 +197,7 @@ class ChangeLogFile
 
   void unlock_for_read(const Interval<i64>& block_range) noexcept;
 
-  void update_lower_bound(i64 update_upper_bound) noexcept;
+  void update_lower_bound() noexcept;
 
   /** \brief Marks grant as in use by adding grant to this->in_use_block_tokens_.
    * Updates this->upper_bound_ to include the new number of blocks_written.
@@ -283,15 +283,13 @@ batt::Status ChangeLogFile::read_blocks(SerializeFn process_block)
       return batt::OkStatus();
     }
 
-    Interval<i64> block_range{blocks_read, blocks_read + 1};
-
-    (*block)->set_read_lock(this->set_block_range_in_use((*block)->get_grant(), block_range));
-
-    this->upper_bound_.fetch_add(block_range.size());
+    // TODO: [Gabe Bornstein 3/11/26] Eventually, call (*block)->set_read_lock and
+    // this->upper_bound_.fetch_add() when we know the logical ranges of each block.
+    //
 
     // `process_block` is responsible for determining when to stop reading.
     //
-    batt::Status process_status = process_block(*block);
+    batt::Status process_status = process_block(std::move(*block));
     if (process_status == batt::StatusCode::kLoopBreak) {
       break;
     } else if (!process_status.ok()) {

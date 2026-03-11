@@ -97,7 +97,7 @@ class ChangeLogBlock
       return this->buffer_.size();
     }
 
-    MutableBuffer buffer()
+    const MutableBuffer buffer()
     {
       return this->buffer_;
     }

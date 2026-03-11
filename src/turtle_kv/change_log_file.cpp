@@ -147,11 +147,8 @@ auto ChangeLogFile::PackedConfig::unpack() const noexcept -> ChangeLogFile::Conf
 ChangeLogFile::~ChangeLogFile() noexcept
 {
   Interval<i64> block_range = this->active_blocks();
+  BATT_CHECK_EQ(block_range.size(), 0);
 
-  this->for_block_range(block_range, [](i64 block_i [[maybe_unused]], ReadLockCounter& counter) {
-    BATT_CHECK_EQ(counter->load(), 0)
-        << "Error when destructing ChangeLogFile, not all ReadLockCounter's are released.";
-  });
   VLOG(1) << BATT_INSPECT(this->write_throughput_.get());
 }
 
@@ -175,12 +172,13 @@ void ChangeLogFile::unlock_for_read(const Interval<i64>& block_range) noexcept
                               << BATT_INSPECT(batt::to_string(std::hex, (u64)old_count))
                               << BATT_INSPECT(block_i) << BATT_INSPECT(this->config_.block_count);
                         });
-  this->update_lower_bound(block_range.upper_bound);
+
+  this->update_lower_bound();
 }
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-void ChangeLogFile::update_lower_bound(i64 update_upper_bound) noexcept
+void ChangeLogFile::update_lower_bound() noexcept
 {
   u64 n_blocks_freed = 0;
   i64 old_lower_bound = 0;
@@ -188,14 +186,20 @@ void ChangeLogFile::update_lower_bound(i64 update_upper_bound) noexcept
   {
     absl::MutexLock lock{&this->lower_bound_mutex_};
 
+    i64 observed_upper_bound = this->upper_bound_.load();
     i64 observed_lower_bound = this->lower_bound_.load();
     i64 new_lower_bound = observed_lower_bound;
     old_lower_bound = observed_lower_bound;
 
     i64 addr = new_lower_bound % this->config_.block_count;
-    while (new_lower_bound < update_upper_bound) {
-      if (this->read_lock_counter_per_block_[addr]->load() > 0) {
-        break;
+    while (this->read_lock_counter_per_block_[addr]->load() == 0) {
+      if (new_lower_bound >= observed_upper_bound) {
+        i64 new_observed_upper_bound = this->upper_bound_.load();
+        if (new_observed_upper_bound == observed_upper_bound) {
+          break;
+        } else {
+          observed_upper_bound = new_observed_upper_bound;
+        }
       }
       ++addr;
       if (addr == this->config_.block_count) {
@@ -205,12 +209,8 @@ void ChangeLogFile::update_lower_bound(i64 update_upper_bound) noexcept
       ++n_blocks_freed;
     }
 
-    while (observed_lower_bound < new_lower_bound) {
-      if (this->lower_bound_.compare_exchange_weak(observed_lower_bound, new_lower_bound)) {
-        break;
-      }
-    }
-
+    const i64 prior_lower_bound = this->lower_bound_.exchange(new_lower_bound);
+    BATT_CHECK_EQ(prior_lower_bound, observed_lower_bound);
     BATT_CHECK_EQ(new_lower_bound - old_lower_bound, BATT_CHECKED_CAST(i64, n_blocks_freed));
   }
 
@@ -272,12 +272,6 @@ ChangeLogFile::read_blocks_into_vector()
   batt::Status read_blocks_status =
       this->read_blocks([&](boost::intrusive_ptr<ChangeLogBlock> block) -> batt::Status {
         BATT_CHECK_EQ(block->ref_count(), 1);
-
-        // If block size is zero, block has not been initialized. Stop reading here.
-        //
-        if (block->block_size() == 0) {
-          return batt::StatusCode::kLoopBreak;
-        }
 
         blocks.push_back(block);
 

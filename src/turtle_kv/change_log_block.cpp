@@ -46,14 +46,14 @@ namespace turtle_kv {
 {
   ChangeLogBlock* block = reinterpret_cast<ChangeLogBlock*>(memory.data());
 
-  if (block->block_size() != memory.size() || sizeof(ChangeLogBlock) != memory.size()) {
-    return {batt::StatusCode::kDataLoss};
-  }
-
   // Need to check if block_size is zero. It indicates we have read an unitialized block.
   //
   if (block->block_size() == 0) {
     return {batt::StatusCode::kOutOfRange};
+  }
+
+  if (block->block_size() != memory.size()) {
+    return {batt::StatusCode::kDataLoss};
   }
 
   batt::Status verify_status = block->verify();
