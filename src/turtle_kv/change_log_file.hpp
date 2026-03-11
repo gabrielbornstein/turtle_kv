@@ -259,12 +259,10 @@ batt::Status ChangeLogFile::read_blocks(SerializeFn process_block)
 
     BATT_REQUIRE_OK(buffer_grant);
 
-    ChangeLogBlock::ChangeLogBlockMemory block_memory =
+    ChangeLogBlock::ScopedMemory block_memory =
         ChangeLogBlock::allocate_aligned(this->config_.block_size);
 
-    MutableBuffer block_buffer{block_memory.data(), block_memory.size()};
-
-    batt::Status read_status = this->file_.read_all(curr_file_offset, block_buffer);
+    batt::Status read_status = this->file_.read_all(curr_file_offset, block_memory.buffer());
 
     if (!read_status.ok()) {
       LOG(INFO) << "Recovered " << blocks_read << " blocks. Stopped reading with status:"

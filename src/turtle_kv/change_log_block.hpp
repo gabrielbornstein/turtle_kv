@@ -50,19 +50,19 @@ class ChangeLogBlock
     u16 offset;
   };
 
-  class ChangeLogBlockMemory
+  class ScopedMemory
   {
    public:
-    using Self = ChangeLogBlockMemory;
+    using Self = ScopedMemory;
 
-    explicit ChangeLogBlockMemory(void* ptr, usize size) noexcept : buffer_{ptr, size}
+    explicit ScopedMemory(void* ptr, usize size) noexcept : buffer_{ptr, size}
     {
     }
 
-    ChangeLogBlockMemory(const Self&) = delete;
+    ScopedMemory(const Self&) = delete;
     Self& operator=(const Self&) = delete;
 
-    ChangeLogBlockMemory(Self&& other) noexcept : buffer_{std::exchange(other.buffer_, {})}
+    ScopedMemory(Self&& other) noexcept : buffer_{std::exchange(other.buffer_, {})}
     {
     }
 
@@ -80,7 +80,7 @@ class ChangeLogBlock
       return *this;
     }
 
-    ~ChangeLogBlockMemory() noexcept
+    ~ScopedMemory() noexcept
     {
       if (this->buffer_.data() != nullptr) {
         free(this->buffer_.data());
@@ -95,6 +95,11 @@ class ChangeLogBlock
     usize size() const
     {
       return this->buffer_.size();
+    }
+
+    MutableBuffer buffer()
+    {
+      return this->buffer_;
     }
 
     void* release_ownership()
@@ -116,7 +121,7 @@ class ChangeLogBlock
   /** \brief Allocates and returns a pointer of the specifed size aligned to
    * ChangeLogBlock::kDefaultAlign bytes.
    */
-  static ChangeLogBlockMemory allocate_aligned(usize n_bytes) noexcept;
+  static ScopedMemory allocate_aligned(usize n_bytes) noexcept;
 
   /** \brief Allocates and returns a buffer of the specifed size.
    */
@@ -133,7 +138,7 @@ class ChangeLogBlock
   /** \brief Read a ChangeLogBlock from the ChangeLogFile into the buffer, buf. Returns an error
    * status if malformed or unsuccessful.
    */
-  static StatusOr<boost::intrusive_ptr<ChangeLogBlock>> recover(ChangeLogBlockMemory&& memory,
+  static StatusOr<boost::intrusive_ptr<ChangeLogBlock>> recover(ScopedMemory&& memory,
                                                                 batt::Grant&& grant);
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
@@ -161,21 +166,6 @@ class ChangeLogBlock
   i32 ref_count() const noexcept
   {
     return this->ref_count_;
-  }
-
-  void set_ref_count(i64 ref_count)
-  {
-    this->ref_count_.store(ref_count);
-  }
-
-  /** \brief Helper function to initialize the ephemeral state of this ChangeLogBlock. Transfers
-   * ownership of grant to ChangeLogBlock, and initializes the reference count to ref_count.
-   */
-  void init_ephemeral_state(batt::Grant&& grant)
-  {
-    new (&this->ephemeral_state_storage_) EphemeralStatePtr{new EphemeralState{std::move(grant)}};
-
-    BATT_CHECK_EQ(this->ephemeral_state().grant_.size(), 1);
   }
 
   /** \brief Return a referenece to this ChangeLogBlock's underlying grant.
@@ -344,6 +334,21 @@ class ChangeLogBlock
   const SlotInfo* slots_rend() const noexcept
   {
     return this->slots_rbegin() - this->slot_count_;
+  }
+
+  void set_ref_count(i64 ref_count)
+  {
+    this->ref_count_.store(ref_count);
+  }
+
+  /** \brief Helper function to initialize the ephemeral state of this ChangeLogBlock. Transfers
+   * ownership of grant to ChangeLogBlock, and initializes the reference count to ref_count.
+   */
+  void init_ephemeral_state(batt::Grant&& grant)
+  {
+    new (&this->ephemeral_state_storage_) EphemeralStatePtr{new EphemeralState{std::move(grant)}};
+
+    BATT_CHECK_EQ(this->ephemeral_state().grant_.size(), 1);
   }
 
   EphemeralStatePtr& ephemeral_state_ptr() noexcept

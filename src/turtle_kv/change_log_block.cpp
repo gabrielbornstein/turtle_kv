@@ -13,15 +13,14 @@ namespace turtle_kv {
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-/*static*/ ChangeLogBlock::ChangeLogBlockMemory ChangeLogBlock::allocate_aligned(
-    usize n_bytes) noexcept
+/*static*/ ChangeLogBlock::ScopedMemory ChangeLogBlock::allocate_aligned(usize n_bytes) noexcept
 {
   BATT_CHECK_GE(n_bytes, Self::kMinSize);
 
   void* const memory = std::aligned_alloc(Self::kDefaultAlign, n_bytes);
   BATT_CHECK_NOT_NULLPTR(memory);
 
-  return ChangeLogBlock::ChangeLogBlockMemory{memory, n_bytes};
+  return ChangeLogBlock::ScopedMemory{memory, n_bytes};
 }
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
@@ -30,7 +29,7 @@ namespace turtle_kv {
                                                     batt::Grant&& grant,
                                                     usize n_bytes) noexcept
 {
-  ChangeLogBlock::ChangeLogBlockMemory memory = ChangeLogBlock::allocate_aligned(n_bytes);
+  ChangeLogBlock::ScopedMemory memory = ChangeLogBlock::allocate_aligned(n_bytes);
 
   void* data = memory.release_ownership();
 
@@ -42,7 +41,7 @@ namespace turtle_kv {
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
 /*static*/ StatusOr<boost::intrusive_ptr<ChangeLogBlock>> ChangeLogBlock::recover(
-    ChangeLogBlock::ChangeLogBlockMemory&& memory,
+    ChangeLogBlock::ScopedMemory&& memory,
     batt::Grant&& grant)
 {
   ChangeLogBlock* block = reinterpret_cast<ChangeLogBlock*>(memory.data());
