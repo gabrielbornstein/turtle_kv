@@ -202,7 +202,7 @@ batt::Grant ChangeLogBlock::consume_grant() noexcept
 //
 batt::Status ChangeLogBlock::verify() const noexcept
 {
-  BATT_REQUIRE_NE(this->magic_, ChangeLogBlock::kExpired);
+  static_assert(ChangeLogBlock::kMagic != ChangeLogBlock::kExpired);
   BATT_REQUIRE_EQ(this->magic_, ChangeLogBlock::kMagic);
   return batt::OkStatus();
 }
