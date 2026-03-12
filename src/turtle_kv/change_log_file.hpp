@@ -176,7 +176,7 @@ class ChangeLogFile
 
   void unlock_for_read(const Interval<i64>& block_range) noexcept;
 
-  void update_lower_bound(i64 update_upper_bound) noexcept;
+  void update_lower_bound() noexcept;
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
 

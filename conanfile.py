@@ -59,7 +59,7 @@ class TurtleKvRecipe(ConanFile):
         self.requires("batteries/[>=0.61.0 <1]", **VISIBLE, **OVERRIDE)
         self.requires("boost/1.88.0", **VISIBLE, **OVERRIDE)
         self.requires("glog/0.7.1", **VISIBLE)
-        self.requires("llfs/[>=0.43.3 <1]", **VISIBLE)
+        self.requires("llfs/0.43.4.dev0+dirty", **VISIBLE)
         self.requires("pcg-cpp/cci.20220409", **VISIBLE)
         self.requires("zlib/1.3.1", **OVERRIDE)
 
@@ -69,7 +69,7 @@ class TurtleKvRecipe(ConanFile):
 
         if platform.system() == "Linux":
             self.requires("keyvcr/[>=0.2.1 <1]", **VISIBLE)
-            self.requires("vqf/[>=0.2.5 <1]", **VISIBLE)
+            self.requires("vqf/0.2.5-devel", **VISIBLE)
             self.requires("libfuse/[>=3.16.2 <4]", **VISIBLE)
             self.requires("libunwind/[>=1.8.1 <2]", **VISIBLE, **OVERRIDE)
             self.requires("liburing/[>=2.11 <3]", **VISIBLE)
