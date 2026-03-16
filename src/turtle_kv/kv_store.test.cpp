@@ -58,7 +58,7 @@ class KVStoreTest : public ::testing::Test
     this->rng = std::default_random_engine{/*seed=*/1};
     this->generate_key = RandomStringGenerator{};
 
-    SetupDefaultConfig();
+    this->SetupDefaultConfig();
   }
 
   void TearDown() override
@@ -147,7 +147,6 @@ class KVStoreTest : public ::testing::Test
   void ShutdownKVStore(std::unique_ptr<KVStore>& kv_store)
   {
     if (kv_store) {
-      std::this_thread::sleep_for(std::chrono::seconds(1));
       kv_store->halt();
       kv_store->join();
       kv_store.reset();
@@ -479,6 +478,7 @@ TEST_P(CheckpointTest, CheckpointRecovery)
   BATT_CHECK_EQ(num_checkpoints_created, this->num_checkpoints_to_create)
       << "Did not take the correct number of checkpoints. There is a bug in this test.";
 
+  std::this_thread::sleep_for(std::chrono::seconds(1));
   this->ShutdownKVStore(kv_store);
 
   batt::StatusOr<std::unique_ptr<llfs::Volume>> checkpoint_log_volume =
@@ -553,10 +553,7 @@ TEST_F(KVStoreTest, ChangeLogRecovery)
 
   int i = 0;
   for (auto block : *blocks) {
-    // TODO: [Gabe Bornstein 2/4/26] Investigate why verify is failing. It fails as soon as
-    // ChangeLogBlock is recovered.
-    //
-    // ASSERT_TRUE(block->verify().ok());
+    ASSERT_TRUE(block->verify().ok());
     VLOG(1) << "Reading block " << i << " with owner_id() == " << block->owner_id()
             << ", and block_size() == " << block->block_size();
     ASSERT_NE(block->owner_id(), 0);
