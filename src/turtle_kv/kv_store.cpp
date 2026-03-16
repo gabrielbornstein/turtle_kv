@@ -838,8 +838,6 @@ Status KVStore::update_checkpoint(const State* observed_state)
   intrusive_ptr_add_ref(new_state);
   BATT_CHECK_EQ(new_state->use_count(), 1);
 
-  // TODO: [Gabe Bornstein 3/6/26] Instead of using next_offset might be able to use ->upper_bound()
-  //
   const u64 next_mem_table_id = old_mem_table->next_offset();
   new_state->mem_table_ = this->create_mem_table(next_mem_table_id);
 
@@ -903,7 +901,7 @@ Status KVStore::update_checkpoint(const State* observed_state)
     LatencyTimer queue_push_timer{this->metrics_.put_memtable_queue_push_latency};
 #endif
 
-    BATT_REQUIRE_OK(this->memtable_compact_channels_[0].write(std::move(old_mem_table)));
+    BATT_REQUIRE_OK(this->memtable_compact_channels_.begin()->write(std::move(old_mem_table)));
 
   } else {
     BATT_REQUIRE_OK(this->compact_memtable(  //
@@ -1042,15 +1040,7 @@ KVStore::compact_memtable(boost::intrusive_ptr<MemTable>&& mem_table, Fn&& consu
   // Handle empty MemTable case specially.
   //
   if (!has_next) {
-    // TODO: [Gabe Bornstein 3/4/26] CURRENTLY NOT WRITTEN ACCURATELY. Do we know
-    // mem_table->upper_bound() here? Need to replace "1" with
-    // mem_table->upper_bound()... but upper_bound is zero. Conflicts with a check in
-    // CheckpointGenerator::apply_batch() (batch->batch_id() <=
-    // this->base_checkpoint_.batch_upper_bound()
-    //
-    LOG(INFO) << "mem_table->id() == " << mem_table->id()
-              << ", mem_table->upper_bound() == " << mem_table->upper_bound();
-    auto empty_batch = std::make_unique<DeltaBatch>(DeltaBatchId{1, 0},
+    auto empty_batch = std::make_unique<DeltaBatch>(DeltaBatchId{0, 0},
                                                     batt::make_copy(mem_table),
                                                     DeltaBatch::ResultSet{});
 

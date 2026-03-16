@@ -11,7 +11,7 @@ namespace turtle_kv {
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-/*static*/ ChangeLogBlock* ChangeLogBlock::allocate(u64 owner_id,
+/*static*/ ChangeLogBlock* ChangeLogBlock::allocate(u64 offset,
                                                     batt::Grant&& grant,
                                                     usize n_bytes) noexcept
 {
@@ -20,18 +20,18 @@ namespace turtle_kv {
   void* const memory = std::aligned_alloc(Self::kDefaultAlign, n_bytes);
   BATT_CHECK_NOT_NULLPTR(memory);
 
-  ChangeLogBlock* buffer = new (memory) ChangeLogBlock{owner_id, std::move(grant), n_bytes};
+  ChangeLogBlock* buffer = new (memory) ChangeLogBlock{offset, std::move(grant), n_bytes};
 
   return buffer;
 }
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-/*explicit*/ ChangeLogBlock::ChangeLogBlock(u64 owner_id,
+/*explicit*/ ChangeLogBlock::ChangeLogBlock(u64 offset,
                                             batt::Grant&& grant,
                                             usize block_size) noexcept
     : magic_{reinterpret_cast<u64>(this) ^ ChangeLogBlock::kMagic}
-    , owner_id_{owner_id}
+    , offset_{offset}
     , block_size_{BATT_CHECKED_CAST(u16, block_size)}
     , slot_count_{0}
     , space_{BATT_CHECKED_CAST(u16,

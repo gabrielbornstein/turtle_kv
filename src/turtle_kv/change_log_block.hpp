@@ -55,7 +55,7 @@ class ChangeLogBlock
 
   /** \brief Allocates and returns a buffer of the specifed size.
    */
-  static ChangeLogBlock* allocate(u64 owner_id, batt::Grant&& grant, usize n_bytes) noexcept;
+  static ChangeLogBlock* allocate(u64 id, batt::Grant&& grant, usize n_bytes) noexcept;
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
 
@@ -64,9 +64,9 @@ class ChangeLogBlock
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
 
-  u64 owner_id() const noexcept
+  u64 offset() const noexcept
   {
-    return this->owner_id_;
+    return this->offset_;
   }
 
   /** \brief Adds `count` references to this buffer.
@@ -209,7 +209,7 @@ class ChangeLogBlock
   /** \brief Constructs a new ChangeLogBlock; must only be called from (static)
    * ChangeLogBlock::allocate.
    */
-  explicit ChangeLogBlock(u64 owner_id, batt::Grant&& grant, usize block_size) noexcept;
+  explicit ChangeLogBlock(u64 offset, batt::Grant&& grant, usize block_size) noexcept;
 
   /** \brief Marks the ChangeLogBlock as expired; the Grant is released.
    */
@@ -254,9 +254,10 @@ class ChangeLogBlock
    */
   u64 magic_;
 
-  /** \brief The id of the MemTable that owns this block.
+  /** \brief The id of this block. It is equivalent to the minimum lower bound edit offset of all
+   * slots stored by this block.
    */
-  u64 owner_id_;  // TODO [tastolfi 2025-12-16] rename: GBID (global block id)
+  u64 offset_;
 
   /** \brief The total size of the block, including this object.
    */

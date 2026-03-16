@@ -48,7 +48,7 @@ namespace turtle_kv {
     , max_byte_size_{this->calculate_max_byte_size()}
     , current_byte_size_{0}
     , self_id_{id}
-    , next_block_owner_id_{id}
+    , next_block_offset_{id}
     , version_{0}
     , block_list_mutex_{}
     , blocks_{}

@@ -132,7 +132,7 @@ class ChangeLogWriter
      * this Context. \return the sequence number (index) of the newly formatted slot.
      */
     template <typename SerializeFn = void(BlockBuffer*, MutableBuffer buffer)>
-    StatusOr<Index> append_slot(u64 owner_id,
+    StatusOr<Index> append_slot(u64 offset,
                                 usize byte_size,
                                 const SerializeFn& serialize_fn) noexcept;
 
@@ -255,7 +255,7 @@ class ChangeLogWriter
   /** \brief Allocates and returns a new BlockBuffer of the configured size.  This function may
    * block waiting to acquire Grant from the Volume (i.e. Volume::reserve).
    */
-  auto allocate_buffer(u64 owner_id) noexcept -> StatusOr<BlockBuffer*>;
+  auto allocate_buffer(u64 offset) noexcept -> StatusOr<BlockBuffer*>;
 
   /** \brief The background writer task; continuously polls all associated Contexts for new
    * data. When new data is found, it is merged in index-order and written in batches (as large
@@ -300,7 +300,7 @@ class ChangeLogWriter
 // #=##=##=#==#=#==#===#+==#+==========+==+=+=+=+=+=++=+++=+++++=-++++=-+++++++++++
 
 template <typename SerializeFn>
-inline auto ChangeLogWriter::Context::append_slot(u64 owner_id,
+inline auto ChangeLogWriter::Context::append_slot(u64 offset,
                                                   usize byte_size,
                                                   const SerializeFn& serialize_fn) noexcept
     -> StatusOr<Index>
@@ -323,7 +323,7 @@ inline auto ChangeLogWriter::Context::append_slot(u64 owner_id,
     // If no buffer, allocate one.
     //
     if (no_buffer) {
-      BATT_ASSIGN_OK_RESULT(buffer, writer.allocate_buffer(owner_id));
+      BATT_ASSIGN_OK_RESULT(buffer, writer.allocate_buffer(offset));
       writer.metrics_.block_alloc_count.add(1);
     }
     BATT_CHECK_NOT_NULLPTR(buffer);

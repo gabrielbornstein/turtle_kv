@@ -77,9 +77,11 @@ StatusOr<usize> CheckpointGenerator::apply_batch(std::unique_ptr<DeltaBatch>&& b
     BATT_CHECK_LT(batch->batch_id(), this->batch_id_upper_bound_);
   }
 
-  // Skip unless base_checkpoint.rollup_slot_upper_bound() <= batch->slot_range.lower_bound
+  // Skip unless base_checkpoint.rollup_slot_upper_bound() <= batch->slot_range.lower_bound. In the
+  // case of our very first batch (no checkpoint, batch_is is min_value()), continue.
   //
-  if (batch->batch_id() <= this->base_checkpoint_.batch_upper_bound()) {
+  if (batch->batch_id() <= this->base_checkpoint_.batch_upper_bound() &&
+      this->base_checkpoint_.batch_upper_bound() != DeltaBatchId::min_value()) {
     LOG(INFO) << " -- Old batch; ignoring...";
     return {0u};
   }

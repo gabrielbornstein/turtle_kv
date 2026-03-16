@@ -348,7 +348,7 @@ class MemTable : public batt::RefCounted<MemTable>
 
   u64 self_id_;
 
-  u64 next_block_owner_id_;
+  u64 next_block_offset_;
 
   std::atomic<u32> version_;
 
@@ -409,12 +409,12 @@ void MemTable::StorageImpl::store_data(usize n_bytes, SerializeFn&& serialize_fn
       // apply the first edit to the block. I need to better understand concurrency here to make
       // sure this is valid. Can multiple blocks be grabbing this value? If yes, it's an issue.
       //
-      this->mem_table.next_block_owner_id_,
+      this->mem_table.next_block_offset_,
       n_bytes,
       [&](ChangeLogWriter::BlockBuffer* buffer, const MutableBuffer& dst) {
         MemTable& mem_table = this->mem_table;
 
-        BATT_CHECK_GE(buffer->owner_id(), mem_table.self_id_);
+        BATT_CHECK_GE(buffer->offset(), mem_table.self_id_);
 
         if (buffer->ref_count() == 1) {
           buffer->add_ref(1);
@@ -429,7 +429,7 @@ void MemTable::StorageImpl::store_data(usize n_bytes, SerializeFn&& serialize_fn
             // TODO: [Gabe Bornstein 3/5/26] Consider delaying setting this. Instead, set it when we
             // apply the first edit to the block.
             //
-            mem_table.next_block_owner_id_ = mem_table.next_offset();
+            mem_table.next_block_offset_ = mem_table.next_offset();
           }
           mem_table.handle_external_cache_alloc(cache_alloc_delta);
         }
