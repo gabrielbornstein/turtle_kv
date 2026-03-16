@@ -888,6 +888,7 @@ Status KVStore::update_checkpoint(const State* observed_state)
   // As long as no puts are concurrently happening, this variant holds true.
   //
   BATT_CHECK_EQ(old_mem_table->next_offset(), old_mem_table->upper_bound());
+  BATT_CHECK_EQ(next_mem_table_id, old_mem_table->upper_bound());
 
   // Wait for any previous MemTables to be consumed by the compactor task.
   //

@@ -47,11 +47,7 @@ namespace turtle_kv {
     , max_batch_count_{BATT_CHECKED_CAST(i64, max_batch_count)}
     , max_byte_size_{this->calculate_max_byte_size()}
     , current_byte_size_{0}
-    // TODO: [Gabe Bornstein 3/5/26] Figure out how to replace this with an edit_offset.
-    //
     , self_id_{id}
-    // TODO: [Gabe Bornstein 3/5/26] Figure out how to replace this with an edit_offset.
-    //
     , next_block_owner_id_{id}
     , version_{0}
     , block_list_mutex_{}
@@ -114,7 +110,7 @@ Status MemTable::put(ChangeLogWriter::Context& context,
     const i64 old_mem_table_size = this->current_byte_size_.fetch_add(item_size);
     const i64 new_mem_table_size = old_mem_table_size + item_size;
 
-    this->next_offset_.fetch_add(item_size);
+    // this->next_offset_.fetch_add(item_size);
 
     if (new_mem_table_size > this->max_byte_size_.load()) {
       this->current_byte_size_.fetch_sub(item_size);

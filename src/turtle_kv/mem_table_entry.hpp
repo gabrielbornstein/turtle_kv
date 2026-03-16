@@ -128,6 +128,9 @@ struct MemTableEntryInserter {
       auto* header_dst = place_first<little_u16>(buffer.data());
       *header_dst = key_len;
 
+      // TODO: [Gabe Bornstein 3/16/26] Update header to include edit_offset of update.
+      //
+
       key_dst = place_next<char>(header_dst, 1);
       std::memcpy(key_dst, this->key.data(), key_len);
 
@@ -168,6 +171,9 @@ struct MemTableEntryInserter {
       header->key_len = 0;
       header->revision = static_cast<u16>(revision);
       header->version = this->version;
+
+      // TODO: [Gabe Bornstein 3/16/26] Update header to include edit_offset of update.
+      //
 
       auto* value_dst = place_next<char>(header, 1);
       std::memcpy(value_dst, this->value.data(), value_len);
@@ -344,6 +350,8 @@ class MemTableValueEntry
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
 
+  // TODO: [Gabe Bornstein 3/16/26] Update to include edit_offset of update.
+  //
   const char* key_data_;
   const char* value_data_;
   mutable u32 value_size_;
@@ -424,6 +432,9 @@ struct MemTableValueEntryInserter {
       auto* header_dst = place_first<little_u16>(buffer.data());
       *header_dst = key_len;
 
+      // TODO: [Gabe Bornstein 3/16/26] Update header to include edit_offset of update.
+      //
+
       key_dst = place_next<char>(header_dst, 1);
       std::memcpy(key_dst, this->key.data(), key_len);
 
@@ -454,6 +465,9 @@ struct MemTableValueEntryInserter {
       header->key_len = 0;
       header->revision = 0;  // TODO [tastolfi 2025-07-24]
       header->version = this->version;
+
+      // TODO: [Gabe Bornstein 3/16/26] Update header to include edit_offset of update.
+      //
 
       auto* value_dst = place_next<char>(header, 1);
       std::memcpy(value_dst, this->value.data(), value_len);

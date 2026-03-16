@@ -436,6 +436,10 @@ void MemTable::StorageImpl::store_data(usize n_bytes, SerializeFn&& serialize_fn
 
         serialize_fn(dst);
       }));
+  // TODO: [Gabe Bornstein 3/5/26] Consider updating the value of mem_table.next_offset
+  // here instead of in KVStore::put().
+  //
+  this->mem_table.next_offset_.fetch_add(n_bytes);
 }
 
 /** \brief Returns the greatest ordered DeltaBatchId included in the passed MemTable.
