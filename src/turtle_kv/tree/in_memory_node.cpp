@@ -3,10 +3,12 @@
 
 #include <turtle_kv/tree/algo/nodes.hpp>
 #include <turtle_kv/tree/algo/segmented_levels.hpp>
+#include <turtle_kv/tree/algo/segments.hpp>
 #include <turtle_kv/tree/filter_builder.hpp>
 #include <turtle_kv/tree/leaf_page_view.hpp>
 #include <turtle_kv/tree/node_page_view.hpp>
 #include <turtle_kv/tree/segmented_level_scanner.hpp>
+#include <turtle_kv/tree/subtree_viability.hpp>
 
 #include <turtle_kv/core/algo/split_parts.hpp>
 #include <turtle_kv/core/key_view.hpp>
@@ -14,6 +16,7 @@
 #include <turtle_kv/core/value_view.hpp>
 
 #include <batteries/case_of.hpp>
+#include <batteries/require.hpp>
 
 namespace turtle_kv {
 
@@ -44,6 +47,8 @@ using PackedSegment = PackedUpdateBuffer::Segment;
                                              packed_node.is_size_tiered());
 
   const usize pivot_count = packed_node.pivot_count();
+
+  BATT_REQUIRE_LE(pivot_count, kMaxPivots);
 
   node->tree_options = tree_options;
   node->height = packed_node.height;
@@ -108,7 +113,7 @@ using PackedSegment = PackedUpdateBuffer::Segment;
         Segment& segment = segmented_level.segments[segment_i];
 
         segment.page_id_slot = llfs::PageIdSlot::from_page_id(packed_segment.leaf_page_id.unpack());
-        segment.active_pivots = packed_segment.active_pivots;
+        segment.active_pivots = packed_segment.active_pivots.unpack();
 
         BATT_ASSIGN_OK_RESULT(segment.filter,
                               packed_node.create_piecewise_filter(level_i, segment_i));
@@ -607,6 +612,13 @@ Status InMemoryNode::split_child(BatchUpdateContext& update_context, i32 pivot_i
   update_context.metrics.split_count.add(1);
 #endif
 
+  // Make sure we don't exceed the temporary pivot count limit.
+  //
+  BATT_CHECK_LT(this->pivot_count(), (i32)InMemoryNode::kMaxTempPivots);
+  auto on_scope_exit = batt::finally([&] {
+    BATT_CHECK_LE(this->pivot_count(), (i32)InMemoryNode::kMaxTempPivots);
+  });
+
   Subtree& child = this->children[pivot_i];
 
   StatusOr<Optional<Subtree>> status_or_sibling = child.try_split(update_context);
@@ -777,7 +789,7 @@ Status InMemoryNode::set_pivot_completely_flushed(usize pivot_i,
 
             segment.set_pivot_active(pivot_i, false);
 
-            if (segment.get_active_pivots() == 0) {
+            if (segment.is_inactive()) {
               segmented_level.drop_segment(segment_i);
             } else {
               ++segment_i;
@@ -978,7 +990,7 @@ SubtreeViability InMemoryNode::get_viability() const
   NeedsMerge needs_merge;
 
   needs_merge.single_pivot = (this->pivot_count() == 1);
-  needs_merge.too_few_pivots = (this->pivot_count() < 4);
+  needs_merge.too_few_pivots = (this->pivot_count() < kMinPivots);
 
   if (needs_merge) {
     return needs_merge;
@@ -1117,7 +1129,7 @@ StatusOr<std::unique_ptr<InMemoryNode>> InMemoryNode::try_split_direct(BatchUpda
 
   BATT_CHECK_EQ(orig_pivot_count + 1, orig_pivot_keys.size());
 
-  u64 tried_already = 0;
+  ActivePivotsSet128 tried_already;
   usize split_pivot_i = (orig_pivot_count + 1) / 2;
 
   auto* node_lower_half = this;
@@ -1132,10 +1144,10 @@ StatusOr<std::unique_ptr<InMemoryNode>> InMemoryNode::try_split_direct(BatchUpda
   for (;;) {
     // If we ever try the same split point a second time, fail.
     //
-    if (get_bit(tried_already, split_pivot_i)) {
+    if (tried_already.get(split_pivot_i)) {
       return {batt::StatusCode::kInternal};
     }
-    tried_already = set_bit(tried_already, split_pivot_i, true);
+    tried_already.set(split_pivot_i, true);
 
     //+++++++++++-+-+--+----- --- -- -  -  -   -
 
@@ -1257,7 +1269,7 @@ StatusOr<std::unique_ptr<InMemoryNode>> InMemoryNode::try_split_direct(BatchUpda
 
     // If the lower half is too large, then move the split point down and retry if possible.
     //
-    if (split_pivot_i > 4 && batt::is_case<NeedsSplit>(lower_viability) &&
+    if (split_pivot_i > kMinPivots && batt::is_case<NeedsSplit>(lower_viability) &&
         !batt::is_case<NeedsSplit>(upper_viability)) {
       --split_pivot_i;
       continue;
@@ -1265,8 +1277,8 @@ StatusOr<std::unique_ptr<InMemoryNode>> InMemoryNode::try_split_direct(BatchUpda
 
     // If the upper half is too large, then move the split point up and retry if possible.
     //
-    if (split_pivot_i + 4 < 64 && batt::is_case<NeedsSplit>(upper_viability) &&
-        !batt::is_case<NeedsSplit>(lower_viability)) {
+    if (split_pivot_i + kMinPivots < orig_pivot_count &&
+        batt::is_case<NeedsSplit>(upper_viability) && !batt::is_case<NeedsSplit>(lower_viability)) {
       ++split_pivot_i;
       continue;
     }
@@ -1552,7 +1564,7 @@ StatusOr<SegmentedLevel> MergedLevel::finish_serialize(const InMemoryNode& node,
                           context.get_build_page_result(this->segment_future_ids_[segment_i]));
 
     segment.page_id_slot.page_id = pinned_leaf_page.page_id();
-    segment.active_pivots = 0;
+    segment.active_pivots.clear();
 
     const PackedLeafPage& leaf_page = PackedLeafPage::view_of(pinned_leaf_page);
 
@@ -1627,7 +1639,7 @@ void InMemoryNode::UpdateBuffer::SegmentedLevel::drop_after_pivot(i32 pivot_i,
                                                                   llfs::PageLoader& page_loader,
                                                                   const TreeOptions& tree_options)
 {
-  this->drop_pivot_range((Interval<i32>{pivot_i, 64}),
+  this->drop_pivot_range((Interval<i32>{pivot_i, InMemoryNode::kMaxTempPivots}),
                          (Interval<KeyView>{pivot_key, global_max_key()}),
                          page_loader,
                          tree_options);
@@ -1701,34 +1713,25 @@ void InMemoryNode::UpdateBuffer::Segment::insert_pivot(i32 pivot_i, bool is_acti
     this->check_invariants(__FILE__, __LINE__);
   });
 
-  this->active_pivots = insert_bit(this->active_pivots, pivot_i, is_active);
+  this->active_pivots.insert(pivot_i, is_active);
 }
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
 void InMemoryNode::UpdateBuffer::Segment::pop_front_pivots(i32 count)
 {
-  if (count < 1) {
-    return;
-  }
+  BATT_CHECK_LT(count, 64);
 
-  // Before we modify the bit sets, make sure we aren't losing any active pivots.
+  // Shift the active pivot sets down by count.
   //
-  const u64 mask = (u64{1} << count) - 1;
-
-  BATT_CHECK_EQ(bit_count(mask), count);
-  BATT_CHECK_EQ((this->active_pivots & mask), u64{0});
-
-  // Shift the active pivot set down by count.
-  //
-  this->active_pivots = (this->active_pivots >> count);
+  this->active_pivots.pop_front_pivots(count);
 }
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
 bool InMemoryNode::UpdateBuffer::Segment::is_inactive() const
 {
-  const bool inactive = (this->active_pivots == 0);
+  const bool inactive = this->active_pivots.is_empty();
   if (inactive) {
     Slice<const Interval<u32>> filter_dropped_ranges = this->filter.dropped();
     BATT_CHECK_EQ(filter_dropped_ranges.size(), 1);
@@ -1790,14 +1793,14 @@ SmallFn<void(std::ostream&)> InMemoryNode::UpdateBuffer::SegmentedLevel::dump() 
 SmallFn<void(std::ostream&)> InMemoryNode::UpdateBuffer::Segment::dump(bool multi_line) const
 {
   return [this, multi_line](std::ostream& out) {
-    auto active = std::bitset<64>{this->active_pivots};
     if (multi_line) {
       out << "Segment:" << std::endl
-          << "   active=" << active << std::endl
+          << "   active=" << this->active_pivots.printable() << std::endl
           << "   filter=" << this->filter.dump() << std::endl
           << std::endl;
     } else {
-      out << "Segment{.active=" << active << ", .filter=" << this->filter.dump() << ",}";
+      out << "Segment{.active=" << this->active_pivots.printable()
+          << ", .filter=" << this->filter.dump() << ",}";
     }
   };
 }
