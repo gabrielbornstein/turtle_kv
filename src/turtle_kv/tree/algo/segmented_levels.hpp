@@ -88,24 +88,18 @@ inline i32 get_last_active_pivot(const CInterval<usize>& pivot_range)
   return pivot_range.upper_bound;
 }
 
-//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
-
-template <typename T>
-using EnableIfHasActivePivotsBitset =
-    std::enable_if_t<std::is_convertible_v<decltype(std::declval<T&&>().get_active_pivots()), u64>>;
-
 //----- --- -- -  -  -   -
 
-template <typename T, typename = EnableIfHasActivePivotsBitset<T>>
-inline i32 get_first_active_pivot(T&& segment)
+template <HasConstActivePivotsSet T>
+inline i32 get_first_active_pivot(const T& segment)
 {
-  return first_bit(segment.get_active_pivots());
+  return segment.get_active_pivots().first();
 }
 
-template <typename T, typename = EnableIfHasActivePivotsBitset<T>>
-inline i32 get_last_active_pivot(T&& segment)
+template <HasConstActivePivotsSet T>
+inline i32 get_last_active_pivot(const T& segment)
 {
-  return last_bit(segment.get_active_pivots());
+  return segment.get_active_pivots().last();
 }
 
 //=#=#==#==#===============+=+=+=+=++=++++++++++++++-++-+--+-+----+---------------
@@ -181,8 +175,7 @@ struct SegmentedLevelAlgorithms {
 
       // Skip this segment if the pivot is not active.
       //
-      const u64 active_pivots = segment.get_active_pivots();
-      if (!get_bit(active_pivots, pivot_i)) {
+      if (!segment.is_pivot_active(pivot_i)) {
         ++segment_i;
         continue;
       }
@@ -208,7 +201,7 @@ struct SegmentedLevelAlgorithms {
 
       // Drop the segment if it has become inactive due to the flush.
       //
-      if (segment.get_active_pivots() == 0) {
+      if (segment.is_inactive()) {
         this->level_.drop_segment(segment_i);
       } else {
         ++segment_i;
@@ -236,7 +229,7 @@ struct SegmentedLevelAlgorithms {
             << batt::c_str_literal(old_pivot_key_range.upper_bound)
             << "), key=" << batt::c_str_literal(split_key) << ")";
 
-    BATT_CHECK_LT(this->node_.pivot_count(), 64);
+    BATT_CHECK_LT(this->node_.pivot_count(), InMemoryNode::kMaxTempPivots);
 
     const KeyView pivot_key = old_pivot_key_range.lower_bound;
     const usize segment_count = this->level_.segment_count();
@@ -249,7 +242,7 @@ struct SegmentedLevelAlgorithms {
 
       // If we can split the pivot without loading the leaf, great!
       //
-      if (in_segment(segment).split_pivot(pivot_i, None, this->level_)) {
+      if (in_segment(segment).split_pivot(pivot_i, /*split_indices=*/None, this->level_)) {
         continue;
       }
 
@@ -262,17 +255,29 @@ struct SegmentedLevelAlgorithms {
 
       const PackedLeafPage& leaf_page = PackedLeafPage::view_of(segment_pinned_leaf);
 
-      const usize pivot_offset_in_leaf =
-          std::distance(leaf_page.items_begin(), leaf_page.lower_bound(pivot_key));
+      const auto first_item_in_leaf = leaf_page.items_begin();
+
+      const usize pivot_begin_in_leaf =
+          std::distance(first_item_in_leaf, leaf_page.lower_bound(pivot_key));
 
       const usize split_offset_in_leaf =
-          std::distance(leaf_page.items_begin(), leaf_page.lower_bound(split_key));
+          std::distance(first_item_in_leaf, leaf_page.lower_bound(split_key));
 
-      VLOG(1) << " --" << BATT_INSPECT(split_offset_in_leaf) << BATT_INSPECT(pivot_offset_in_leaf);
+      const usize pivot_end_in_leaf =
+          std::distance(first_item_in_leaf, leaf_page.lower_bound(old_pivot_key_range.upper_bound));
 
-      BATT_CHECK_LE(pivot_offset_in_leaf, split_offset_in_leaf);
+      VLOG(1) << " --" << BATT_INSPECT(split_offset_in_leaf) << BATT_INSPECT(pivot_begin_in_leaf);
 
-      BATT_CHECK(in_segment(segment).split_pivot(pivot_i, split_offset_in_leaf, this->level_));
+      BATT_CHECK_LE(pivot_begin_in_leaf, split_offset_in_leaf);
+      BATT_CHECK_LE(split_offset_in_leaf, pivot_end_in_leaf);
+
+      BATT_CHECK(in_segment(segment).split_pivot(pivot_i,
+                                                 SegmentPivotSplitIndices{
+                                                     pivot_begin_in_leaf,
+                                                     split_offset_in_leaf,
+                                                     pivot_end_in_leaf,
+                                                 },
+                                                 this->level_));
     }
 
     return OkStatus();

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <turtle_kv/tree/in_memory_node.hpp>
 #include <turtle_kv/tree/key_query.hpp>
 #include <turtle_kv/tree/packed_leaf_page.hpp>
 #include <turtle_kv/tree/tree_options.hpp>
@@ -10,12 +11,72 @@
 
 #include <batteries/assert.hpp>
 #include <batteries/bool_status.hpp>
+#include <batteries/checked_cast.hpp>
 #include <batteries/seq/loop_control.hpp>
 
 #include <algorithm>
 
 namespace turtle_kv {
 
+//=#=#==#==#===============+=+=+=+=++=++++++++++++++-++-+--+-+----+---------------
+//
+/** \brief The set of indices involved in a pivot split; each index is a 0-based item index within
+ * the leaf page.
+ */
+struct SegmentPivotSplitIndices {
+  /** \brief The lower bound (inclusive) of the lower-half of the split.  This is also the lower
+   * bound of the pre-split region.
+   */
+  u32 lower_bound;
+
+  /** \brief The index of the first item belonging to the right-hand-side after the split.
+   * This is the upper bound (non-inclusive) of the new lower-half, and the lower bound
+   * (inclusive) of the new upper-half.
+   */
+  u32 split_point;
+
+  /** \brief The uppwer bound (non-inclusive) of the upper-half of the split.  This is also the
+   * upper bound of the pre-split region.
+   */
+  u32 upper_bound;
+
+  //+++++++++++-+-+--+----- --- -- -  -  -   -
+
+  SegmentPivotSplitIndices() = delete;
+
+  explicit SegmentPivotSplitIndices(u32 lower, u32 middle, u32 upper) noexcept
+      : lower_bound{lower}
+      , split_point{middle}
+      , upper_bound{upper}
+  {
+  }
+
+  explicit SegmentPivotSplitIndices(usize lower, usize middle, usize upper) noexcept
+      : SegmentPivotSplitIndices{
+            BATT_CHECKED_CAST(u32, lower),
+            BATT_CHECKED_CAST(u32, middle),
+            BATT_CHECKED_CAST(u32, upper),
+        }
+  {
+  }
+
+  /** \brief Returns the lower half index range for the split.
+   */
+  Interval<u32> lower_range() const
+  {
+    return {this->lower_bound, this->split_point};
+  }
+
+  /** \brief Returns the upper half index range for the split.
+   */
+  Interval<u32> upper_range() const
+  {
+    return {this->split_point, this->upper_bound};
+  }
+};
+
+//=#=#==#==#===============+=+=+=+=++=++++++++++++++-++-+--+-+----+---------------
+//
 template <typename SegmentT>
 struct SegmentAlgorithms {
   //+++++++++++-+-+--+----- --- -- -  -  -   -
@@ -37,7 +98,7 @@ struct SegmentAlgorithms {
    */
   template <typename LevelT>
   [[nodiscard]] bool split_pivot(i32 pivot_i,
-                                 Optional<usize> split_offset_in_leaf,
+                                 Optional<SegmentPivotSplitIndices> split_indices,
                                  const LevelT& level) const
   {
     using batt::BoolStatus;
@@ -47,7 +108,7 @@ struct SegmentAlgorithms {
       this->segment_.check_invariants(__FILE__, __LINE__);
     });
 
-    BATT_CHECK_LT(pivot_i, 63);
+    BATT_CHECK_LT(pivot_i, (i32)InMemoryNode::kMaxTempPivots - 1);
 
     // Simplest case: pivot not active for this segment.
     //
@@ -56,52 +117,26 @@ struct SegmentAlgorithms {
       return true;
     }
 
-    const BoolStatus old_pivot_becomes_inactive = [&] {
-      if (!split_offset_in_leaf) {
-        return BoolStatus::kUnknown;
-      }
-
-      if (*split_offset_in_leaf == 0) {
-        return BoolStatus::kTrue;
-      }
-
-      return batt::bool_status_from(
-          this->segment_.is_index_filtered(level, *split_offset_in_leaf - 1));
-    }();
-
-    const BoolStatus new_pivot_has_flushed_items = [&] {
-      if (old_pivot_becomes_inactive == BoolStatus::kUnknown) {
-        return BoolStatus::kUnknown;
-      }
-
-      return batt::bool_status_from(old_pivot_becomes_inactive == BoolStatus::kTrue &&
-                                    this->segment_.is_index_filtered(level, *split_offset_in_leaf));
-    }();
-
-    // Next simplest: pivot active, but flush count is zero for pivot.
+    // If the pivot we are splitting is currently active, then we need to know the split_indices
+    // before we can accurately compute whether the lower/upper ranges of the split are active.
     //
-    if (old_pivot_becomes_inactive == BoolStatus::kFalse) {
-      BATT_CHECK_EQ(new_pivot_has_flushed_items, BoolStatus::kFalse);
-      this->segment_.insert_pivot(pivot_i + 1, true);
-      return true;
-    }
-
-    // At this point we can only proceed if we know the item count of the split position relative to
-    // the pivot key range start.
-    //
-    if (old_pivot_becomes_inactive == BoolStatus::kUnknown ||
-        new_pivot_has_flushed_items == BoolStatus::kUnknown) {
+    if (!split_indices) {
       return false;
     }
 
-    BATT_CHECK_EQ(old_pivot_becomes_inactive, BoolStatus::kTrue);
-    BATT_CHECK(split_offset_in_leaf);
-
-    // If the split is not after the last flushed item, then the lower pivot (in the split) is now
-    // inactive and the upper one is active, possibly with some flushed items.
+    // Ask the segment filter whether the lower/upper ranges of the split have live items.
     //
-    this->segment_.set_pivot_active(pivot_i, false);
-    this->segment_.insert_pivot(pivot_i + 1, true);
+    const Interval<u32> lower_live_range =
+        this->segment_.get_live_item_range(level, split_indices->lower_range());
+
+    const Interval<u32> upper_live_range =
+        this->segment_.get_live_item_range(level, split_indices->upper_range());
+
+    const bool lower_pivot_active = !lower_live_range.empty();
+    const bool upper_pivot_active = !upper_live_range.empty();
+
+    this->segment_.set_pivot_active(pivot_i, lower_pivot_active);
+    this->segment_.insert_pivot(pivot_i + 1, upper_pivot_active);
 
     return true;
   }
@@ -116,13 +151,13 @@ struct SegmentAlgorithms {
     // they were when this function was entered, regardless of what `fn` may do to change the state
     // of the segment.
     //
-    const u64 observed_active_pivots = this->segment_.get_active_pivots();
+    const auto observed_active_pivots = this->segment_.get_active_pivots();
 
     const i32 first_pivot_i = std::max<i32>(pivot_range.lower_bound,  //
-                                            first_bit(observed_active_pivots));
+                                            observed_active_pivots.first());
 
     for (i32 pivot_i = first_pivot_i; pivot_i < pivot_range.upper_bound;
-         pivot_i = next_bit(observed_active_pivots, pivot_i)) {
+         pivot_i = observed_active_pivots.next(pivot_i)) {
       BATT_INVOKE_LOOP_FN((fn, this->segment_, pivot_i));
     }
   }
