@@ -41,7 +41,7 @@ namespace turtle_kv {
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
 /*static*/ StatusOr<boost::intrusive_ptr<ChangeLogBlock>> ChangeLogBlock::recover(
-    ChangeLogBlock::ScopedMemory&& memory,
+    ChangeLogBlock::ScopedMemory memory,
     batt::Grant&& grant)
 {
   ChangeLogBlock* block = reinterpret_cast<ChangeLogBlock*>(memory.data());

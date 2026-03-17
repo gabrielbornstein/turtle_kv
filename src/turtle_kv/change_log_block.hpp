@@ -97,7 +97,7 @@ class ChangeLogBlock
       return this->buffer_.size();
     }
 
-    const MutableBuffer buffer()
+    MutableBuffer buffer() const
     {
       return this->buffer_;
     }
@@ -138,7 +138,7 @@ class ChangeLogBlock
   /** \brief Read a ChangeLogBlock from the ChangeLogFile into the buffer, buf. Returns an error
    * status if malformed or unsuccessful.
    */
-  static StatusOr<boost::intrusive_ptr<ChangeLogBlock>> recover(ScopedMemory&& memory,
+  static StatusOr<boost::intrusive_ptr<ChangeLogBlock>> recover(ScopedMemory memory,
                                                                 batt::Grant&& grant);
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -

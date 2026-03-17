@@ -478,6 +478,8 @@ TEST_P(CheckpointTest, CheckpointRecovery)
   BATT_CHECK_EQ(num_checkpoints_created, this->num_checkpoints_to_create)
       << "Did not take the correct number of checkpoints. There is a bug in this test.";
 
+  // TODO: [Gabe Bornstein 3/17/26] Replace with fsync once it's implemented.
+  //
   std::this_thread::sleep_for(std::chrono::seconds(1));
   this->ShutdownKVStore(kv_store);
 
