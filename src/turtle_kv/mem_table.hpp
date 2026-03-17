@@ -264,7 +264,7 @@ class MemTable : public batt::RefCounted<MemTable>
     ChangeLogWriter::Context& context;
     Status status;
 
-    template <typename SerializeFn = void(const MutableBuffer&)>
+    template <typename SerializeFn = void(const MutableBuffer&, u64)>
     void store_data(usize n_bytes, SerializeFn&& serialize_fn) noexcept;
   };
 
@@ -434,7 +434,7 @@ void MemTable::StorageImpl::store_data(usize n_bytes, SerializeFn&& serialize_fn
           mem_table.handle_external_cache_alloc(cache_alloc_delta);
         }
 
-        serialize_fn(dst);
+        serialize_fn(dst, this->mem_table.next_offset());
       }));
   // TODO: [Gabe Bornstein 3/5/26] Consider updating the value of mem_table.next_offset
   // here instead of in KVStore::put().

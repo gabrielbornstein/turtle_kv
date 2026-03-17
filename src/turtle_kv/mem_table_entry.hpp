@@ -33,10 +33,12 @@ struct PackedValueUpdate {
    */
   little_u16 revision;
 
-  // TODO: [Gabe Bornstein 3/5/26] Can we get rid of this padding? Without it, we don't properly
-  // store data.
+  // TODO: [Gabe Bornstein 3/17/26] Is it necessary to store the offset here, or can we remove it?
+  // We run into a memory issue if we don't pack out the 8 bytes here.
   //
-  little_u8 padding[8];
+  /** \brief The unique id/offset from start that this update was set at.
+   */
+  little_u64 offset;
 
   /** \brief The (reader) version for this update.
    */
@@ -117,19 +119,17 @@ struct MemTableEntryInserter {
     char* key_dst;
     const usize key_len = this->key.size();
     const usize value_len = this->value.size();
-    const usize insert_size = sizeof(little_u16)  // header
-                              + key_len           // key
-                              + sizeof(big_u32)   // version-suffix
-                              + value_len;        // value
+    const usize insert_size = sizeof(little_u16)     // header
+                              + key_len              // key
+                              + sizeof(big_u32)      // version-suffix
+                              + value_len            // value
+                              + sizeof(little_u64);  // offset
 
     BATT_REQUIRE_OK(this->update_table_size(insert_size));
 
-    this->storage.store_data(insert_size, [&](const MutableBuffer& buffer) {
+    this->storage.store_data(insert_size, [&](const MutableBuffer& buffer, u64 offset) {
       auto* header_dst = place_first<little_u16>(buffer.data());
       *header_dst = key_len;
-
-      // TODO: [Gabe Bornstein 3/16/26] Update header to include edit_offset of update.
-      //
 
       key_dst = place_next<char>(header_dst, 1);
       std::memcpy(key_dst, this->key.data(), key_len);
@@ -137,7 +137,13 @@ struct MemTableEntryInserter {
       auto* version_dst = place_next<big_u32>(key_dst, key_len);
       *version_dst = this->version;
 
-      auto* value_dst = place_next<char>(version_dst, 1);
+      // TODO: [Gabe Bornstein 3/17/26] Is this right? can we delete a lot of this code anyway post
+      // big mem tables?
+      //
+      auto* offset_dst = place_next<little_u64>(version_dst, 1);
+      *offset_dst = offset;
+
+      auto* value_dst = place_next<char>(offset_dst, 1);
       std::memcpy(value_dst, this->value.data(), value_len);
       this->stored_value = ValueView::from_str(std::string_view{value_dst, value_len});
     });
@@ -165,15 +171,13 @@ struct MemTableEntryInserter {
     // TODO: [Gabe Bornstein 3/5/26] Verify we correctly `combine` updates to a key that's already
     // in the MemTable. We're no longer saving `base_locator` or `prev_locator` in header.
     //
-    this->storage.store_data(update_size, [&](const MutableBuffer& buffer) {
+    this->storage.store_data(update_size, [&](const MutableBuffer& buffer, u64 offset) {
       auto* header = place_first<PackedValueUpdate>(buffer.data());
 
       header->key_len = 0;
       header->revision = static_cast<u16>(revision);
+      header->offset = offset;
       header->version = this->version;
-
-      // TODO: [Gabe Bornstein 3/16/26] Update header to include edit_offset of update.
-      //
 
       auto* value_dst = place_next<char>(header, 1);
       std::memcpy(value_dst, this->value.data(), value_len);
@@ -341,20 +345,23 @@ class MemTableValueEntry
   MemTableValueEntry(const MemTableValueEntry&) = default;
   MemTableValueEntry& operator=(const MemTableValueEntry&) = default;
 
-  explicit MemTableValueEntry(const char* key_data, const char* value_data, u32 value_size) noexcept
+  explicit MemTableValueEntry(const char* key_data,
+                              const char* value_data,
+                              u32 value_size,
+                              u64 offset) noexcept
       : key_data_{key_data}
       , value_data_{value_data}
       , value_size_{value_size}
+      , offset_{offset}
   {
   }
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
 
-  // TODO: [Gabe Bornstein 3/16/26] Update to include edit_offset of update.
-  //
   const char* key_data_;
   const char* value_data_;
   mutable u32 value_size_;
+  u64 offset_;
 
   u32 get_version() const
   {
@@ -372,9 +379,14 @@ class MemTableValueEntry
   {
     return ValueView::from_str(std::string_view{this->value_data_, this->value_size_});
   }
+
+  u64 offset() const
+  {
+    return this->offset_;
+  }
 };
 
-static_assert(sizeof(MemTableValueEntry) == 24);
+static_assert(sizeof(MemTableValueEntry) == 32);
 
 //=#=#==#==#===============+=+=+=+=++=++++++++++++++-++-+--+-+----+---------------
 //
@@ -426,9 +438,10 @@ struct MemTableValueEntryInserter {
     const usize insert_size = sizeof(little_u16)  // header
                               + key_len           // key
                               + sizeof(big_u32)   // version-suffix
-                              + value_len;        // value
+                              + value_len         // value
+                              + sizeof(u64);      // offset
 
-    this->storage.store_data(insert_size, [&](const MutableBuffer& buffer) {
+    this->storage.store_data(insert_size, [&](const MutableBuffer& buffer, u64 offset) {
       auto* header_dst = place_first<little_u16>(buffer.data());
       *header_dst = key_len;
 
@@ -445,7 +458,8 @@ struct MemTableValueEntryInserter {
       std::memcpy(value_dst, this->value.data(), value_len);
       this->stored_value = ValueView::from_str(std::string_view{value_dst, value_len});
 
-      this->entry = new (entry_memory) MemTableValueEntry{key_dst, value_dst, (u32)value_len};
+      this->entry =
+          new (entry_memory) MemTableValueEntry{key_dst, value_dst, (u32)value_len, offset};
     });
 
     this->inserted = true;
@@ -457,13 +471,18 @@ struct MemTableValueEntryInserter {
   {
     const usize value_len = this->value.size();
     const usize update_size = sizeof(PackedValueUpdate)  // header
-                              + value_len;               // value
+                              + value_len                // value
+                              + sizeof(u64);
 
-    this->storage.store_data(update_size, [&](const MutableBuffer& buffer) {
+    // TODO: [Gabe Bornstein 3/5/26] Verify we correctly `combine` updates to a key that's already
+    // in the MemTable. We're no longer saving `base_locator` or `prev_locator` in header.
+    //
+    this->storage.store_data(update_size, [&](const MutableBuffer& buffer, u64 offset) {
       auto* header = place_first<PackedValueUpdate>(buffer.data());
 
       header->key_len = 0;
       header->revision = 0;  // TODO [tastolfi 2025-07-24]
+      header->offset = offset;
       header->version = this->version;
 
       // TODO: [Gabe Bornstein 3/16/26] Update header to include edit_offset of update.
