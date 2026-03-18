@@ -407,10 +407,6 @@ template <typename SerializeFn>
 void MemTable::StorageImpl::store_data(usize n_bytes, SerializeFn&& serialize_fn) noexcept
 {
   this->status = batt::to_status(this->context.append_slot(
-      // TODO: [Gabe Bornstein 3/5/26] Consider delaying setting this. Instead, set it when we
-      // apply the first edit to the block. I need to better understand concurrency here to make
-      // sure this is valid. Can multiple blocks be grabbing this value? If yes, it's an issue.
-      //
       this->mem_table.next_block_offset_,
       n_bytes,
       [&](ChangeLogWriter::BlockBuffer* buffer, const MutableBuffer& dst) {
@@ -428,9 +424,6 @@ void MemTable::StorageImpl::store_data(usize n_bytes, SerializeFn&& serialize_fn
             mem_table.block_size_total_ += buffer->block_size();
             cache_alloc_delta = mem_table.update_external_cache_alloc();
             mem_table.blocks_.emplace_back(buffer);
-            // TODO: [Gabe Bornstein 3/5/26] Consider delaying setting this. Instead, set it when we
-            // apply the first edit to the block.
-            //
             mem_table.next_block_offset_ = mem_table.next_offset();
           }
           mem_table.handle_external_cache_alloc(cache_alloc_delta);

@@ -16,6 +16,8 @@
 
 #include <turtle_kv/checkpoint_log.hpp>
 
+#include <turtle_kv/mem_table_entry_reader.hpp>
+
 #include <turtle_kv/core/table.hpp>
 
 namespace {
@@ -139,7 +141,6 @@ class KVStoreTest : public ::testing::Test
       if (out_data) {
         (*out_data)[key] = value;
       }
-
       VLOG(3) << "Put key==" << key << ", value==" << value;
     }
   }
@@ -553,6 +554,8 @@ TEST_F(KVStoreTest, ChangeLogRecovery)
 
   ASSERT_TRUE(blocks.ok()) << BATT_INSPECT(blocks.status());
 
+  ASSERT_TRUE((*blocks).size() > 0) << "Expected change log blocks but found none.";
+
   int i = 0;
   for (auto block : *blocks) {
     ASSERT_TRUE(block->verify().ok());
@@ -561,9 +564,54 @@ TEST_F(KVStoreTest, ChangeLogRecovery)
     ASSERT_NE(block->block_size(), 0);
     ASSERT_NE(block->slot_count(), 0);
 
+    u64 prev_offset = 0;
+    for (usize j = 0; j < block->slot_count(); ++j) {
+      batt::ConstBuffer slot = block->get_slot(j);
+
+      std::variant<turtle_kv::MemTableInsertData, turtle_kv::MemTableUpdateData, batt::Status>
+          entry = turtle_kv::MemTableEntryReader::read_entry(slot);
+
+      std::visit(
+          [&](auto&& value) {
+            using T = std::decay_t<decltype(value)>;
+
+            if constexpr (std::is_same_v<T, turtle_kv::MemTableInsertData>) {
+              VLOG(3) << "key_len: " << value.key_len << ", key: " << value.key
+                      << ", version: " << value.version << ", value: " << value.value
+                      << ", offset: " << value.offset;
+
+              std::string actual_key{value.key.data(), value.key.size()};
+              auto expected_value = expected_keys_values.find(actual_key);
+
+              ASSERT_TRUE(expected_value != expected_keys_values.end());
+
+              std::string actual_value{value.value.data(), value.value.size()};
+              ASSERT_TRUE((*expected_value).second == actual_value);
+
+              // Verify the read offset is monotonically increasing.
+              //
+              ASSERT_GE(value.offset, prev_offset);
+              prev_offset = value.offset;
+            } else if constexpr (std::is_same_v<T, turtle_kv::MemTableUpdateData>) {
+              VLOG(3) << "revision: " << value.revision << ", offset: " << value.offset
+                      << ", version: " << value.version << ", value: " << value.value;
+
+              ASSERT_GE(value.offset, prev_offset);
+              prev_offset = value.offset;
+            } else {
+              ASSERT_TRUE(false) << "Failed to read entry from slot " << j << " in block with id "
+                                 << block->offset() << ", StatusCode: " << BATT_INSPECT(value);
+            }
+          },
+          entry);
+    }
+
     ++i;
   }
 }
+
+// TODO: [Gabe Bornstein 3/18/26] Add some test points where to test recovery with updates.
+//
 
 }  // namespace
 
