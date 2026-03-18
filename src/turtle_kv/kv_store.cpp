@@ -8,7 +8,6 @@
 #include <turtle_kv/file_utils.hpp>
 #include <turtle_kv/kv_store_scanner.hpp>
 #include <turtle_kv/page_file.hpp>
-#include <turtle_kv/raii_log.hpp>
 
 #include <turtle_kv/tree/filter_builder.hpp>
 #include <turtle_kv/tree/in_memory_node.hpp>
@@ -821,7 +820,6 @@ Status KVStore::remove(const KeyView& key) noexcept /*override*/
 //
 Status KVStore::update_checkpoint(const State* observed_state)
 {
-  RAII_Log logging{"KVStore::update_checkpoint()"};
 #if TURTLE_KV_PROFILE_UPDATES
   LatencyTimer memtable_create_timer{this->metrics_.put_memtable_create_latency};
 #endif
@@ -999,7 +997,6 @@ void KVStore::memtable_compact_thread_main(usize thread_i)
 
   Status status = [this, thread_i]() -> Status {
     for (;;) {
-      RAII_Log logging{"The loop in KVStore::memtable_compact_thread_main()"};
       StatusOr<boost::intrusive_ptr<MemTable>> mem_table =
           this->memtable_compact_channels_[thread_i].read();
 
@@ -1029,7 +1026,6 @@ template <typename Fn>
 requires std::invocable<Fn, std::unique_ptr<DeltaBatch>> Status
 KVStore::compact_memtable(boost::intrusive_ptr<MemTable>&& mem_table, Fn&& consume_fn)
 {
-  RAII_Log logging{"KVStore::compact_memtable()"};
 #if TURTLE_KV_BIG_MEM_TABLES
 
   MemTable::BatchCompactor batch_compactor{*mem_table,
@@ -1099,7 +1095,6 @@ void KVStore::checkpoint_update_thread_main()
 {
   Status status = [this]() -> Status {
     for (;;) {
-      RAII_Log logging{"The loop in KVStore::checkpoint_update_thread_main()"};
       StatusOr<std::unique_ptr<DeltaBatch>> delta_batch = this->checkpoint_update_channel_.read();
       if (delta_batch.status() == batt::StatusCode::kPoke) {
         delta_batch = std::unique_ptr<DeltaBatch>{nullptr};
@@ -1127,7 +1122,6 @@ void KVStore::checkpoint_update_thread_main()
 StatusOr<std::unique_ptr<CheckpointJob>> KVStore::apply_batch_to_checkpoint(
     std::unique_ptr<DeltaBatch>&& delta_batch)
 {
-  RAII_Log logging{"KVStore::apply_batch_to_checkpoint()"};
 #if TURTLE_KV_BIG_MEM_TABLES
   const auto batch_id = delta_batch                                            //
                             ? Optional<DeltaBatchId>{delta_batch->batch_id()}  //
@@ -1231,7 +1225,6 @@ void KVStore::checkpoint_flush_thread_main()
 {
   Status status = [this]() -> Status {
     for (;;) {
-      RAII_Log logging{"The loop in KVStore::checkpoint_flush_thread_main()"};
       BATT_ASSIGN_OK_RESULT(std::unique_ptr<CheckpointJob> checkpoint_job,
                             this->checkpoint_flush_channel_.read());
 
@@ -1246,7 +1239,6 @@ void KVStore::checkpoint_flush_thread_main()
 //
 Status KVStore::commit_checkpoint(std::unique_ptr<CheckpointJob>&& checkpoint_job)
 {
-  RAII_Log logging{"KVStore::commit_checkpoint()"};
   // Durably commit the checkpoint.
   //
   StatusOr<llfs::SlotRange> checkpoint_slot_range =

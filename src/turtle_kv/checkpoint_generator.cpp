@@ -2,7 +2,6 @@
 //
 
 #include <turtle_kv/checkpoint_log_events.hpp>
-#include <turtle_kv/raii_log.hpp>
 
 #include <batteries/async/backoff.hpp>
 #include <batteries/env.hpp>
@@ -67,7 +66,6 @@ void CheckpointGenerator::join() noexcept
 StatusOr<usize> CheckpointGenerator::apply_batch(std::unique_ptr<DeltaBatch>&& batch,
                                                  llfs::PageCacheOvercommit& overcommit) noexcept
 {
-  RAII_Log logging{"CheckpointGenerator::apply_batch()"};
   LOG(INFO) << "Applying batch with batch.batch_id(): { upper_bound = "
             << batch->batch_id().edit_offset() << ", index = " << batch->batch_id().index() << "}";
   VLOG(1) << "CheckpointGenerator::apply_batch()" << BATT_INSPECT(batch->debug_info());
@@ -158,7 +156,6 @@ void CheckpointGenerator::initialize_job()
 //
 Status CheckpointGenerator::serialize_checkpoint(llfs::PageCacheOvercommit& overcommit) noexcept
 {
-  RAII_Log logging{"CheckpointGenerator::serialize_checkpoint()"};
   BATT_CHECK_NOT_NULLPTR(this->job_);
 
 #if TURTLE_KV_PROFILE_UPDATES
@@ -200,7 +197,6 @@ StatusOr<std::unique_ptr<CheckpointJob>> CheckpointGenerator::finalize_checkpoin
     std::shared_ptr<batt::Grant::Issuer>&& token_issuer,
     llfs::PageCacheOvercommit& overcommit) noexcept
 {
-  RAII_Log logging{"CheckpointGenerator::finalize_checkpoint()"};
   VLOG(1) << "CheckpointGenerator::finalize_checkpoint()";
 
   BATT_CHECK_EQ(token.size(), 1u);

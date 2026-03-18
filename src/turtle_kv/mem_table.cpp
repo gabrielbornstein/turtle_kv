@@ -1,8 +1,6 @@
 #include <turtle_kv/mem_table.hpp>
 //
 
-#include <turtle_kv/raii_log.hpp>
-
 #include <turtle_kv/on_page_cache_overcommit.hpp>
 
 #include <turtle_kv/import/env.hpp>
@@ -256,10 +254,8 @@ usize MemTable::scan_keys_impl(const KeyView& min_key,
 //
 bool MemTable::finalize() noexcept
 {
-  RAII_Log logging{"MemTable::finalize()"};
   const bool prior_value = this->is_finalized_.exchange(true);
   this->edit_offset_upper_bound_ = this->next_offset_.load();
-  LOG(INFO) << "edit_offset_upper_bound_: " << this->edit_offset_upper_bound_;
   return prior_value == false;
 }
 
