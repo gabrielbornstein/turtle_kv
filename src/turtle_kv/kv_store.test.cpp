@@ -16,8 +16,6 @@
 
 #include <turtle_kv/checkpoint_log.hpp>
 
-#include <turtle_kv/mem_table_entry_reader.hpp>
-
 #include <turtle_kv/core/table.hpp>
 
 namespace {
