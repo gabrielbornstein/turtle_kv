@@ -596,6 +596,13 @@ TEST_F(KVStoreTest, ChangeLogRecovery)
 
               ASSERT_GE(value.offset, prev_offset);
               prev_offset = value.offset;
+
+              // If this is the first entry in the block, verify its offset matches the block
+              // offset.
+              //
+              if (j == 0) {
+                ASSERT_EQ(block->offset(), value.offset);
+              }
             } else {
               ASSERT_TRUE(false) << "Failed to read entry from slot " << j << " in block with id "
                                  << block->offset() << ", StatusCode: " << BATT_INSPECT(value);
