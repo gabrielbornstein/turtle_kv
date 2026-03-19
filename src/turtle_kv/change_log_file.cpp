@@ -276,7 +276,7 @@ ChangeLogFile::read_blocks_into_vector()
         blocks.push_back(block);
 
         VLOG(3) << "ChangeLogBlock->block_size() == " << blocks.back()->block_size()
-                << " offset() == " << blocks.back()->offset();
+                << " offset() == " << blocks.back()->edit_offset_lower_bound();
 
         return batt::OkStatus();
       });

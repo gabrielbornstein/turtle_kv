@@ -81,11 +81,11 @@ namespace turtle_kv {
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-/*explicit*/ ChangeLogBlock::ChangeLogBlock(u64 offset,
+/*explicit*/ ChangeLogBlock::ChangeLogBlock(u64 edit_offset_lower_bound,
                                             batt::Grant&& grant,
                                             usize block_size) noexcept
     : magic_{ChangeLogBlock::kMagic}
-    , offset_{offset}
+    , edit_offset_lower_bound_{edit_offset_lower_bound}
     , block_size_{BATT_CHECKED_CAST(u16, block_size)}
     , slot_count_{0}
     , space_{BATT_CHECKED_CAST(u16,

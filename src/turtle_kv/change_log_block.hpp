@@ -148,9 +148,9 @@ class ChangeLogBlock
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
 
-  u64 offset() const noexcept
+  u64 edit_offset_lower_bound() const noexcept
   {
-    return this->offset_;
+    return this->edit_offset_lower_bound_;
   }
 
   /** \brief Adds `count` references to this buffer.
@@ -306,7 +306,9 @@ class ChangeLogBlock
   /** \brief Constructs a new ChangeLogBlock; must only be called from (static)
    * ChangeLogBlock::allocate.
    */
-  explicit ChangeLogBlock(u64 offset, batt::Grant&& grant, usize block_size) noexcept;
+  explicit ChangeLogBlock(u64 edit_offset_lower_bound,
+                          batt::Grant&& grant,
+                          usize block_size) noexcept;
 
   /** \brief Marks the ChangeLogBlock as expired; the Grant is released.
    */
@@ -368,7 +370,7 @@ class ChangeLogBlock
   /** \brief The id of this block. It is equivalent to the minimum lower bound edit offset of all
    * slots stored by this block.
    */
-  u64 offset_;
+  u64 edit_offset_lower_bound_;
 
   /** \brief The total size of the block, including this object.
    */

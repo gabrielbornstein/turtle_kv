@@ -95,6 +95,14 @@ Status MemTable::put(ChangeLogWriter::Context& context,
                      const KeyView& key,
                      const ValueView& value) noexcept
 {
+  // TODO [tastolfi 2026-03-19] BUG - we need to check here to make sure this MemTable isn't
+  // finalized; otherwise we could have a race between two concurrent threads calling put: one with
+  // a larger update that doesn't fit (causing that thread to finalize the MemTable, swap in a new
+  // one, etc.), and the other with a smaller update that *does* succeed.
+  //
+  // One possible symptom (there may be others) of this bug is that the smaller update might be
+  // dropped in the next checkpoint.
+
   {
     // Update the maximum packed item size, and possibly also the maximum total byte size.  When max
     // item size goes up, so does the maximum number of wasted bytes at the end of a batch, so the
@@ -257,6 +265,10 @@ bool MemTable::finalize() noexcept
   const bool prior_value = this->is_finalized_.exchange(true);
   this->edit_offset_upper_bound_ = this->next_offset_.load();
   return prior_value == false;
+
+  // TODO [tastolfi 2026-03-19] BUG - finalize (or some related function) needs to have a way to
+  // wait for concurrent updates to complete so that we know the set of keys in the index is
+  // complete; this must happen before the scan that builds batches.
 }
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
@@ -369,15 +381,12 @@ i64 MemTable::calculate_max_byte_size() const
     : mem_table_{mem_table}
     , byte_size_limit_{byte_size_limit}
     , batch_count_{0}
-    , scanner_{[this]() -> auto& {BATT_CHECK(this->mem_table_.art_index_)
-                                  << "BatchCompactor can only be used with art_index_! (no hash)";
-return *this->mem_table_.art_index_;
-}
-(),
-    /*min_key=*/std::string_view
-{
-}
-}
+    , scanner_{[this]() -> auto& {
+                 BATT_CHECK(this->mem_table_.art_index_)
+                     << "BatchCompactor can only be used with art_index_! (no hash)";
+                 return *this->mem_table_.art_index_;
+               }(),
+               /*min_key=*/std::string_view{}}
 {
   BATT_CHECK(this->mem_table_.is_finalized());
 }
