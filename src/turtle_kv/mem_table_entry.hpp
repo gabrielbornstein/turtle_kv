@@ -342,14 +342,10 @@ class MemTableValueEntry
   MemTableValueEntry(const MemTableValueEntry&) = default;
   MemTableValueEntry& operator=(const MemTableValueEntry&) = default;
 
-  explicit MemTableValueEntry(const char* key_data,
-                              const char* value_data,
-                              u32 value_size,
-                              u64 offset) noexcept
+  explicit MemTableValueEntry(const char* key_data, const char* value_data, u32 value_size) noexcept
       : key_data_{key_data}
       , value_data_{value_data}
       , value_size_{value_size}
-      , offset_{offset}
   {
   }
 
@@ -458,8 +454,7 @@ struct MemTableValueEntryInserter {
       std::memcpy(value_dst, this->value.data(), value_len);
       this->stored_value = ValueView::from_str(std::string_view{value_dst, value_len});
 
-      this->entry =
-          new (entry_memory) MemTableValueEntry{key_dst, value_dst, (u32)value_len, offset};
+      this->entry = new (entry_memory) MemTableValueEntry{key_dst, value_dst, (u32)value_len};
     });
 
     this->inserted = true;
