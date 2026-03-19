@@ -154,10 +154,6 @@ class KVStoreScanner
     KeyView key;
 
     std::variant<NoneType,
-#if 0
-                 MemTableScanState<ARTBase::Synchronized::kTrue>,
-                 MemTableScanState<ARTBase::Synchronized::kFalse>,
-#endif
                  MemTableValueScanState<ARTBase::Synchronized::kTrue>,
                  MemTableValueScanState<ARTBase::Synchronized::kFalse>,
                  Slice<const EditView>,
@@ -173,16 +169,6 @@ class KVStoreScanner
     explicit ScanLevel(const ShardedKeyValueSlice& kv_slice,
                        NodeScanState* frame,
                        i32 buffer_level_i) noexcept;
-
-#if 0
-    explicit ScanLevel(ActiveMemTableTag,
-                       MemTable& mem_table,
-                       ART<void>::Scanner<ARTBase::Synchronized::kTrue>& art_scanner) noexcept;
-
-    explicit ScanLevel(DeltaMemTableTag,
-                       MemTable& mem_table,
-                       ART<void>::Scanner<ARTBase::Synchronized::kFalse>& art_scanner) noexcept;
-#endif
 
     explicit ScanLevel(
         ActiveMemTableValueTag,

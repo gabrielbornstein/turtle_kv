@@ -382,12 +382,6 @@ u64 query_page_loader_reset_every_n()
                  },
                  "KVStore::info_task"}
 
-    , memtable_compact_channels_storage_{new PipelineChannel<
-          boost::intrusive_ptr<MemTable>>[this->runtime_options_.memtable_compact_threads]}
-
-    , memtable_compact_channels_{as_slice(this->memtable_compact_channels_storage_.get(),
-                                          this->runtime_options_.memtable_compact_threads)}
-
     , checkpoint_generator_{this->worker_pool_,
                             this->tree_options_,
                             this->page_cache(),
@@ -420,12 +414,9 @@ u64 query_page_loader_reset_every_n()
   }
 
   if (this->runtime_options_.use_threaded_checkpoint_pipeline) {
-    BATT_CHECK_GT(this->runtime_options_.memtable_compact_threads, 0);
-    for (usize i = 0; i < this->runtime_options_.memtable_compact_threads; ++i) {
-      this->memtable_compact_threads_.emplace_back([this, i] {
-        this->memtable_compact_thread_main(i);
-      });
-    }
+    this->mem_table_batch_scanner_thread_.emplace([this] {
+      this->mem_table_batch_scanner_thread_main();
+    });
     this->checkpoint_update_thread_.emplace([this] {
       this->checkpoint_update_thread_main();
     });
@@ -486,10 +477,7 @@ void KVStore::halt()
 {
   this->halt_.set_value(true);
   this->log_writer_->halt();
-  for (PipelineChannel<boost::intrusive_ptr<MemTable>>& channel :
-       this->memtable_compact_channels_) {
-    channel.close();
-  }
+  this->finalized_mem_table_channel_.close();
   this->checkpoint_update_channel_.close();
   this->checkpoint_flush_channel_.close();
 }
@@ -499,10 +487,10 @@ void KVStore::halt()
 void KVStore::join()
 {
   this->log_writer_->join();
-  for (std::thread& t : this->memtable_compact_threads_) {
-    t.join();
+  if (this->mem_table_batch_scanner_thread_) {
+    this->mem_table_batch_scanner_thread_->join();
+    this->mem_table_batch_scanner_thread_ = None;
   }
-  this->memtable_compact_threads_.clear();
   if (this->checkpoint_update_thread_) {
     this->checkpoint_update_thread_->join();
     this->checkpoint_update_thread_ = None;
@@ -522,8 +510,7 @@ void KVStore::join()
 //
 boost::intrusive_ptr<MemTable> KVStore::create_mem_table(u64 mem_table_id)
 {
-  const usize max_batches_per_mem_table =
-      this->runtime_options_.use_big_mem_tables ? this->get_checkpoint_distance() : 1;
+  const usize max_batches_per_mem_table = this->get_checkpoint_distance();
 
   boost::intrusive_ptr<MemTable> mem_table{new MemTable{
       this->page_cache(),
@@ -563,7 +550,7 @@ Status KVStore::put(const KeyView& key, const ValueView& value) noexcept /*overr
       this->per_thread_.get(this).log_writer_context(observed_mem_table_id);
 
 #if TURTLE_KV_PROFILE_UPDATES
-  LatencyTimer put_memtable_timer{Every2ToTheConst<8>{}, this->metrics_.put_memtable_latency};
+  LatencyTimer put_mem_table_timer{Every2ToTheConst<8>{}, this->metrics_.put_memtable_latency};
 #endif
 
   // Insert the key/value pair into the active MemTable; this will also append a change log buffer.
@@ -571,7 +558,7 @@ Status KVStore::put(const KeyView& key, const ValueView& value) noexcept /*overr
   Status status = observed_mem_table->put(log_writer_context, key, value);
 
 #if TURTLE_KV_PROFILE_UPDATES
-  put_memtable_timer.stop();
+  put_mem_table_timer.stop();
 #endif
 
   // If the MemTable is too full to accept this update, then finalize the current MemTable and try
@@ -590,8 +577,7 @@ Status KVStore::put(const KeyView& key, const ValueView& value) noexcept /*overr
 
     // Limit the number of deltas that can build up.
     //
-    const usize max_deltas_size =
-        this->runtime_options_.use_big_mem_tables ? 2 : (this->checkpoint_distance_.load() * 2);
+    const usize max_deltas_size = 2;
 
     BATT_REQUIRE_OK(this->deltas_size_->await_true([this, max_deltas_size](usize n) {
       return n <= max_deltas_size;
@@ -688,7 +674,7 @@ StatusOr<ValueView> KVStore::get(const KeyView& key) noexcept /*override*/
                                        this->metrics_.mem_table_get_latency,
                                        observed_state->mem_table_->get(key));
 
-  const auto return_memtable_value =
+  const auto return_mem_table_value =
       [](Optional<ValueView> mem_table_value,
          FastCountMetric<u64>& get_count_metric) -> StatusOr<ValueView> {
     get_count_metric.add(1);
@@ -700,7 +686,7 @@ StatusOr<ValueView> KVStore::get(const KeyView& key) noexcept /*override*/
 
   if (value) {
     if (!value->needs_combine()) {
-      return return_memtable_value(value, this->metrics_.mem_table_get_count);
+      return return_mem_table_value(value, this->metrics_.mem_table_get_count);
     }
   }
 
@@ -722,13 +708,13 @@ StatusOr<ValueView> KVStore::get(const KeyView& key) noexcept /*override*/
       if (value) {
         *value = combine(*value, *delta_value);
         if (!value->needs_combine()) {
-          return return_memtable_value(
+          return return_mem_table_value(
               value,
               this->metrics_.delta_log2_get_count[batt::log2_ceil(observed_deltas_size - i)]);
         }
       } else {
         if (!delta_value->needs_combine()) {
-          return return_memtable_value(
+          return return_mem_table_value(
               delta_value,
               this->metrics_.delta_log2_get_count[batt::log2_ceil(observed_deltas_size - i)]);
         }
@@ -821,7 +807,7 @@ Status KVStore::remove(const KeyView& key) noexcept /*override*/
 Status KVStore::update_checkpoint(const State* observed_state)
 {
 #if TURTLE_KV_PROFILE_UPDATES
-  LatencyTimer memtable_create_timer{this->metrics_.put_memtable_create_latency};
+  LatencyTimer mem_table_create_timer{this->metrics_.put_memtable_create_latency};
 #endif
 
   // Gather some information from the current MemTable before we send it off.
@@ -865,7 +851,7 @@ Status KVStore::update_checkpoint(const State* observed_state)
   this->deltas_size_->fetch_add(1);
 
 #if TURTLE_KV_PROFILE_UPDATES
-  memtable_create_timer.stop();
+  mem_table_create_timer.stop();
 #endif
 
   // Since we successfully exchanged the successor to `observed_state`, when this scope exits we
@@ -901,10 +887,10 @@ Status KVStore::update_checkpoint(const State* observed_state)
     LatencyTimer queue_push_timer{this->metrics_.put_memtable_queue_push_latency};
 #endif
 
-    BATT_REQUIRE_OK(this->memtable_compact_channels_.begin()->write(std::move(old_mem_table)));
+    BATT_REQUIRE_OK(this->finalized_mem_table_channel_.write(std::move(old_mem_table)));
 
   } else {
-    BATT_REQUIRE_OK(this->compact_memtable(  //
+    BATT_REQUIRE_OK(this->scan_mem_table_to_build_batches(  //
         std::move(old_mem_table),
         [this](std::unique_ptr<DeltaBatch> delta_batch) -> Status {
           BATT_ASSIGN_OK_RESULT(std::unique_ptr<CheckpointJob> checkpoint_job,
@@ -990,17 +976,12 @@ void KVStore::info_task_main() noexcept
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-void KVStore::memtable_compact_thread_main(usize thread_i)
+void KVStore::mem_table_batch_scanner_thread_main()
 {
-#if TURTLE_KV_BIG_MEM_TABLES
-  BATT_CHECK_EQ(thread_i, 0)
-      << "There can only be one MemTable compaction thread if TURTLE_KV_BIG_MEM_TABLES is enabled";
-#endif
-
-  Status status = [this, thread_i]() -> Status {
+  Status status = [this]() -> Status {
     for (;;) {
       StatusOr<boost::intrusive_ptr<MemTable>> mem_table =
-          this->memtable_compact_channels_[thread_i].read();
+          this->finalized_mem_table_channel_.read();
 
       BATT_REQUIRE_OK(mem_table);
       BATT_CHECK_NOT_NULLPTR(*mem_table);
@@ -1008,9 +989,9 @@ void KVStore::memtable_compact_thread_main(usize thread_i)
       const u64 this_delta_batch_id =
           (**mem_table).edit_offset_upper_bound().value_or_panic().value();
 
-      LOG(INFO) << "memtable_compact_thread_main() this_delta_batch_id: " << this_delta_batch_id;
+      LOG(INFO) << "mem_table_compact_thread_main() this_delta_batch_id: " << this_delta_batch_id;
 
-      BATT_REQUIRE_OK(this->compact_memtable(
+      BATT_REQUIRE_OK(this->scan_mem_table_to_build_batches(
           std::move(*mem_table),
           [this, this_delta_batch_id](std::unique_ptr<DeltaBatch> delta_batch) -> Status {
             BATT_REQUIRE_OK(this->checkpoint_update_channel_.write(std::move(delta_batch)));
@@ -1020,17 +1001,16 @@ void KVStore::memtable_compact_thread_main(usize thread_i)
     }
   }();
 
-  LOG(INFO) << "memtable_compact_thread done: " << BATT_INSPECT(status);
+  LOG(INFO) << "mem_table_compact_thread done: " << BATT_INSPECT(status);
 }
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
 template <typename Fn>
   requires std::invocable<Fn, std::unique_ptr<DeltaBatch>>
-Status KVStore::compact_memtable(boost::intrusive_ptr<MemTable>&& mem_table, Fn&& consume_fn)
+Status KVStore::scan_mem_table_to_build_batches(boost::intrusive_ptr<MemTable>&& mem_table,
+                                                Fn&& consume_fn)
 {
-#if TURTLE_KV_BIG_MEM_TABLES
-
   MemTable::BatchCompactor batch_compactor{*mem_table,
                                            /*byte_size_limit=*/this->tree_options_.flush_size()};
   u64 batch_index = 0;
@@ -1061,35 +1041,12 @@ Status KVStore::compact_memtable(boost::intrusive_ptr<MemTable>&& mem_table, Fn&
 
     has_next = batch_compactor.has_next();
 
-    // If using big MemTables, then explicitly set the `checkpoint_after` field based on whether
-    // this is the last batch; otherwise, set it as unknown and let
-    // `KVStore::apply_batch_to_checkpoint` decide when to take a checkpoint based on the number of
-    // batches received.
+    // Set the `checkpoint_after` field based on whether this is the last batch.
     //
-    if (this->runtime_options_.use_big_mem_tables) {
-      delta_batch->set_checkpoint_after(!has_next);
-    } else {
-      delta_batch->set_checkpoint_after(BoolStatus::kUnknown);
-    }
+    delta_batch->set_checkpoint_after(!has_next);
 
     BATT_REQUIRE_OK(consume_fn(std::move(delta_batch)));
   }
-
-#else  // TURTLE_KV_BIG_MEM_TABLES
-
-  // Convert the MemTable to a DeltaBatch; this compacts all updates per key.
-  //
-  std::unique_ptr<DeltaBatch> delta_batch = std::make_unique<DeltaBatch>(std::move(mem_table));
-
-  TURTLE_KV_COLLECT_LATENCY(this->metrics_.compact_batch_latency,
-                            delta_batch->merge_compact_edits());
-
-  this->metrics_.batch_count.add(1);
-  this->metrics_.batch_edits_count.add(delta_batch->result_set_size());
-
-  BATT_REQUIRE_OK(consume_fn(std::move(delta_batch)));
-
-#endif  // TURTLE_KV_BIG_MEM_TABLES
 
   return OkStatus();
 }
@@ -1127,11 +1084,9 @@ void KVStore::checkpoint_update_thread_main()
 StatusOr<std::unique_ptr<CheckpointJob>> KVStore::apply_batch_to_checkpoint(
     std::unique_ptr<DeltaBatch>&& delta_batch)
 {
-#if TURTLE_KV_BIG_MEM_TABLES
   const auto batch_id = delta_batch                                            //
                             ? Optional<DeltaBatchId>{delta_batch->batch_id()}  //
                             : Optional<DeltaBatchId>{None};
-#endif  // TURTLE_KV_BIG_MEM_TABLES
 
   const BoolStatus checkpoint_after =
       delta_batch ? delta_batch->checkpoint_after() : BoolStatus::kUnknown;
@@ -1204,18 +1159,9 @@ StatusOr<std::unique_ptr<CheckpointJob>> KVStore::apply_batch_to_checkpoint(
   BATT_CHECK((*checkpoint_job)->appendable_job);
   BATT_CHECK((*checkpoint_job)->prepare_slot_sequencer);
 
-#if TURTLE_KV_BIG_MEM_TABLES
-
   if (batch_id) {
     BATT_CHECK_GT((*checkpoint_job)->batch_id_upper_bound, *batch_id);
   }
-
-#else  // TURTLE_KV_BIG_MEM_TABLES
-
-  BATT_CHECK_NE((*checkpoint_job)->batch_count, 0);
-  BATT_CHECK_EQ((*checkpoint_job)->batch_count, this->checkpoint_batch_count_);
-
-#endif  // TURTLE_KV_BIG_MEM_TABLES
 
   // Number of batches in the current checkpoint resets to zero.
   //
@@ -1313,8 +1259,6 @@ Status KVStore::commit_checkpoint(std::unique_ptr<CheckpointJob>&& checkpoint_jo
       // Remove the deltas covered by the new base checkpoint.
       //
       {
-#if TURTLE_KV_BIG_MEM_TABLES
-
         // Find the first delta MemTable on the stack that is *not* covered by the checkpoint.
         //  (deltas_ is in oldest-to-newest order)
         //
@@ -1326,14 +1270,6 @@ Status KVStore::commit_checkpoint(std::unique_ptr<CheckpointJob>&& checkpoint_jo
         // Copy over references to delta MemTables _newer_ than the checkpoint.
         //
         new_state->deltas_.assign(iter, old_state->deltas_.end());
-
-#else  // TURTLE_KV_BIG_MEM_TABLES
-
-        BATT_CHECK_LE(checkpoint_job->batch_count, old_state->deltas_.size());
-        new_state->deltas_.assign(old_state->deltas_.begin() + checkpoint_job->batch_count,
-                                  old_state->deltas_.end());
-
-#endif  // TURTLE_KV_BIG_MEM_TABLES
       }
       BATT_CHECK_GE(old_state->deltas_.size(), new_state->deltas_.size());
       n_deltas_trimmed = old_state->deltas_.size() - new_state->deltas_.size();
