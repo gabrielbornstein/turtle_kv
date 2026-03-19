@@ -1,5 +1,7 @@
 #pragma once
 
+#include <turtle_kv/change_log/edit_offset.hpp>
+
 #include <turtle_kv/core/key_view.hpp>
 #include <turtle_kv/core/value_view.hpp>
 
@@ -33,16 +35,12 @@ struct PackedValueUpdate {
    */
   little_u16 revision;
 
-  /** \brief The unique id/offset from start that this update was set at.
-   */
-  little_u64 offset;
-
   /** \brief The (reader) version for this update.
    */
   big_u32 version;
 };
 
-BATT_STATIC_ASSERT_EQ(sizeof(PackedValueUpdate), 16);
+BATT_STATIC_ASSERT_EQ(sizeof(PackedValueUpdate), 8);
 
 class MemTableEntry;
 class MemTableValueEntry;
@@ -348,10 +346,14 @@ class MemTableValueEntry
   MemTableValueEntry(const MemTableValueEntry&) = default;
   MemTableValueEntry& operator=(const MemTableValueEntry&) = default;
 
-  explicit MemTableValueEntry(const char* key_data, const char* value_data, u32 value_size) noexcept
+  explicit MemTableValueEntry(const char* key_data,
+                              const char* value_data,
+                              u32 value_size,
+                              EditOffset offset) noexcept
       : key_data_{key_data}
       , value_data_{value_data}
       , value_size_{value_size}
+      , offset_{offset}
   {
   }
 
@@ -360,7 +362,7 @@ class MemTableValueEntry
   const char* key_data_;
   const char* value_data_;
   mutable u32 value_size_;
-  u64 offset_;
+  EditOffset offset_;
 
   u32 get_version() const
   {
@@ -379,7 +381,7 @@ class MemTableValueEntry
     return ValueView::from_str(std::string_view{this->value_data_, this->value_size_});
   }
 
-  u64 offset() const
+  EditOffset offset() const
   {
     return this->offset_;
   }
@@ -431,7 +433,6 @@ struct MemTableValueEntryInserter {
 
   Status insert_new(void* entry_memory)
   {
-    char* key_dst;
     const usize key_len = this->key.size();
     const usize value_len = this->value.size();
     const usize insert_size = sizeof(little_u16)  // header
@@ -443,25 +444,29 @@ struct MemTableValueEntryInserter {
     // TODO [tastolfi 2026-03-19] `store_data` should choose the offset, and serialize it right
     // before `buffer`.
     //
-    this->storage.store_data(insert_size, [&](const MutableBuffer& buffer, EditOffset offset) {
-      little_u16* key_len_dst = place_first<little_u16>(buffer.data());
-      *key_len_dst = key_len;
+    this->storage.store_data(                     //
+        insert_size,                              //
+        [this, key_len, value_len, entry_memory]  //
+        (const MutableBuffer& buffer, u64 offset) {
+          big_u64* offset_dst = place_first<big_u64>(buffer.data());
+          *offset_dst = offset;
 
-      // TODO: [Gabe Bornstein 3/16/26] Update header to include edit_offset of update.
-      //
+          little_u16* key_len_dst = place_next<little_u16>(offset_dst, 1);
+          *key_len_dst = key_len;
 
-      key_dst = place_next<char>(header_dst, 1);
-      std::memcpy(key_dst, this->key.data(), key_len);
+          char* key_dst = place_next<char>(key_len_dst, 1);
+          std::memcpy(key_dst, this->key.data(), key_len);
 
-      auto* offset_dst = place_next<big_u64>(version_dst, 1);
-      *offset_dst = offset;
+          auto* version_dst = place_next<big_u32>(key_dst, key_len);
+          *version_dst = this->version;
 
-      auto* value_dst = place_next<char>(offset_dst, 1);
-      std::memcpy(value_dst, this->value.data(), value_len);
-      this->stored_value = ValueView::from_str(std::string_view{value_dst, value_len});
+          auto* value_dst = place_next<char>(version_dst, 1);
+          std::memcpy(value_dst, this->value.data(), value_len);
+          this->stored_value = ValueView::from_str(std::string_view{value_dst, value_len});
 
-      this->entry = new (entry_memory) MemTableValueEntry{key_dst, value_dst, (u32)value_len};
-    });
+          this->entry = new (entry_memory)
+              MemTableValueEntry{key_dst, value_dst, (u32)value_len, EditOffset{(i64)offset}};
+        });
 
     this->inserted = true;
 
@@ -477,23 +482,24 @@ struct MemTableValueEntryInserter {
     // TODO: [Gabe Bornstein 3/5/26] Verify we correctly `combine` updates to a key that's already
     // in the MemTable. We're no longer saving `base_locator` or `prev_locator` in header.
     //
-    this->storage.store_data(update_size, [&](const MutableBuffer& buffer, u64 offset) {
-      auto* header = place_first<PackedValueUpdate>(buffer.data());
+    this->storage.store_data(  //
+        update_size,           //
+        [&](const MutableBuffer& buffer, u64 offset [[maybe_unused]]) {
+          auto* header = place_first<PackedValueUpdate>(buffer.data());
 
-      header->key_len = 0;
-      header->revision = 0;  // TODO [tastolfi 2025-07-24]
-      header->offset = offset;
-      header->version = this->version;
+          header->key_len = 0;
+          header->revision = 0;  // TODO [tastolfi 2025-07-24]
+          header->version = this->version;
 
-      auto* value_dst = place_next<char>(header, 1);
-      std::memcpy(value_dst, this->value.data(), value_len);
-      this->stored_value = ValueView::from_str(std::string_view{value_dst, value_len});
+          auto* value_dst = place_next<char>(header, 1);
+          std::memcpy(value_dst, this->value.data(), value_len);
+          this->stored_value = ValueView::from_str(std::string_view{value_dst, value_len});
 
-      this->entry = p_entry;
+          this->entry = p_entry;
 
-      p_entry->value_data_ = value_dst;
-      p_entry->value_size_ = value_len;
-    });
+          p_entry->value_data_ = value_dst;
+          p_entry->value_size_ = value_len;
+        });
 
     return OkStatus();
   }
@@ -529,9 +535,14 @@ class MemTableEntryReader
       return {batt::StatusCode::kDataLoss};
     }
 
-    // Read header (key length)
-    const auto* header = place_first<little_u16>(const_cast<char*>(data));
-    const u16 key_len = *header;
+    // Read offset
+    //
+    const auto* offset_ptr = place_first<big_u64>(const_cast<char*>(data));
+    const u64 offset = *offset_ptr;
+
+    // Read key length
+    const auto* key_len_dst = place_next<little_u16>(offset_ptr, 1);
+    const u16 key_len = *key_len_dst;
 
     // Check if buffer has enough data
     // TODO: [Gabe Bornstein 3/18/26] Consider making this value a static constant. It gets used in
@@ -545,7 +556,7 @@ class MemTableEntryReader
 
     // Read key
     //
-    const char* key_data = place_next<char>(header, 1);
+    const char* key_data = place_next<char>(key_len_dst, 1);
     std::string_view key{key_data, key_len};
 
     // Read version
@@ -553,14 +564,9 @@ class MemTableEntryReader
     const auto* version_ptr = place_next<big_u32>(key_data, key_len);
     const u32 version = *version_ptr;
 
-    // Read offset
-    //
-    const auto* offset_ptr = place_next<big_u64>(version_ptr, 1);
-    const u64 offset = *offset_ptr;
-
     // Read value
     //
-    const char* value_data = place_next<char>(offset_ptr, 1);
+    const char* value_data = place_next<char>(version_ptr, 1);
     const std::size_t value_len = size - expected_min_size;
     std::string_view value{value_data, value_len};
 
@@ -592,7 +598,6 @@ class MemTableEntryReader
     }
 
     const u16 revision = header->revision;
-    const u64 offset = header->offset;
     const u32 version = header->version;
 
     // Read value
@@ -602,7 +607,7 @@ class MemTableEntryReader
     std::string_view value{value_data, value_len};
 
     return MemTableUpdateData{.revision = revision,
-                              .offset = offset,
+                              .offset = 0,
                               .version = version,
                               .value = value};
   }
@@ -620,9 +625,12 @@ class MemTableEntryReader
       return {batt::StatusCode::kDataLoss};
     }
 
-    // Check first u16 to determine type
+    // Read offset
     //
-    const auto* first_u16 = place_first<little_u16>(const_cast<char*>(data));
+    const auto* offset_ptr = place_first<big_u64>(const_cast<char*>(data));
+
+    // Read header (key length)
+    const auto* first_u16 = place_next<little_u16>(offset_ptr, 1);
 
     // Check if this is an update (key_len == 0), otherwise, it's an insert.
     //

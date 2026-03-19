@@ -121,13 +121,16 @@ Status KVStoreScanner::start()
     // Create the active MemTable scanner.
     //
     BATT_CHECK(this->mem_table_scanner_ || this->mem_table_value_scanner_);
+#if 0
     if (this->mem_table_scanner_) {
       if (!this->mem_table_scanner_->is_done()) {
         this->scan_levels_.emplace_back(ActiveMemTableTag{},
                                         *this->pinned_state_->mem_table_,
                                         *this->mem_table_scanner_);
       }
-    } else {
+    } else
+#endif
+    {
       if (!this->mem_table_value_scanner_->is_done()) {
         this->scan_levels_.emplace_back(ActiveMemTableValueTag{}, *this->mem_table_value_scanner_);
       }
@@ -566,6 +569,7 @@ Status KVStoreScanner::set_next_item()
 {
 }
 
+#if 0
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
 /*explicit*/ KVStoreScanner::ScanLevel::ScanLevel(
@@ -593,6 +597,7 @@ Status KVStoreScanner::set_next_item()
       }}
 {
 }
+#endif
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
@@ -639,6 +644,7 @@ EditView KVStoreScanner::ScanLevel::item() const
         BATT_PANIC() << "illegal state";
         BATT_UNREACHABLE();
       },
+#if 0
       [this](const MemTableScanState<ARTBase::Synchronized::kTrue>& state) -> EditView {
         MemTableEntry entry;
         const bool found = state.mem_table_->hash_index().find_key(this->key, entry);
@@ -652,6 +658,7 @@ EditView KVStoreScanner::ScanLevel::item() const
 
         return EditView{entry->key_, entry->value_};
       },
+#endif
       [](const MemTableValueScanState<ARTBase::Synchronized::kTrue>& state) -> EditView {
         const MemTableValueEntry& entry = state.art_scanner_->get_value();
         return EditView{entry.key_view(), entry.value_view()};

@@ -185,6 +185,7 @@ class MemTable : public batt::RefCounted<MemTable>
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
 
+#if 0
   bool has_hash_index() const noexcept
   {
     return bool{this->hash_index_};
@@ -195,6 +196,7 @@ class MemTable : public batt::RefCounted<MemTable>
     BATT_CHECK(this->hash_index_);
     return *this->hash_index_;
   }
+#endif
 
   bool has_ordered_index() const noexcept
   {
@@ -234,7 +236,8 @@ class MemTable : public batt::RefCounted<MemTable>
    */
   DeltaBatchId max_batch_id() const
   {
-    return DeltaBatchId{this->upper_bound(), this->max_batch_index()};
+    return DeltaBatchId{(u64)this->edit_offset_upper_bound().value_or_panic().value(),
+                        this->max_batch_index()};
   }
 
 #else
@@ -279,7 +282,9 @@ class MemTable : public batt::RefCounted<MemTable>
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
 
+#if 0
   Optional<ValueView> get_impl(const MemTableQuery& query, u64 shard_i) noexcept;
+#endif
 
   usize scan_keys_impl(const KeyView& min_key,
                        const Slice<std::pair<KeyView, ValueView>>& items_out) noexcept;
@@ -340,7 +345,9 @@ class MemTable : public batt::RefCounted<MemTable>
 
   //----- --- -- -  -  -   -
   //
+#if 0
   Optional<ConcurrentHashIndex> hash_index_;
+#endif
   Optional<ART<void>> ordered_index_;
   //
   //----- --- -- -  -  -   -
@@ -423,6 +430,7 @@ void MemTable::StorageImpl::store_data(usize n_bytes, SerializeFn&& serialize_fn
 
         BATT_CHECK_GE(buffer->edit_offset_lower_bound(), mem_table.self_id_);
 
+        u64 slot_offset = this->mem_table.next_offset_.fetch_add(n_bytes);
         if (buffer->ref_count() == 1) {
           buffer->add_ref(1);
           mem_table.metrics_.mem_table_log_bytes_allocated.add(buffer->block_size());
@@ -433,17 +441,13 @@ void MemTable::StorageImpl::store_data(usize n_bytes, SerializeFn&& serialize_fn
             mem_table.block_size_total_ += buffer->block_size();
             cache_alloc_delta = mem_table.update_external_cache_alloc();
             mem_table.blocks_.emplace_back(buffer);
-            mem_table.next_block_offset_ = mem_table.next_offset();
+            mem_table.next_block_offset_ = slot_offset /*+ n_bytes*/;
           }
           mem_table.handle_external_cache_alloc(cache_alloc_delta);
         }
 
-        serialize_fn(dst, this->mem_table.next_offset());
+        serialize_fn(dst, slot_offset);
       }));
-  // TODO: [Gabe Bornstein 3/5/26] Consider updating the value of mem_table.next_offset
-  // here instead of in KVStore::put().
-  //
-  this->mem_table.next_offset_.fetch_add(n_bytes);
 }
 
 /** \brief Returns the greatest ordered DeltaBatchId included in the passed MemTable.

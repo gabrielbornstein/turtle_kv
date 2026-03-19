@@ -38,7 +38,9 @@ namespace turtle_kv {
     , next_offset_{next_offset}
     , edit_offset_lower_bound_{id}
     , is_finalized_{false}
+#if 0
     , hash_index_{}
+#endif
     , ordered_index_{}
     , art_index_{}
     , max_bytes_per_batch_{BATT_CHECKED_CAST(i64, max_bytes_per_batch)}
@@ -52,12 +54,16 @@ namespace turtle_kv {
     , blocks_{}
 {
   if (getenv_param<turtlekv_memtable_hash_index>()) {
+#if 0
     this->hash_index_.emplace(this->max_byte_size_ /
                               getenv_param<turtlekv_memtable_hash_bucket_div>());
 
     if (getenv_param<turtlekv_memtable_ordered_index>()) {
       this->ordered_index_.emplace();
     }
+#else
+    BATT_PANIC() << "TODO [tastolfi 2026-03-19] remove";
+#endif
 
   } else {
     this->art_index_.emplace(this->art_metrics_);
@@ -126,6 +132,7 @@ Status MemTable::put(ChangeLogWriter::Context& context,
 
   StorageImpl storage{*this, context, OkStatus()};
 
+#if 0
   if (this->hash_index_) {
     MemTableEntryInserter<StorageImpl> inserter{
         this->current_byte_size_,
@@ -145,7 +152,9 @@ Status MemTable::put(ChangeLogWriter::Context& context,
       this->ordered_index_->insert(get_key(*inserter.entry));
     }
 
-  } else {
+  } else
+#endif
+  {
     MemTableValueEntryInserter<StorageImpl> inserter{
         storage,
         key,
@@ -163,13 +172,15 @@ Status MemTable::put(ChangeLogWriter::Context& context,
 //
 Optional<ValueView> MemTable::get(const KeyView& key) noexcept
 {
-  if (this->hash_index_) {
+#if 0
+    if (this->hash_index_) {
     MemTableEntry entry;
     if (!this->hash_index_->find_key(key, entry)) {
       return None;
     }
     return entry.value_;
   }
+#endif
 
   Optional<MemTableValueEntry> entry = this->art_index_->find(key);
   if (!entry) {
@@ -186,6 +197,7 @@ usize MemTable::scan(const KeyView& min_key,
 {
   usize n_found = 0;
 
+#if 0
   if (this->ordered_index_) {
     this->ordered_index_->scan(min_key, [&](const std::string_view& tmp_key) {
       if (n_found >= items_out.size()) {
@@ -199,8 +211,10 @@ usize MemTable::scan(const KeyView& min_key,
       }
       return true;
     });
-
-  } else {
+  }
+  else
+#endif
+  {
     ART<MemTableValueEntry>::Scanner<ARTBase::Synchronized::kTrue> scanner{*this->art_index_,
                                                                            min_key};
 
@@ -218,6 +232,7 @@ usize MemTable::scan(const KeyView& min_key,
 //
 Optional<ValueView> MemTable::finalized_get(const KeyView& key) noexcept
 {
+#if 0
   if (this->hash_index_) {
     const MemTableEntry* entry = this->hash_index_->unsynchronized_find_key(key);
     if (!entry) {
@@ -225,6 +240,7 @@ Optional<ValueView> MemTable::finalized_get(const KeyView& key) noexcept
     }
     return entry->value_;
   }
+#endif
 
   const MemTableValueEntry* entry = this->art_index_->unsynchronized_find(key);
   if (!entry) {
@@ -233,6 +249,7 @@ Optional<ValueView> MemTable::finalized_get(const KeyView& key) noexcept
   return entry->value_view();
 }
 
+#if 0
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
 usize MemTable::finalized_scan(const KeyView& min_key,
@@ -257,6 +274,7 @@ usize MemTable::scan_keys_impl(const KeyView& min_key,
   BATT_PANIC() << "Fix scanning!";
   return 0;
 }
+#endif
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
