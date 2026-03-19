@@ -14,6 +14,9 @@
 
 namespace turtle_kv {
 
+namespace deprecated {
+
+#if 0
 class ConcurrentHashIndex
 {
  public:
@@ -307,5 +310,7 @@ class ConcurrentHashIndex
     }
   }
 };
+#endif
+}  // namespace deprecated
 
 }  // namespace turtle_kv

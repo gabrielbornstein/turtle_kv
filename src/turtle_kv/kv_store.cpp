@@ -883,8 +883,10 @@ Status KVStore::update_checkpoint(const State* observed_state)
 
   // As long as no puts are concurrently happening, this variant holds true.
   //
-  BATT_CHECK_EQ(old_mem_table->next_offset(), old_mem_table->upper_bound());
-  BATT_CHECK_EQ(next_mem_table_id, old_mem_table->upper_bound());
+  BATT_CHECK_EQ(old_mem_table->next_offset(),
+                old_mem_table->edit_offset_upper_bound().value_or_panic().value());
+  BATT_CHECK_EQ(next_mem_table_id,
+                old_mem_table->edit_offset_upper_bound().value_or_panic().value());
 
   // Wait for any previous MemTables to be consumed by the compactor task.
   //
@@ -1003,7 +1005,8 @@ void KVStore::memtable_compact_thread_main(usize thread_i)
       BATT_REQUIRE_OK(mem_table);
       BATT_CHECK_NOT_NULLPTR(*mem_table);
 
-      const u64 this_delta_batch_id = (**mem_table).upper_bound();
+      const u64 this_delta_batch_id =
+          (**mem_table).edit_offset_upper_bound().value_or_panic().value();
 
       LOG(INFO) << "memtable_compact_thread_main() this_delta_batch_id: " << this_delta_batch_id;
 
@@ -1023,8 +1026,8 @@ void KVStore::memtable_compact_thread_main(usize thread_i)
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
 template <typename Fn>
-requires std::invocable<Fn, std::unique_ptr<DeltaBatch>> Status
-KVStore::compact_memtable(boost::intrusive_ptr<MemTable>&& mem_table, Fn&& consume_fn)
+  requires std::invocable<Fn, std::unique_ptr<DeltaBatch>>
+Status KVStore::compact_memtable(boost::intrusive_ptr<MemTable>&& mem_table, Fn&& consume_fn)
 {
 #if TURTLE_KV_BIG_MEM_TABLES
 
@@ -1046,9 +1049,11 @@ KVStore::compact_memtable(boost::intrusive_ptr<MemTable>&& mem_table, Fn&& consu
   while (has_next) {
     auto delta_batch = TURTLE_KV_COLLECT_LATENCY(
         this->metrics_.compact_batch_latency,
-        std::make_unique<DeltaBatch>(DeltaBatchId{mem_table->upper_bound(), batch_index},
-                                     batt::make_copy(mem_table),
-                                     batch_compactor.consume_next()));
+        std::make_unique<DeltaBatch>(
+            DeltaBatchId{(u64)mem_table->edit_offset_upper_bound().value_or_panic().value(),
+                         batch_index},
+            batt::make_copy(mem_table),
+            batch_compactor.consume_next()));
     ++batch_index;
 
     this->metrics_.batch_count.add(1);
