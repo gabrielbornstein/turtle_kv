@@ -201,10 +201,11 @@ class KVStore : public Table
   void info_task_main() noexcept;
 
   template <typename Fn>
-  requires std::invocable<Fn, std::unique_ptr<DeltaBatch>> Status
-  compact_memtable(boost::intrusive_ptr<MemTable>&& mem_table, Fn&& consume_fn);
+    requires std::invocable<Fn, std::unique_ptr<DeltaBatch>>
+  Status scan_mem_table_to_build_batches(boost::intrusive_ptr<MemTable>&& mem_table,
+                                         Fn&& consume_fn);
 
-  void memtable_compact_thread_main(usize thread_i);
+  void mem_table_batch_scanner_thread_main();
 
   StatusOr<std::unique_ptr<CheckpointJob>> apply_batch_to_checkpoint(
       std::unique_ptr<DeltaBatch>&& delta_batch);
@@ -279,8 +280,7 @@ class KVStore : public Table
   //
   std::atomic<u64> next_mem_table_id_to_push_{MemTable::first_id()};
 
-  std::unique_ptr<PipelineChannel<boost::intrusive_ptr<MemTable>>[]>
-      memtable_compact_channels_storage_;
+  PipelineChannel<boost::intrusive_ptr<MemTable>> finalized_mem_table_channel_;
 
   Slice<PipelineChannel<boost::intrusive_ptr<MemTable>>> memtable_compact_channels_;
 
@@ -308,7 +308,11 @@ class KVStore : public Table
 
   PipelineChannel<std::unique_ptr<CheckpointJob>> checkpoint_flush_channel_;
 
-  std::vector<std::thread> memtable_compact_threads_;
+  //----- --- -- -  -  -   -
+  // Threads for the Checkpoint update pipeline stages.
+  //----- --- -- -  -  -   -
+
+  Optional<std::thread> mem_table_batch_scanner_thread_;
 
   Optional<std::thread> checkpoint_update_thread_;
 

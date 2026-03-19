@@ -36,21 +36,11 @@ class DeltaBatch
  public:
   using ResultSet = MergeCompactor::ResultSet</*decay_to_items=*/false>;
 
-#if TURTLE_KV_BIG_MEM_TABLES
-
   /** \brief Constructs a new DeltaBatch.
    */
   explicit DeltaBatch(DeltaBatchId batch_id,
                       boost::intrusive_ptr<MemTable>&& mem_table,
                       ResultSet&& result_set) noexcept;
-
-#else  // TURTLE_KV_BIG_MEM_TABLES
-
-  /** \brief Constructs a new DeltaBatch.
-   */
-  explicit DeltaBatch(boost::intrusive_ptr<MemTable>&& mem_table) noexcept;
-
-#endif  // TURTLE_KV_BIG_MEM_TABLES
 
   /** \brief DeltaBatch objects are not copy-/move-constructible.
    */
@@ -59,14 +49,6 @@ class DeltaBatch
   /** \brief DeltaBatch objects are not copy-/move-assignable.
    */
   DeltaBatch& operator=(const DeltaBatch&) = delete;
-
-#if !TURTLE_KV_BIG_MEM_TABLES
-
-  /** \brief Merge and compact edits from the MemTable.
-   */
-  void merge_compact_edits();
-
-#endif  // !TURTLE_KV_BIG_MEM_TABLES
 
   /** \brief Sets whether a checkpoint should be taken after this batch is applied.
    */
@@ -136,11 +118,7 @@ class DeltaBatch
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
  private:
-#if TURTLE_KV_BIG_MEM_TABLES
-
   const DeltaBatchId batch_id_;
-
-#endif  // TURTLE_KV_BIG_MEM_TABLES
 
   boost::intrusive_ptr<MemTable> mem_table_;
 

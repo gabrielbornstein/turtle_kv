@@ -39,8 +39,6 @@
 
 namespace turtle_kv {
 
-TURTLE_KV_ENV_PARAM(bool, turtlekv_memtable_hash_index, false);
-TURTLE_KV_ENV_PARAM(bool, turtlekv_memtable_ordered_index, true);
 TURTLE_KV_ENV_PARAM(bool, turtlekv_memtable_count_latest_update_only, false);
 TURTLE_KV_ENV_PARAM(bool, turtlekv_memtable_cache_alloc_log, true);
 TURTLE_KV_ENV_PARAM(bool, turtlekv_memtable_cache_alloc_art, true);
@@ -71,13 +69,9 @@ class MemTable : public batt::RefCounted<MemTable>
 
   class Scanner;
 
-#if TURTLE_KV_BIG_MEM_TABLES
-
   /** \brief Produces a series of compacted batches from a finalized MemTable.
    */
   class BatchCompactor;
-
-#endif  // TURTLE_KV_BIG_MEM_TABLES
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
 
@@ -95,14 +89,6 @@ class MemTable : public batt::RefCounted<MemTable>
   static constexpr usize kBlockListPreAllocSize = 4096;
 
   //----- --- -- -  -  -   -
-
-#if !TURTLE_KV_BIG_MEM_TABLES
-
-  static constexpr u32 kCompactionState_Todo = 0;
-  static constexpr u32 kCompactionState_InProgress = 1;
-  static constexpr u32 kCompactionState_Complete = 3;
-
-#endif  // !TURTLE_KV_BIG_MEM_TABLES
 
   /** \brief this->magic_num_ is initialized to this value when a MemTable is constructed.
    */
@@ -185,44 +171,22 @@ class MemTable : public batt::RefCounted<MemTable>
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
 
-#if 0
-  bool has_hash_index() const noexcept
-  {
-    return bool{this->hash_index_};
-  }
-
-  ConcurrentHashIndex& hash_index()
-  {
-    BATT_CHECK(this->hash_index_);
-    return *this->hash_index_;
-  }
-#endif
-
-  bool has_ordered_index() const noexcept
-  {
-    return bool{this->ordered_index_};
-  }
-
-  ART<void>& ordered_index()
-  {
-    BATT_CHECK(this->ordered_index_);
-    return *this->ordered_index_;
-  }
-
   bool has_art_index() const noexcept
   {
     return bool{this->art_index_};
   }
 
   // TODO: [Gabe Bornstein 1/7/25] The art index is public? That doesn't feel right...
+  // tastolfi -> gbornste: I agree it is a bit messy; this is used by KVStoreScanner to construct an
+  // ART scanner to merge all the different depth sorted runs (see kv_store_scanner.cpp:57).  The
+  // reason it is currently expressed as a concrete type (rather than an abstract base class) is to
+  // try to keep the overhead as low as we can for scanning.
   //
   ART<MemTableValueEntry>& art_index()
   {
     BATT_CHECK(this->art_index_);
     return *this->art_index_;
   }
-
-#if TURTLE_KV_BIG_MEM_TABLES
 
   /** \brief Returns the index of the last batch to be compacted from this MemTable.
    */
@@ -239,24 +203,6 @@ class MemTable : public batt::RefCounted<MemTable>
     return DeltaBatchId{(u64)this->edit_offset_upper_bound().value_or_panic().value(),
                         this->max_batch_index()};
   }
-
-#else
-
-  /** \brief Compact the entire MemTable so it can be used as an update batch.
-   */
-  MergeCompactor::ResultSet</*decay_to_items=*/false> compact() noexcept;
-
-  /** \brief Returns the sorted, compacted edits of this MemTable as a single Slice, if compact()
-   * has completed; None otherwise.  This function does not block.
-   */
-  Optional<Slice<const EditView>> poll_compacted_edits() const;
-
-  /** \brief Waits for compacted edits to become available, then returns them.  Does not trigger
-   * compaction; only waits for it to be completed.
-   */
-  Slice<const EditView> await_compacted_edits() const;
-
-#endif  // !TURTLE_KV_BIG_MEM_TABLES
 
   /** \brief Returns the current maximum byte size limit.
    *
@@ -281,23 +227,6 @@ class MemTable : public batt::RefCounted<MemTable>
   };
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
-
-#if 0
-  Optional<ValueView> get_impl(const MemTableQuery& query, u64 shard_i) noexcept;
-#endif
-
-  usize scan_keys_impl(const KeyView& min_key,
-                       const Slice<std::pair<KeyView, ValueView>>& items_out) noexcept;
-
-#if !TURTLE_KV_BIG_MEM_TABLES
-
-  Slice<const EditView> compacted_edits_slice_impl() const;
-
-  std::vector<EditView> compact_hash_index();
-
-  std::vector<EditView> compact_art_index();
-
-#endif  // !TURTLE_KV_BIG_MEM_TABLES
 
   i64 calculate_max_byte_size() const;
 
@@ -343,15 +272,6 @@ class MemTable : public batt::RefCounted<MemTable>
 
   RuntimeOptions runtime_options_ = RuntimeOptions::with_default_values();
 
-  //----- --- -- -  -  -   -
-  //
-#if 0
-  Optional<ConcurrentHashIndex> hash_index_;
-#endif
-  Optional<ART<void>> ordered_index_;
-  //
-  //----- --- -- -  -  -   -
-
   Optional<ART<MemTableValueEntry>> art_index_;
 
   const i64 max_bytes_per_batch_;
@@ -374,17 +294,7 @@ class MemTable : public batt::RefCounted<MemTable>
 
   batt::SmallVec<ChangeLogBlock*, MemTable::kBlockListPreAllocSize> blocks_;
 
-#if TURTLE_KV_BIG_MEM_TABLES
-
   std::atomic<u64> max_batch_index_{0};
-
-#else  // TURTLE_KV_BIG_MEM_TABLES
-
-  std::atomic<u32> compaction_state_{0};
-
-  MergeCompactor::ResultSet</*decay_to_items=*/false> compacted_edits_;
-
-#endif  // TURTLE_KV_BIG_MEM_TABLES
 
   // The total size (in bytes) of all change log block buffers owned by this MemTable.
   //
@@ -459,8 +369,6 @@ inline DeltaBatchId get_batch_upper_bound(const MemTable& mem_table)
 
 // #=##=##=#==#=#==#===#+==#+==========+==+=+=+=+=+=++=+++=+++++=-++++=-+++++++++++
 
-#if TURTLE_KV_BIG_MEM_TABLES
-
 //=#=#==#==#===============+=+=+=+=++=++++++++++++++-++-+--+-+----+---------------
 /** \brief Produces a series of compacted key/value runs, each of which is limited to a maximum
  * size, and can be applied to a checkpoint tree using batch update.
@@ -500,7 +408,5 @@ class MemTable::BatchCompactor
 
   ARTScanner scanner_;
 };
-
-#endif  // TURTLE_KV_BIG_MEM_TABLES
 
 }  // namespace turtle_kv

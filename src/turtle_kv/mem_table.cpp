@@ -38,10 +38,6 @@ namespace turtle_kv {
     , next_offset_{next_offset}
     , edit_offset_lower_bound_{id}
     , is_finalized_{false}
-#if 0
-    , hash_index_{}
-#endif
-    , ordered_index_{}
     , art_index_{}
     , max_bytes_per_batch_{BATT_CHECKED_CAST(i64, max_bytes_per_batch)}
     , max_batch_count_{BATT_CHECKED_CAST(i64, max_batch_count)}
@@ -53,21 +49,7 @@ namespace turtle_kv {
     , block_list_mutex_{}
     , blocks_{}
 {
-  if (getenv_param<turtlekv_memtable_hash_index>()) {
-#if 0
-    this->hash_index_.emplace(this->max_byte_size_ /
-                              getenv_param<turtlekv_memtable_hash_bucket_div>());
-
-    if (getenv_param<turtlekv_memtable_ordered_index>()) {
-      this->ordered_index_.emplace();
-    }
-#else
-    BATT_PANIC() << "TODO [tastolfi 2026-03-19] remove";
-#endif
-
-  } else {
-    this->art_index_.emplace(this->art_metrics_);
-  }
+  this->art_index_.emplace(this->art_metrics_);
 
   this->metrics_.mem_table_alloc.add(1);
   this->metrics_.mem_table_count_stats.update(this->metrics_.mem_table_alloc.get() -
@@ -131,29 +113,6 @@ Status MemTable::put(ChangeLogWriter::Context& context,
   }
 
   StorageImpl storage{*this, context, OkStatus()};
-
-#if 0
-  if (this->hash_index_) {
-    MemTableEntryInserter<StorageImpl> inserter{
-        this->current_byte_size_,
-        this->max_byte_size_,
-        this->runtime_options_.limit_size_by_latest_updates_only,
-        storage,
-        key,
-        value,
-        this->version_.fetch_add(1),
-    };
-
-    BATT_REQUIRE_OK(this->hash_index_->insert(inserter));
-
-    // If this is a key we haven't seen before, add it to the ordered index.
-    //
-    if (this->ordered_index_ && inserter.inserted) {
-      this->ordered_index_->insert(get_key(*inserter.entry));
-    }
-
-  } else
-#endif
   {
     MemTableValueEntryInserter<StorageImpl> inserter{
         storage,
@@ -172,16 +131,6 @@ Status MemTable::put(ChangeLogWriter::Context& context,
 //
 Optional<ValueView> MemTable::get(const KeyView& key) noexcept
 {
-#if 0
-    if (this->hash_index_) {
-    MemTableEntry entry;
-    if (!this->hash_index_->find_key(key, entry)) {
-      return None;
-    }
-    return entry.value_;
-  }
-#endif
-
   Optional<MemTableValueEntry> entry = this->art_index_->find(key);
   if (!entry) {
     return None;
@@ -196,24 +145,6 @@ usize MemTable::scan(const KeyView& min_key,
                      const Slice<std::pair<KeyView, ValueView>>& items_out) noexcept
 {
   usize n_found = 0;
-
-#if 0
-  if (this->ordered_index_) {
-    this->ordered_index_->scan(min_key, [&](const std::string_view& tmp_key) {
-      if (n_found >= items_out.size()) {
-        return false;
-      }
-      MemTableEntry entry;
-      if (this->hash_index_->find_key(tmp_key, entry)) {
-        items_out[n_found].first = entry.key_;
-        items_out[n_found].second = entry.value_;
-        ++n_found;
-      }
-      return true;
-    });
-  }
-  else
-#endif
   {
     ART<MemTableValueEntry>::Scanner<ARTBase::Synchronized::kTrue> scanner{*this->art_index_,
                                                                            min_key};
@@ -224,7 +155,6 @@ usize MemTable::scan(const KeyView& min_key,
       scanner.advance();
     }
   }
-
   return n_found;
 }
 
@@ -232,49 +162,12 @@ usize MemTable::scan(const KeyView& min_key,
 //
 Optional<ValueView> MemTable::finalized_get(const KeyView& key) noexcept
 {
-#if 0
-  if (this->hash_index_) {
-    const MemTableEntry* entry = this->hash_index_->unsynchronized_find_key(key);
-    if (!entry) {
-      return None;
-    }
-    return entry->value_;
-  }
-#endif
-
   const MemTableValueEntry* entry = this->art_index_->unsynchronized_find(key);
   if (!entry) {
     return None;
   }
   return entry->value_view();
 }
-
-#if 0
-//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
-//
-usize MemTable::finalized_scan(const KeyView& min_key,
-                               const Slice<std::pair<KeyView, ValueView>>& items_out) noexcept
-{
-  BATT_CHECK(this->is_finalized_);
-
-  usize k = this->scan_keys_impl(min_key, items_out);
-
-  for (usize i = 0; i < k; ++i) {
-    items_out[i].second = this->finalized_get(items_out[i].first).value_or_panic();
-  }
-
-  return k;
-}
-
-//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
-//
-usize MemTable::scan_keys_impl(const KeyView& min_key,
-                               const Slice<std::pair<KeyView, ValueView>>& items_out) noexcept
-{
-  BATT_PANIC() << "Fix scanning!";
-  return 0;
-}
-#endif
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
@@ -386,11 +279,8 @@ i64 MemTable::calculate_max_byte_size() const
   return this->max_batch_count_ * min_full_batch_size;
 }
 
-#if TURTLE_KV_BIG_MEM_TABLES
-
 //=#=#==#==#===============+=+=+=+=++=++++++++++++++-++-+--+-+----+---------------
 // class MemTable::BatchCompactor
-//
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
@@ -452,7 +342,5 @@ MemTable::BatchCompactor::consume_next() noexcept
 
   return compacted_edits;
 }
-
-#endif  // TURTLE_KV_BIG_MEM_TABLES
 
 }  // namespace turtle_kv
