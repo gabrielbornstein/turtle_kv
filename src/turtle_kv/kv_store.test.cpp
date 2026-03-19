@@ -557,7 +557,7 @@ TEST_F(KVStoreTest, ChangeLogRecovery)
   int i = 0;
   for (auto block : *blocks) {
     ASSERT_TRUE(block->verify().ok());
-    VLOG(1) << "Reading block " << i << " with offset() == " << block->offset()
+    VLOG(1) << "Reading block " << i << " with offset() == " << block->edit_offset_lower_bound()
             << ", and block_size() == " << block->block_size();
     ASSERT_NE(block->block_size(), 0);
     ASSERT_NE(block->slot_count(), 0);
@@ -601,11 +601,12 @@ TEST_F(KVStoreTest, ChangeLogRecovery)
               // offset.
               //
               if (j == 0) {
-                ASSERT_EQ(block->offset(), value.offset);
+                ASSERT_EQ(block->edit_offset_lower_bound(), value.offset);
               }
             } else {
               ASSERT_TRUE(false) << "Failed to read entry from slot " << j << " in block with id "
-                                 << block->offset() << ", StatusCode: " << BATT_INSPECT(value);
+                                 << block->edit_offset_lower_bound()
+                                 << ", StatusCode: " << BATT_INSPECT(value);
             }
           },
           entry);

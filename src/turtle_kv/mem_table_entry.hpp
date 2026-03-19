@@ -47,6 +47,8 @@ BATT_STATIC_ASSERT_EQ(sizeof(PackedValueUpdate), 16);
 class MemTableEntry;
 class MemTableValueEntry;
 
+namespace deprecated {
+#if 0
 //=#=#==#==#===============+=+=+=+=++=++++++++++++++-++-+--+-+----+---------------
 //
 /** \brief Used to insert or update a key/value entry in a hash set.
@@ -325,6 +327,10 @@ struct DefaultStrEq : absl::container_internal::hash_default_eq<std::string_view
   }
 };
 
+#endif
+
+}  // namespace deprecated
+
 //=#=#==#==#===============+=+=+=+=++=++++++++++++++-++-+--+-+----+---------------
 //
 /** \brief Reduced-size Value type without key view; for ART-based indexing.
@@ -438,18 +444,18 @@ struct MemTableValueEntryInserter {
                               + value_len         // value
                               + sizeof(big_u64);  // offset
 
-    this->storage.store_data(insert_size, [&](const MutableBuffer& buffer, u64 offset) {
-      auto* header_dst = place_first<little_u16>(buffer.data());
-      *header_dst = key_len;
+    // TODO [tastolfi 2026-03-19] `store_data` should choose the offset, and serialize it right
+    // before `buffer`.
+    //
+    this->storage.store_data(insert_size, [&](const MutableBuffer& buffer, EditOffset offset) {
+      little_u16* key_len_dst = place_first<little_u16>(buffer.data());
+      *key_len_dst = key_len;
 
       // TODO: [Gabe Bornstein 3/16/26] Update header to include edit_offset of update.
       //
 
       key_dst = place_next<char>(header_dst, 1);
       std::memcpy(key_dst, this->key.data(), key_len);
-
-      auto* version_dst = place_next<big_u32>(key_dst, key_len);
-      *version_dst = this->version;
 
       auto* offset_dst = place_next<big_u64>(version_dst, 1);
       *offset_dst = offset;

@@ -7,6 +7,8 @@
 #include <turtle_kv/mem_table_entry.hpp>
 #include <turtle_kv/scan_metrics.hpp>
 
+#include <turtle_kv/change_log/edit_offset.hpp>
+
 #include <turtle_kv/core/edit_view.hpp>
 #include <turtle_kv/core/key_view.hpp>
 #include <turtle_kv/core/merge_compactor.hpp>
@@ -145,12 +147,15 @@ class MemTable : public batt::RefCounted<MemTable>
     return this->self_id_;
   }
 
+  // TODO [tastolfi 2026-03-19] suspicious... this is very likely out of date as soon as the caller
+  // looks at the returned value.
+  //
   u64 next_offset() const noexcept
   {
     return this->next_offset_.load();
   }
 
-  u64 upper_bound() const noexcept
+  const Optional<EditOffset>& edit_offset_upper_bound() const noexcept
   {
     return this->edit_offset_upper_bound_;
   }
@@ -267,7 +272,9 @@ class MemTable : public batt::RefCounted<MemTable>
     Status status;
 
     template <typename SerializeFn = void(const MutableBuffer&, u64)>
-    void store_data(usize n_bytes, SerializeFn&& serialize_fn) noexcept;
+    void store_data(  // EditOffset slot_edit_offset,
+        usize n_bytes,
+        SerializeFn&& serialize_fn) noexcept;
   };
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
@@ -323,7 +330,9 @@ class MemTable : public batt::RefCounted<MemTable>
   // TODO: [Gabe Bornstein 3/4/26] Consider making this optional<T>. It is only set when mem_table
   // is finalized.
   //
-  u64 edit_offset_upper_bound_;
+  // tastolfi - +1; Optional is a good idea!
+  //
+  Optional<EditOffset> edit_offset_upper_bound_;
 
   std::atomic<bool> is_finalized_;
 
@@ -412,7 +421,7 @@ void MemTable::StorageImpl::store_data(usize n_bytes, SerializeFn&& serialize_fn
       [&](ChangeLogWriter::BlockBuffer* buffer, const MutableBuffer& dst) {
         MemTable& mem_table = this->mem_table;
 
-        BATT_CHECK_GE(buffer->offset(), mem_table.self_id_);
+        BATT_CHECK_GE(buffer->edit_offset_lower_bound(), mem_table.self_id_);
 
         if (buffer->ref_count() == 1) {
           buffer->add_ref(1);
