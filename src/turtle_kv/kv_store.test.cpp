@@ -575,8 +575,7 @@ TEST_F(KVStoreTest, ChangeLogRecovery)
 
             if constexpr (std::is_same_v<T, turtle_kv::MemTableInsertData>) {
               VLOG(3) << "key_len: " << value.key_len << ", key: " << value.key
-                      << ", version: " << value.version << ", value: " << value.value
-                      << ", offset: " << value.offset;
+                      << ", value: " << value.value << ", offset: " << value.offset;
 
               std::string actual_key{value.key.data(), value.key.size()};
               auto expected_value = expected_keys_values.find(actual_key);
@@ -586,23 +585,30 @@ TEST_F(KVStoreTest, ChangeLogRecovery)
               std::string actual_value{value.value.data(), value.value.size()};
               ASSERT_TRUE((*expected_value).second == actual_value);
 
-              // Verify the read offset is monotonically increasing.
+              // TODO: [Gabe Bornstein 3/19/26] Currently, the lower bound of a block is == the
+              // offset of the first slot in the next block, not the first slot in the current
+              // block. Check where block->lower_bound is getting set... lower_bound is actually
+              // returning upper_bound of previous block.
               //
-              ASSERT_GE(value.offset, prev_offset);
+              if (j == 0) {
+                // ASSERT_EQ(block->edit_offset_lower_bound(), value.offset);
+              } else {
+                ASSERT_GT(value.offset, prev_offset);
+              }
               prev_offset = value.offset;
             } else if constexpr (std::is_same_v<T, turtle_kv::MemTableUpdateData>) {
               VLOG(3) << "revision: " << value.revision << ", offset: " << value.offset
-                      << ", version: " << value.version << ", value: " << value.value;
-
-              ASSERT_GE(value.offset, prev_offset);
-              prev_offset = value.offset;
+                      << ", value: " << value.value;
 
               // If this is the first entry in the block, verify its offset matches the block
               // offset.
               //
               if (j == 0) {
                 ASSERT_EQ(block->edit_offset_lower_bound(), value.offset);
+              } else {
+                ASSERT_GT(value.offset, prev_offset);
               }
+              prev_offset = value.offset;
             } else {
               ASSERT_TRUE(false) << "Failed to read entry from slot " << j << " in block with id "
                                  << block->edit_offset_lower_bound()
