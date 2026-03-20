@@ -1,4 +1,13 @@
+//=##=##=#==#=#==#===#+==#+==========+==+=+=+=+=+=++=+++=+++++=-++++=-+++++++++++
+//
+// Part of the TurtleKV Project, under Apache License v2.0.
+// See https://www.apache.org/licenses/LICENSE-2.0 for license information.
+// SPDX short identifier: Apache-2.0
+//
+//+++++++++++-+-+--+----- --- -- -  -  -   -
+
 #pragma once
+#define TURTLE_KV_MEM_TABLE_HPP
 
 #include <turtle_kv/change_log_writer.hpp>
 #include <turtle_kv/concurrent_hash_index.hpp>
@@ -56,17 +65,6 @@ class MemTable : public batt::RefCounted<MemTable>
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
 
-  struct RuntimeOptions {
-    /** \brief If true, then only count the latest version of each key update towards the size limit
-     * of the MemTable; otherwise, count all edits (including key overwrites).
-     */
-    bool limit_size_by_latest_updates_only;
-
-    //+++++++++++-+-+--+----- --- -- -  -  -   -
-
-    static RuntimeOptions with_default_values() noexcept;
-  };
-
   class Scanner;
 
   /** \brief Produces a series of compacted batches from a finalized MemTable.
@@ -74,15 +72,6 @@ class MemTable : public batt::RefCounted<MemTable>
   class BatchCompactor;
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
-
-  /** \brief The base-2 log of the maximum number of hash index lock shards.
-   */
-  static constexpr i32 kMaxShardsLog2 = 8;
-
-  /** \brief The maximum number of hash index lock shards.  The actual number of shards is the
-   * minimum of this value and the number of available hardware threads at runtime.
-   */
-  static constexpr usize kMaxShards = usize{1} << MemTable::kMaxShardsLog2;
 
   /** \brief The number of change log block slots to pre-allocate in this object.
    */
@@ -105,21 +94,18 @@ class MemTable : public batt::RefCounted<MemTable>
    */
   static constexpr usize kBlocksPerExternalCacheAllocUpdate = 128;
 
-  //+++++++++++-+-+--+----- --- -- -  -  -   -
-
-  static constexpr u64 first_id()
-  {
-    return 0;
-  }
+  /** \brief Mask defining bits that are set in MemTable::prepare_total_ to indicate that
+   * MemTable::finalize() has been called.
+   */
+  static constexpr i64 kFinalizedMask = i64{1} << 62;  // single bit, non-negative.
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
 
   explicit MemTable(llfs::PageCache& page_cache,
                     KVStoreMetrics& metrics,
-                    std::atomic<u64>& next_offset,
+                    EditOffset edit_offset_lower_bound,
                     usize max_bytes_per_batch,
-                    usize max_batch_count,
-                    u64 id) noexcept;
+                    usize max_batch_count) noexcept;
 
   MemTable(const MemTable&) = delete;
   MemTable& operator=(const MemTable&) = delete;
@@ -127,24 +113,6 @@ class MemTable : public batt::RefCounted<MemTable>
   ~MemTable() noexcept;
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
-
-  u64 id() const noexcept
-  {
-    return this->self_id_;
-  }
-
-  // TODO [tastolfi 2026-03-19] suspicious... this is very likely out of date as soon as the caller
-  // looks at the returned value.
-  //
-  u64 next_offset() const noexcept
-  {
-    return this->next_offset_.load();
-  }
-
-  const Optional<EditOffset>& edit_offset_upper_bound() const noexcept
-  {
-    return this->edit_offset_upper_bound_;
-  }
 
   Status put(ChangeLogWriter::Context& context,
              const KeyView& key,
@@ -157,10 +125,7 @@ class MemTable : public batt::RefCounted<MemTable>
 
   [[nodiscard]] bool finalize() noexcept;
 
-  bool is_finalized() const
-  {
-    return this->is_finalized_.load();
-  }
+  bool is_finalized() const;
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
 
@@ -171,11 +136,6 @@ class MemTable : public batt::RefCounted<MemTable>
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
 
-  bool has_art_index() const noexcept
-  {
-    return bool{this->art_index_};
-  }
-
   // TODO: [Gabe Bornstein 1/7/25] The art index is public? That doesn't feel right...
   // tastolfi -> gbornste: I agree it is a bit messy; this is used by KVStoreScanner to construct an
   // ART scanner to merge all the different depth sorted runs (see kv_store_scanner.cpp:57).  The
@@ -184,24 +144,17 @@ class MemTable : public batt::RefCounted<MemTable>
   //
   ART<MemTableValueEntry>& art_index()
   {
-    BATT_CHECK(this->art_index_);
-    return *this->art_index_;
+    return this->art_index_;
   }
 
-  /** \brief Returns the index of the last batch to be compacted from this MemTable.
-   */
-  u64 max_batch_index() const noexcept
+  void set_edit_offset_upper_bound(EditOffset offset)
   {
-    return this->max_batch_index_.load();
+    this->edit_offset_upper_bound_ = offset;
   }
 
-  /** \brief The last batch id for this MemTable; only accurate after all batches have been
-   * compacted/consumed.
-   */
-  DeltaBatchId max_batch_id() const
+  EditOffset edit_offset_upper_bound() const
   {
-    return DeltaBatchId{(u64)this->edit_offset_upper_bound().value_or_panic().value(),
-                        this->max_batch_index()};
+    return this->edit_offset_upper_bound_.value_or_panic();
   }
 
   /** \brief Returns the current maximum byte size limit.
@@ -230,6 +183,10 @@ class MemTable : public batt::RefCounted<MemTable>
 
   i64 calculate_max_byte_size() const;
 
+  Status prepare_edit(i64 packed_edit_size);
+
+  void commit_edit(i64 packed_edit_size);
+
   /** \brief Returns the number of bytes to claim (if positive) or release (negative)
    * as external allocation from the PageCache.
    *
@@ -251,50 +208,35 @@ class MemTable : public batt::RefCounted<MemTable>
 
   KVStoreMetrics& metrics_;
 
-  ARTBase::Metrics art_metrics_;
-
-  // A reference to the KVStore's next_offset. The KVStore owns this MemTable.
+  // Passed in at construction time.
   //
-  std::atomic<u64>& next_offset_;
+  const EditOffset edit_offset_lower_bound_;
 
-  u64 edit_offset_lower_bound_;
-
-  // Exclusive upper bound offset of the last edit included in this mem table.
-  //
-  // TODO: [Gabe Bornstein 3/4/26] Consider making this optional<T>. It is only set when mem_table
-  // is finalized.
-  //
-  // tastolfi - +1; Optional is a good idea!
+  // Should be set after the MemTable is finalized.
   //
   Optional<EditOffset> edit_offset_upper_bound_;
-
-  std::atomic<bool> is_finalized_;
-
-  RuntimeOptions runtime_options_ = RuntimeOptions::with_default_values();
-
-  Optional<ART<MemTableValueEntry>> art_index_;
 
   const i64 max_bytes_per_batch_;
 
   const i64 max_batch_count_;
 
+  ARTBase::Metrics art_metrics_;
+
+  ART<MemTableValueEntry> art_index_;
+
   std::atomic<i64> max_item_size_{32};
 
   std::atomic<i64> max_byte_size_;
 
-  std::atomic<i64> current_byte_size_;
+  std::atomic<i64> prepared_bytes_total_{0};
 
-  u64 self_id_;
+  std::atomic<i64> committed_bytes_total_{0};
 
-  u64 next_block_offset_;
-
-  std::atomic<u32> version_;
+  std::atomic<i64> min_log_block_lower_bound_{this->edit_offset_lower_bound_.value()};
 
   absl::Mutex block_list_mutex_;
 
   batt::SmallVec<ChangeLogBlock*, MemTable::kBlockListPreAllocSize> blocks_;
-
-  std::atomic<u64> max_batch_index_{0};
 
   // The total size (in bytes) of all change log block buffers owned by this MemTable.
   //
@@ -333,12 +275,11 @@ template <typename SerializeFn>
 void MemTable::StorageImpl::store_data(usize n_bytes, SerializeFn&& serialize_fn) noexcept
 {
   this->status = batt::to_status(this->context.append_slot(
-      this->mem_table.next_block_offset_,
+      0,  // assigning edit offsets should be handled by the ChangeLog layer
+          // TODO [tastolfi 2026-03-20] remove
       n_bytes,
       [&](ChangeLogWriter::BlockBuffer* buffer, const MutableBuffer& dst) {
         MemTable& mem_table = this->mem_table;
-
-        BATT_CHECK_GE(buffer->edit_offset_lower_bound(), mem_table.self_id_);
 
         if (buffer->ref_count() == 1) {
           buffer->add_ref(1);
@@ -348,26 +289,23 @@ void MemTable::StorageImpl::store_data(usize n_bytes, SerializeFn&& serialize_fn
             absl::MutexLock lock{&this->mem_table.block_list_mutex_};
 
             mem_table.block_size_total_ += buffer->block_size();
-            cache_alloc_delta = mem_table.update_external_cache_alloc();
             mem_table.blocks_.emplace_back(buffer);
-            mem_table.next_block_offset_ = mem_table.next_offset();
+            cache_alloc_delta = mem_table.update_external_cache_alloc();
           }
           mem_table.handle_external_cache_alloc(cache_alloc_delta);
         }
 
-        serialize_fn(dst, EditOffset{(i64)this->mem_table.next_offset()});
+        serialize_fn(dst,
+                     // TODO [tastolfi 2026-03-20] replace this with the real value
+                     EditOffset{0});
       }));
-  // TODO: [Gabe Bornstein 3/5/26] Consider updating the value of mem_table.next_offset
-  // here instead of in KVStore::put().
-  //
-  this->mem_table.next_offset_.fetch_add(n_bytes);
 }
 
 /** \brief Returns the greatest ordered DeltaBatchId included in the passed MemTable.
  */
 inline DeltaBatchId get_batch_upper_bound(const MemTable& mem_table)
 {
-  return mem_table.max_batch_id();
+  return DeltaBatchId::min_value();  // TODO [tastolfi 2026-03-20] this is broken!
 }
 
 // #=##=##=#==#=#==#===#+==#+==========+==+=+=+=+=+=++=+++=+++++=-++++=-+++++++++++

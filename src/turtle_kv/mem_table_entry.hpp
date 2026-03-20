@@ -1,4 +1,13 @@
+//=##=##=#==#=#==#===#+==#+==========+==+=+=+=+=+=++=+++=+++++=-++++=-+++++++++++
+//
+// Part of the TurtleKV Project, under Apache License v2.0.
+// See https://www.apache.org/licenses/LICENSE-2.0 for license information.
+// SPDX short identifier: Apache-2.0
+//
+//+++++++++++-+-+--+----- --- -- -  -  -   -
+
 #pragma once
+#define TURTLE_KV_MEM_TABLE_ENTRY_HPP
 
 #include <turtle_kv/change_log/edit_offset.hpp>
 
@@ -116,14 +125,10 @@ struct MemTableValueEntryInserter {
   /** \brief Constructs a new inserter for the given key/value pair.
    */
   template <typename K, typename V>
-  explicit MemTableValueEntryInserter(StorageT& storage_arg,
-                                      K&& key_arg,
-                                      V&& value_arg,
-                                      u32 version_arg) noexcept
+  explicit MemTableValueEntryInserter(StorageT& storage_arg, K&& key_arg, V&& value_arg) noexcept
       : storage{storage_arg}
       , key{BATT_FORWARD(key_arg)}
       , value{BATT_FORWARD(value_arg)}
-      , version{version_arg}
   {
   }
 
@@ -133,13 +138,10 @@ struct MemTableValueEntryInserter {
   StorageT& storage;
   const std::string_view key;
   const ValueView value;
-  const u32 version;
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
   // Outputs (set by store_insert or store_update).
 
-  ValueView stored_value;
-  bool inserted = false;
   const MemTableValueEntry* entry = nullptr;
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
@@ -150,35 +152,28 @@ struct MemTableValueEntryInserter {
     const usize value_len = this->value.size();
     const usize insert_size = sizeof(little_u16)  // header
                               + key_len           // key
-                              + sizeof(big_u32)   // version-suffix
                               + value_len         // value
-                              + sizeof(big_u64);  // offset
+        ;
 
-    // TODO [tastolfi 2026-03-19] `store_data` should choose the offset, and serialize it right
-    // before `buffer`.
+    // TODO [tastolfi 2026-03-19] `store_data` should choose the offset, and serialize it
+    // right before `buffer`.
     //
     this->storage.store_data(                     //
         insert_size,                              //
         [this, key_len, value_len, entry_memory]  //
         (const MutableBuffer& buffer, EditOffset offset) {
-          little_u16* key_len_dst = place_first<little_u16>(buffer.data());
+          little_u16* const key_len_dst = place_first<little_u16>(buffer.data());
           *key_len_dst = key_len;
 
-          char* key_dst = place_next<char>(key_len_dst, 1);
+          char* const key_dst = place_next<char>(key_len_dst, 1);
           std::memcpy(key_dst, this->key.data(), key_len);
 
-          auto* version_dst = place_next<big_u32>(key_dst, key_len);
-          *version_dst = this->version;
-
-          auto* value_dst = place_next<char>(version_dst, 1);
+          char* const value_dst = place_next<char>(key_dst, key_len);
           std::memcpy(value_dst, this->value.data(), value_len);
-          this->stored_value = ValueView::from_str(std::string_view{value_dst, value_len});
 
           this->entry =
               new (entry_memory) MemTableValueEntry{key_dst, value_dst, (u32)value_len, offset};
         });
-
-    this->inserted = true;
 
     return OkStatus();
   }
@@ -203,7 +198,6 @@ struct MemTableValueEntryInserter {
 
           auto* value_dst = place_next<char>(header, 1);
           std::memcpy(value_dst, this->value.data(), value_len);
-          this->stored_value = ValueView::from_str(std::string_view{value_dst, value_len});
 
           this->entry = p_entry;
 
