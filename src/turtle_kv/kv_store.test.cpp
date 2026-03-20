@@ -575,8 +575,7 @@ TEST_F(KVStoreTest, ChangeLogRecovery)
 
             if constexpr (std::is_same_v<T, turtle_kv::MemTableInsertData>) {
               VLOG(3) << "key_len: " << value.key_len << ", key: " << value.key
-                      << ", version: " << value.version << ", value: " << value.value
-                      << ", offset: " << value.offset;
+                      << ", value: " << value.value << ", offset: " << value.offset;
 
               std::string actual_key{value.key.data(), value.key.size()};
               auto expected_value = expected_keys_values.find(actual_key);
@@ -599,11 +598,11 @@ TEST_F(KVStoreTest, ChangeLogRecovery)
               prev_offset = value.offset;
             } else if constexpr (std::is_same_v<T, turtle_kv::MemTableUpdateData>) {
               VLOG(3) << "revision: " << value.revision << ", offset: " << value.offset
-                      << ", version: " << value.version << ", value: " << value.value;
+                      << ", value: " << value.value;
 
-              // // If this is the first entry in the block, verify its offset matches the block
-              // // offset.
-              // //
+              // If this is the first entry in the block, verify its offset matches the block
+              // offset.
+              //
               if (j == 0) {
                 ASSERT_EQ(block->edit_offset_lower_bound(), value.offset);
               } else {

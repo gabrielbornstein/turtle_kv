@@ -220,7 +220,7 @@ class MemTable : public batt::RefCounted<MemTable>
     ChangeLogWriter::Context& context;
     Status status;
 
-    template <typename SerializeFn = void(const MutableBuffer&, u64)>
+    template <typename SerializeFn = void(MutableBuffer, u64)>
     void store_data(  // EditOffset slot_edit_offset,
         usize n_bytes,
         SerializeFn&& serialize_fn) noexcept;
@@ -332,15 +332,16 @@ class MemTable : public batt::RefCounted<MemTable>
 template <typename SerializeFn>
 void MemTable::StorageImpl::store_data(usize n_bytes, SerializeFn&& serialize_fn) noexcept
 {
+  usize n_bytes_plus_offset = n_bytes + sizeof(big_u32);
   this->status = batt::to_status(this->context.append_slot(
       this->mem_table.next_block_offset_,
-      n_bytes,
-      [&](ChangeLogWriter::BlockBuffer* buffer, const MutableBuffer& dst) {
+      n_bytes_plus_offset,
+      [&](ChangeLogWriter::BlockBuffer* buffer, MutableBuffer dst) {
         MemTable& mem_table = this->mem_table;
 
         BATT_CHECK_GE(buffer->edit_offset_lower_bound(), mem_table.self_id_);
 
-        u64 slot_offset = this->mem_table.next_offset_.fetch_add(n_bytes);
+        u64 slot_offset = this->mem_table.next_offset_.fetch_add(n_bytes_plus_offset);
         if (buffer->ref_count() == 1) {
           buffer->add_ref(1);
           mem_table.metrics_.mem_table_log_bytes_allocated.add(buffer->block_size());
@@ -351,10 +352,22 @@ void MemTable::StorageImpl::store_data(usize n_bytes, SerializeFn&& serialize_fn
             mem_table.block_size_total_ += buffer->block_size();
             cache_alloc_delta = mem_table.update_external_cache_alloc();
             mem_table.blocks_.emplace_back(buffer);
+            // TODO: [Gabe Bornstein 3/20/26] We aren't setting next_block_offset_ correctly here.
+            //
             mem_table.next_block_offset_ = slot_offset /*+ n_bytes*/;
           }
           mem_table.handle_external_cache_alloc(cache_alloc_delta);
         }
+
+        // Verify we won't overflow the u32 block delta.
+        //
+        BATT_CHECK_LE(slot_offset - buffer->edit_offset_lower_bound(), 0xFFFFFFFF);
+
+        // Serialize block_data here since it is needed for all operations.
+        //
+        big_u32 block_delta = slot_offset - buffer->edit_offset_lower_bound();
+        *(big_u32*)(dst.data()) = block_delta;
+        dst += sizeof(big_u32);
 
         serialize_fn(dst, slot_offset);
       }));

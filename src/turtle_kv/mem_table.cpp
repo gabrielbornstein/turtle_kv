@@ -118,7 +118,6 @@ Status MemTable::put(ChangeLogWriter::Context& context,
         storage,
         key,
         value,
-        this->version_.fetch_add(1),
     };
 
     BATT_REQUIRE_OK(this->art_index_->insert(key, inserter));

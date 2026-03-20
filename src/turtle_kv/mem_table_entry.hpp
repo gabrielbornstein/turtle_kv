@@ -35,9 +35,11 @@ struct PackedValueUpdate {
    */
   little_u16 revision;
 
-  /** \brief The (reader) version for this update.
+  /** \brief TODO: [Gabe Bornstein 3/20/26] For some reason not having padding here causes read
+   * issues. Seems like we write/read too much without it. Maybe an alignment issue? Seems update
+   * specific. Maybe has to do with where value is getting written to?
    */
-  big_u32 version;
+  u8 padding[4];
 };
 
 BATT_STATIC_ASSERT_EQ(sizeof(PackedValueUpdate), 8);
@@ -79,12 +81,6 @@ class MemTableValueEntry
   mutable u32 value_size_;
   EditOffset offset_{0};
 
-  u32 get_version() const
-  {
-    const big_u32* stored_version = reinterpret_cast<const big_u32*>(this->value_data_) - 1;
-    return *stored_version;
-  }
-
   KeyView key_view() const
   {
     const u16 key_size = *(reinterpret_cast<const little_u16*>(this->key_data_) - 1);
@@ -116,14 +112,10 @@ struct MemTableValueEntryInserter {
   /** \brief Constructs a new inserter for the given key/value pair.
    */
   template <typename K, typename V>
-  explicit MemTableValueEntryInserter(StorageT& storage_arg,
-                                      K&& key_arg,
-                                      V&& value_arg,
-                                      u32 version_arg) noexcept
+  explicit MemTableValueEntryInserter(StorageT& storage_arg, K&& key_arg, V&& value_arg) noexcept
       : storage{storage_arg}
       , key{BATT_FORWARD(key_arg)}
       , value{BATT_FORWARD(value_arg)}
-      , version{version_arg}
   {
   }
 
@@ -133,7 +125,6 @@ struct MemTableValueEntryInserter {
   StorageT& storage;
   const std::string_view key;
   const ValueView value;
-  const u32 version;
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
   // Outputs (set by store_insert or store_update).
@@ -150,30 +141,22 @@ struct MemTableValueEntryInserter {
     const usize value_len = this->value.size();
     const usize insert_size = sizeof(little_u16)  // header
                               + key_len           // key
-                              + sizeof(big_u32)   // version-suffix
-                              + value_len         // value
-                              + sizeof(big_u64);  // offset
+                              + value_len;        // value
 
-    // TODO [tastolfi 2026-03-19] `store_data` should choose the offset, and serialize it right
-    // before `buffer`.
+    // TODO [tastolfi 2026-03-19] `store_data` should choose the offset, and serialize it
+    // right before `buffer`.
     //
     this->storage.store_data(                     //
         insert_size,                              //
         [this, key_len, value_len, entry_memory]  //
         (const MutableBuffer& buffer, u64 offset) {
-          big_u64* offset_dst = place_first<big_u64>(buffer.data());
-          *offset_dst = offset;
-
-          little_u16* key_len_dst = place_next<little_u16>(offset_dst, 1);
+          little_u16* key_len_dst = place_first<little_u16>(buffer.data());
           *key_len_dst = key_len;
 
           char* key_dst = place_next<char>(key_len_dst, 1);
           std::memcpy(key_dst, this->key.data(), key_len);
 
-          auto* version_dst = place_next<big_u32>(key_dst, key_len);
-          *version_dst = this->version;
-
-          auto* value_dst = place_next<char>(version_dst, 1);
+          auto* value_dst = place_next<char>(key_dst, key_len);
           std::memcpy(value_dst, this->value.data(), value_len);
           this->stored_value = ValueView::from_str(std::string_view{value_dst, value_len});
 
@@ -202,7 +185,6 @@ struct MemTableValueEntryInserter {
 
           header->key_len = 0;
           header->revision = 0;  // TODO [tastolfi 2025-07-24]
-          header->version = this->version;
 
           auto* value_dst = place_next<char>(header, 1);
           std::memcpy(value_dst, this->value.data(), value_len);
@@ -221,7 +203,6 @@ struct MemTableValueEntryInserter {
 struct MemTableInsertData {
   u16 key_len;
   std::string_view key;
-  u32 version;
   std::string_view value;
   u64 offset;
 };
@@ -229,7 +210,6 @@ struct MemTableInsertData {
 struct MemTableUpdateData {
   u16 revision;
   u64 offset;
-  u32 version;
   std::string_view value;
 };
 
@@ -237,72 +217,58 @@ class MemTableEntryReader
 {
  public:
   /** \brief Reads insert data written by insert_new()
-   * Layout: little_u16(key_len) | key | big_u32(version) | value | big_u64(offset)
+   * Layout: big_u32(offset) | little_u16(key_len) | key | value
    */
   static batt::StatusOr<MemTableInsertData> read_insert(batt::ConstBuffer buffer)
   {
     const char* data = static_cast<const char*>(buffer.data());
     const std::size_t size = buffer.size();
 
-    if (size < sizeof(little_u16)) {
+    if (size < sizeof(big_u32) + sizeof(little_u16)) {
       return {batt::StatusCode::kDataLoss};
     }
 
-    // Read offset
-    //
-    const auto* offset_ptr = place_first<big_u64>(const_cast<char*>(data));
-    const u64 offset = *offset_ptr;
+    const auto* offset_from_block_ptr = place_first<big_u32>(const_cast<char*>(data));
+    const u64 offset = *offset_from_block_ptr;
 
-    // Read key length
-    const auto* key_len_dst = place_next<little_u16>(offset_ptr, 1);
+    const auto* key_len_dst = place_next<little_u16>(offset_from_block_ptr, 1);
     const u16 key_len = *key_len_dst;
 
     // Check if buffer has enough data
     // TODO: [Gabe Bornstein 3/18/26] Consider making this value a static constant. It gets used in
     // multiple places.
     //
-    const std::size_t expected_min_size =
-        sizeof(little_u16) + key_len + sizeof(big_u32) + sizeof(big_u64);
+    const std::size_t expected_min_size = sizeof(big_u32) + sizeof(little_u16) + key_len;
     if (size < expected_min_size) {
       return {batt::StatusCode::kDataLoss};
     }
 
-    // Read key
-    //
     const char* key_data = place_next<char>(key_len_dst, 1);
     std::string_view key{key_data, key_len};
 
-    // Read version
-    //
-    const auto* version_ptr = place_next<big_u32>(key_data, key_len);
-    const u32 version = *version_ptr;
-
-    // Read value
-    //
-    const char* value_data = place_next<char>(version_ptr, 1);
+    const char* value_data = place_next<char>(key_data, key_len);
     const std::size_t value_len = size - expected_min_size;
     std::string_view value{value_data, value_len};
 
-    return MemTableInsertData{.key_len = key_len,
-                              .key = key,
-                              .version = version,
-                              .value = value,
-                              .offset = offset};
+    return MemTableInsertData{.key_len = key_len, .key = key, .value = value, .offset = offset};
   }
 
   /** \brief Reads update data written by update_existing()
-   * Layout: PackedValueUpdate | value
+   * Layout: big_u32(offset) | PackedValueUpdate | value
    */
   static batt::StatusOr<MemTableUpdateData> read_update(batt::ConstBuffer buffer)
   {
     const char* data = static_cast<const char*>(buffer.data());
     const std::size_t size = buffer.size();
 
-    if (size < sizeof(PackedValueUpdate)) {
+    if (size < sizeof(big_u32) + sizeof(PackedValueUpdate)) {
       return {batt::StatusCode::kDataLoss};
     }
 
-    const auto* header = place_first<PackedValueUpdate>(const_cast<char*>(data));
+    const auto* offset_from_block_ptr = place_first<big_u32>(const_cast<char*>(data));
+    const u64 offset = *offset_from_block_ptr;
+
+    const auto* header = place_next<PackedValueUpdate>(offset_from_block_ptr, 1);
 
     // Check if this is actually an update (key_len should be 0)
     //
@@ -311,18 +277,14 @@ class MemTableEntryReader
     }
 
     const u16 revision = header->revision;
-    const u32 version = header->version;
 
     // Read value
     //
     const char* value_data = place_next<char>(header, 1);
-    const std::size_t value_len = size - sizeof(PackedValueUpdate);
+    const std::size_t value_len = size - sizeof(big_u32) - sizeof(PackedValueUpdate);
     std::string_view value{value_data, value_len};
 
-    return MemTableUpdateData{.revision = revision,
-                              .offset = 0,
-                              .version = version,
-                              .value = value};
+    return MemTableUpdateData{.revision = revision, .offset = offset, .value = value};
   }
 
   /** \brief Determines if buffer contains insert or update data and reads accordingly.
@@ -334,16 +296,13 @@ class MemTableEntryReader
     const char* data = static_cast<const char*>(buffer.data());
     const std::size_t size = buffer.size();
 
-    if (size < sizeof(little_u16)) {
+    if (size < sizeof(big_u32) + sizeof(little_u16)) {
       return {batt::StatusCode::kDataLoss};
     }
 
-    // Read offset
-    //
-    const auto* offset_ptr = place_first<big_u64>(const_cast<char*>(data));
+    const auto* offset_from_block_ptr = place_first<big_u32>(const_cast<char*>(data));
 
-    // Read header (key length)
-    const auto* first_u16 = place_next<little_u16>(offset_ptr, 1);
+    const auto* first_u16 = place_next<little_u16>(offset_from_block_ptr, 1);
 
     // Check if this is an update (key_len == 0), otherwise, it's an insert.
     //
