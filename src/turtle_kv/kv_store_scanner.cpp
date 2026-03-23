@@ -49,11 +49,11 @@ KeyView art_scanner_get_key(ART<MemTableValueEntry>::Scanner<kSynchronized,
 {
   auto& m = KVStoreScanner::metrics();
   m.ctor_count.add(1);
+
 #if TURTLE_KV_PROFILE_QUERIES
   LatencyTimer timer{batt::Every2ToTheConst<10>{}, m.ctor_latency};
 #endif
 
-  BATT_CHECK(this->pinned_state_->mem_table_->has_art_index());
   this->mem_table_value_scanner_.emplace(this->pinned_state_->mem_table_->art_index(), min_key);
 }
 
@@ -136,24 +136,20 @@ Status KVStoreScanner::start()
 
         MemTable& delta_mem_table = *this->pinned_state_->deltas_[delta_i];
 
-        // Delta case 3: single ART index for keys and values
+        // Delta case : single ART index for keys and values
         //
-        if (delta_mem_table.has_art_index()) {
-          auto& art_scanner =
-              *(new (p_mem) ART<MemTableValueEntry>::Scanner<ARTBase::Synchronized::kFalse,  //
-                                                             /*kValuesOnly=*/true>{
-                  delta_mem_table.art_index(),
-                  this->min_key_,
-              });
-          ++p_mem;
+        auto& art_scanner =
+            *(new (p_mem) ART<MemTableValueEntry>::Scanner<ARTBase::Synchronized::kFalse,  //
+                                                           /*kValuesOnly=*/true>{
+                delta_mem_table.art_index(),
+                this->min_key_,
+            });
+        ++p_mem;
 
-          if (!art_scanner.is_done()) {
-            this->scan_levels_.emplace_back(DeltaMemTableValueTag{}, art_scanner);
-          }
-          continue;
+        if (!art_scanner.is_done()) {
+          this->scan_levels_.emplace_back(DeltaMemTableValueTag{}, art_scanner);
         }
-
-        BATT_PANIC() << "No index available for MemTable scanning!";
+        continue;
       }
     }
   }

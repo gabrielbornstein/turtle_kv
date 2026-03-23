@@ -51,7 +51,7 @@ inline std::ostream& operator<<(std::ostream& out, WrappedInt<Derived, Int> w)
 template <typename Derived, typename Int>
 inline constexpr bool operator==(WrappedInt<Derived, Int> l, WrappedInt<Derived, Int> r)
 {
-  return l == r;
+  return l.value() == r.value();
 }
 
 template <typename Derived, typename Int>

@@ -357,10 +357,9 @@ u64 query_page_loader_reset_every_n()
     , checkpoint_distance_{this->runtime_options_.initial_checkpoint_distance}
     , checkpoint_log_{std::move(checkpoint_log)}
     , current_epoch_{0}
-    , next_offset_{0}
     , state_{[&] {
       State* state = new State{};
-      state->mem_table_ = this->create_mem_table(MemTable::first_id());
+      state->mem_table_ = this->create_mem_table(EditOffset{0});
       state->base_checkpoint_ = Checkpoint::empty_at_batch(DeltaBatchId::min_value());
       state->base_checkpoint_.tree()->lock();
 
@@ -508,17 +507,16 @@ void KVStore::join()
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-boost::intrusive_ptr<MemTable> KVStore::create_mem_table(u64 mem_table_id)
+boost::intrusive_ptr<MemTable> KVStore::create_mem_table(EditOffset edit_offset_lower_bound)
 {
   const usize max_batches_per_mem_table = this->get_checkpoint_distance();
 
   boost::intrusive_ptr<MemTable> mem_table{new MemTable{
       this->page_cache(),
       this->metrics_,
-      this->next_offset_,
+      edit_offset_lower_bound,
       /*max_bytes_per_batch=*/this->tree_options_.flush_size(),
       max_batches_per_mem_table,
-      mem_table_id,
   }};
 
   BATT_CHECK_GT(mem_table->max_byte_size(), this->tree_options_.flush_size() / 2);
@@ -544,10 +542,9 @@ Status KVStore::put(const KeyView& key, const ValueView& value) noexcept /*overr
   BATT_CHECK_GT(observed_state->use_count(), 1);
 
   MemTable* const observed_mem_table = observed_state->mem_table_.get();
-  const u64 observed_mem_table_id = observed_mem_table->id();
 
   ChangeLogWriter::Context& log_writer_context =
-      this->per_thread_.get(this).log_writer_context(observed_mem_table_id);
+      this->per_thread_.get(this).log_writer_context(observed_mem_table->edit_offset_upper_bound());
 
 #if TURTLE_KV_PROFILE_UPDATES
   LatencyTimer put_mem_table_timer{Every2ToTheConst<8>{}, this->metrics_.put_memtable_latency};
@@ -822,8 +819,10 @@ Status KVStore::update_checkpoint(const State* observed_state)
   intrusive_ptr_add_ref(new_state);
   BATT_CHECK_EQ(new_state->use_count(), 1);
 
-  const u64 next_mem_table_id = old_mem_table->next_offset();
-  new_state->mem_table_ = this->create_mem_table(next_mem_table_id);
+  // TODO [tastolfi 2026-03-23] pass the *correct* edit_offset from the end of one MemTable to the
+  // beginning of the next.
+  //
+  new_state->mem_table_ = this->create_mem_table(EditOffset{0});
 
   for (;;) {
     // Multiple threads are potentially racing to install a new active MemTable;
@@ -867,19 +866,24 @@ Status KVStore::update_checkpoint(const State* observed_state)
   const bool finalize_ok = old_mem_table->finalize();
   BATT_CHECK(finalize_ok);
 
-  // As long as no puts are concurrently happening, this variant holds true.
-  //
+// As long as no puts are concurrently happening, this variant holds true.
+//
+#if 0  // TODO [tastolfi 2026-03-23] 
   BATT_CHECK_EQ(old_mem_table->next_offset(),
                 old_mem_table->edit_offset_upper_bound().value_or_panic().value());
+  
   BATT_CHECK_EQ(next_mem_table_id,
                 old_mem_table->edit_offset_upper_bound().value_or_panic().value());
+#endif
 
   // Wait for any previous MemTables to be consumed by the compactor task.
   //
+#if 0  // TODO [tastolfi 2026-03-23] 
   const u64 this_mem_table_id = old_mem_table->id();
   while (this->next_mem_table_id_to_push_.load() != this_mem_table_id) {
     batt::spin_yield();
   }
+#endif
 
   //----- --- -- -  -  -   -
   if (this->runtime_options_.use_threaded_checkpoint_pipeline) {
@@ -905,10 +909,12 @@ Status KVStore::update_checkpoint(const State* observed_state)
   }
   //----- --- -- -  -  -   -
 
+#if 0  // TODO [tastolfi 2026-03-23] 
   // Signal to the next mem table, it is ok to push.  We know this is race-free since only the
   // thread who succeeded in the CAS loop above is allowed to do this.
   //
   this->next_mem_table_id_to_push_.store(next_mem_table_id);
+#endif
 
   return OkStatus();
 }
@@ -986,8 +992,10 @@ void KVStore::mem_table_batch_scanner_thread_main()
       BATT_REQUIRE_OK(mem_table);
       BATT_CHECK_NOT_NULLPTR(*mem_table);
 
-      const u64 this_delta_batch_id =
-          (**mem_table).edit_offset_upper_bound().value_or_panic().value();
+      // TODO [tastolfi 2026-03-23] do something about this... (what should delta batch ids be in
+      // the new design??)
+      //
+      const u64 this_delta_batch_id = (**mem_table).edit_offset_upper_bound().value();
 
       LOG(INFO) << "mem_table_compact_thread_main() this_delta_batch_id: " << this_delta_batch_id;
 
@@ -1030,8 +1038,7 @@ Status KVStore::scan_mem_table_to_build_batches(boost::intrusive_ptr<MemTable>&&
     auto delta_batch = TURTLE_KV_COLLECT_LATENCY(
         this->metrics_.compact_batch_latency,
         std::make_unique<DeltaBatch>(
-            DeltaBatchId{(u64)mem_table->edit_offset_upper_bound().value_or_panic().value(),
-                         batch_index},
+            DeltaBatchId{(u64)mem_table->edit_offset_upper_bound().value(), batch_index},
             batt::make_copy(mem_table),
             batch_compactor.consume_next()));
     ++batch_index;

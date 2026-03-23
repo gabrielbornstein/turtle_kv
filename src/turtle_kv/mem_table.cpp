@@ -267,7 +267,7 @@ i64 MemTable::update_external_cache_alloc()
 void MemTable::handle_external_cache_alloc(i64 cache_alloc_delta)
 {
   if (cache_alloc_delta > 0) {
-    const i64 observed_current_size = this->current_byte_size_.load();
+    const i64 observed_current_size = this->prepared_bytes_total_.load();
 
     llfs::PageCacheOvercommit overcommit;
     overcommit.allow(true);
@@ -286,13 +286,13 @@ void MemTable::handle_external_cache_alloc(i64 cache_alloc_delta)
     // much worse.
     //
     if (overcommit.is_triggered()) {
-      atomic_clamp_max(this->current_byte_size_,
+      atomic_clamp_max(this->prepared_bytes_total_,
                        std::max<i64>(observed_current_size, this->max_bytes_per_batch_ / 2));
 
       on_page_cache_overcommit(
           [this, observed_current_size](std::ostream& out) {
             out << "Truncating MemTable size due to cache overcommit;"
-                << BATT_INSPECT(this->current_byte_size_)
+                << BATT_INSPECT(this->prepared_bytes_total_)
                 << BATT_INSPECT(this->max_bytes_per_batch_) << BATT_INSPECT(observed_current_size);
           },
           this->page_cache_,
@@ -374,7 +374,6 @@ MemTable::BatchCompactor::consume_next() noexcept
   }());
 
   if (!compacted_edits.empty()) {
-    atomic_clamp_min(this->mem_table_.max_batch_index_, this->batch_count_);
     ++this->batch_count_;
   }
 

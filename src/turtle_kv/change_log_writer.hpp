@@ -132,9 +132,8 @@ class ChangeLogWriter
     /** \brief Appends the passed payload value as a new slot within some BlockBuffer owned by
      * this Context. \return the sequence number (index) of the newly formatted slot.
      */
-    template <typename SerializeFn =
-                  void(BlockBuffer* block, MutableBuffer buffer, EditOffset edit_offset)>
-      requires std::invocable<SerializeFn, BlockBuffer*, MutableBuffer, EditOffset>
+    template <typename SerializeFn>
+      requires std::invocable<const SerializeFn&, BlockBuffer*, MutableBuffer, EditOffset>
     Status append_slot(EditOffset min_edit_offset_lower_bound,
                        usize byte_size,
                        const SerializeFn& fn) noexcept;
@@ -304,10 +303,10 @@ class ChangeLogWriter
 // #=##=##=#==#=#==#===#+==#+==========+==+=+=+=+=+=++=+++=+++++=-++++=-+++++++++++
 
 template <typename SerializeFn>
+  requires std::invocable<const SerializeFn&, ChangeLogBlock*, MutableBuffer, EditOffset>
 inline Status ChangeLogWriter::Context::append_slot(EditOffset min_edit_offset_lower_bound,
                                                     usize byte_size,
                                                     const SerializeFn& serialize_fn) noexcept
-  requires std::invocable<SerializeFn, BlockBuffer*, MutableBuffer, EditOffset>
 {
   Context& context = *this;
   ChangeLogWriter& writer = this->writer_;

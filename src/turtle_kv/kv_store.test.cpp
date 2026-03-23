@@ -604,7 +604,7 @@ TEST_F(KVStoreTest, ChangeLogRecovery)
               // offset.
               //
               if (j == 0) {
-                ASSERT_EQ(block->edit_offset_lower_bound(), value.offset);
+                ASSERT_EQ(block->edit_offset_lower_bound().value(), value.offset);
               } else {
                 ASSERT_GT(value.offset, prev_offset);
               }

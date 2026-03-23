@@ -184,7 +184,7 @@ struct MemTableValueEntryInserter {
     //
     this->storage.store_data(  //
         update_size,           //
-        [&](const MutableBuffer& buffer, u64 offset [[maybe_unused]]) {
+        [&](const MutableBuffer& buffer, EditOffset offset [[maybe_unused]]) {
           auto* header = place_first<PackedValueUpdate>(buffer.data());
 
           header->key_len = 0;

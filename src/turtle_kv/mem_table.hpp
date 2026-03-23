@@ -276,14 +276,10 @@ void MemTable::StorageImpl::store_data(usize n_bytes, SerializeFn&& serialize_fn
 {
   usize n_bytes_plus_offset = n_bytes + sizeof(big_u32);
   this->status = this->context.append_slot(
-      /*min_edit_offset_lower_bound=*/EditOffset{0},
+      /*min_edit_offset_lower_bound=*/this->mem_table.edit_offset_lower_bound_,
       n_bytes_plus_offset,
-      [&](ChangeLogWriter::BlockBuffer* buffer, MutableBuffer dst) {
+      [&](ChangeLogWriter::BlockBuffer* buffer, MutableBuffer dst, EditOffset slot_edit_offset) {
         MemTable& mem_table = this->mem_table;
-
-        BATT_CHECK_GE(buffer->edit_offset_lower_bound(), mem_table.self_id_);
-
-        u64 slot_offset = this->mem_table.next_offset_.fetch_add(n_bytes_plus_offset);
 
         if (buffer->ref_count() == 1) {
           buffer->add_ref(1);
@@ -300,17 +296,7 @@ void MemTable::StorageImpl::store_data(usize n_bytes, SerializeFn&& serialize_fn
           mem_table.handle_external_cache_alloc(cache_alloc_delta);
         }
 
-        // Verify we won't overflow the u32 block delta.
-        //
-        BATT_CHECK_LE(slot_offset - buffer->edit_offset_lower_bound(), 0xFFFFFFFF);
-
-        // Serialize block_data here since it is needed for all operations.
-        //
-        big_u32 block_delta = slot_offset - buffer->edit_offset_lower_bound();
-        *(big_u32*)(dst.data()) = block_delta;
-        dst += sizeof(big_u32);
-
-        serialize_fn(dst, slot_offset);
+        serialize_fn(dst, slot_edit_offset);
       });
 }
 

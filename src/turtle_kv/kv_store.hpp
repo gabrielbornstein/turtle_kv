@@ -53,7 +53,7 @@ class KVStore : public Table
     Optional<PageSliceStorage> scan_result_storage;
     u64 query_count = 0;
     ChangeLogWriter& log_writer_;
-    u64 current_mem_table_id = 0;
+    EditOffset current_mem_table_edit_offset_lower_bound{0};
     Optional<ChangeLogWriter::Context> log_writer_context_;
 
     //+++++++++++-+-+--+----- --- -- -  -  -   -
@@ -67,11 +67,12 @@ class KVStore : public Table
     {
     }
 
-    ChangeLogWriter::Context& log_writer_context(u64 mem_table_id)
+    ChangeLogWriter::Context& log_writer_context(EditOffset mem_table_edit_offset_lower_bound)
     {
-      if (BATT_HINT_FALSE(mem_table_id != this->current_mem_table_id)) {
+      if (BATT_HINT_FALSE(mem_table_edit_offset_lower_bound !=
+                          this->current_mem_table_edit_offset_lower_bound)) {
         this->log_writer_context_.emplace(this->log_writer_);
-        this->current_mem_table_id = mem_table_id;
+        this->current_mem_table_edit_offset_lower_bound = mem_table_edit_offset_lower_bound;
       }
       return *this->log_writer_context_;
     }
@@ -194,7 +195,7 @@ class KVStore : public Table
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
 
-  boost::intrusive_ptr<MemTable> create_mem_table(u64 mem_table_id);
+  boost::intrusive_ptr<MemTable> create_mem_table(EditOffset edit_offset_lower_bound);
 
   Status update_checkpoint(const State* observed_state);
 
@@ -275,10 +276,7 @@ class KVStore : public Table
 
   batt::Task info_task_;
 
-  // TODO [tastolfi 2025-04-11] Try moving the MemTable ordering to the compact thread (maintain a
-  // heap?)
-  //
-  std::atomic<u64> next_mem_table_id_to_push_{MemTable::first_id()};
+  // TODO [tastolfi 2026-03-23] need a way to check/enforce ordering of MemTable push to channel.
 
   PipelineChannel<boost::intrusive_ptr<MemTable>> finalized_mem_table_channel_;
 

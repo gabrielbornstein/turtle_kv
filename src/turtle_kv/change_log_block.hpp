@@ -126,7 +126,9 @@ class ChangeLogBlock
 
   /** \brief Allocates and returns a buffer of the specifed size.
    */
-  static ChangeLogBlock* allocate(u64 id, batt::Grant&& grant, usize n_bytes) noexcept;
+  static ChangeLogBlock* allocate(EditOffset edit_offset_lower_bound,
+                                  batt::Grant&& grant,
+                                  usize n_bytes) noexcept;
 
   /** \brief Deallocates the dynamic memory of block.
    */

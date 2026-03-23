@@ -21,6 +21,9 @@ namespace turtle_kv {
 //
 ChangeLogWriter::Context::~Context() noexcept
 {
+  // TODO [tastolfi 2026-03-23] BUG - BlockBuffers with data that needs to be flushed are being
+  // discarded here; instead we should do something similar to the `consume_buffers()` code path.
+  //
   this->writer_.remove_context(*this);
   for (;;) {
     BlockBuffer* observed_head = nullptr;
@@ -161,6 +164,9 @@ void ChangeLogWriter::add_context(Context& context) noexcept
 //
 void ChangeLogWriter::remove_context(Context& context) noexcept
 {
+  // TODO [tastolfi 2026-03-23] maybe while we hold the lock on State, we should consume the buffer
+  // stack (if there is one) from context and stick it onto a temporary vector for the next time
+  // `poll_updates()` is called..?
   {
     batt::ScopedLock<State> locked_state{this->state_};
 
@@ -205,6 +211,9 @@ auto ChangeLogWriter::poll_updates() noexcept -> batt::SmallVec<BlockBuffer*, 8>
         buffer_stacks.emplace_back(stack);
       }
     }
+
+    // TODO [tastolfi 2026-03-23] - see Context::~Context() - maybe we should stash a Context's
+    // buffer stack in a vector scoped to ChangeLogWriter, and collect stacks from that vector here?
   }
 
   for (BlockBuffer* head : buffer_stacks) {
