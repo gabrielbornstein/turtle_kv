@@ -1,5 +1,6 @@
 #pragma once
 
+#include <turtle_kv/change_log/edit_offset.hpp>
 #include <turtle_kv/change_log_read_lock.hpp>
 
 #include <turtle_kv/import/buffer.hpp>
@@ -148,9 +149,9 @@ class ChangeLogBlock
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
 
-  u64 edit_offset_lower_bound() const noexcept
+  EditOffset edit_offset_lower_bound() const noexcept
   {
-    return this->edit_offset_lower_bound_;
+    return EditOffset{(i64)this->edit_offset_lower_bound_};
   }
 
   /** \brief Adds `count` references to this buffer.
@@ -306,7 +307,7 @@ class ChangeLogBlock
   /** \brief Constructs a new ChangeLogBlock; must only be called from (static)
    * ChangeLogBlock::allocate.
    */
-  explicit ChangeLogBlock(u64 edit_offset_lower_bound,
+  explicit ChangeLogBlock(EditOffset edit_offset_lower_bound,
                           batt::Grant&& grant,
                           usize block_size) noexcept;
 
@@ -365,24 +366,24 @@ class ChangeLogBlock
   /** \brief Initialized to (int)this XOR kMagic while this object is valid; set to kExpired when
    * it is destructed.
    */
-  u64 magic_;
+  big_u64 magic_;
 
   /** \brief The id of this block. It is equivalent to the minimum lower bound edit offset of all
    * slots stored by this block.
    */
-  u64 edit_offset_lower_bound_;
+  little_i64 edit_offset_lower_bound_;
 
   /** \brief The total size of the block, including this object.
    */
-  u16 block_size_;
+  little_u16 block_size_;
 
   /** \brief The number of slots written to this buffer.
    */
-  u16 slot_count_;
+  little_u16 slot_count_;
 
   /** \brief The available free space.
    */
-  u16 space_;
+  little_u16 space_;
 
   // Pad the next field (this->ref_count_) out to (void*) this + 24 bytes;
   //
@@ -403,12 +404,12 @@ class ChangeLogBlock
   /** \brief The XXH3 hash value of the data contents of this block.  Used during recovery to
    * detect and reject partial flushes.
    */
-  u64 xxh3_checksum_;
+  little_u64 xxh3_checksum_;
 
   /** \brief A randomized seed value for the data integrity hash; to protect against collision
    * attacks (XXHash family is non-cryptographic).
    */
-  u64 xxh3_seed_;
+  little_u64 xxh3_seed_;
 
   EphemeralStateStorage ephemeral_state_storage_;
 

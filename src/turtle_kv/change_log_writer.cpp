@@ -179,7 +179,7 @@ void ChangeLogWriter::remove_context(Context& context) noexcept
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-auto ChangeLogWriter::allocate_buffer(u64 offset) noexcept -> StatusOr<BlockBuffer*>
+auto ChangeLogWriter::allocate_buffer(EditOffset offset) noexcept -> StatusOr<BlockBuffer*>
 {
   BATT_ASSIGN_OK_RESULT(
       batt::Grant buffer_grant,

@@ -25,7 +25,7 @@ namespace turtle_kv {
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-/*static*/ ChangeLogBlock* ChangeLogBlock::allocate(u64 owner_id,
+/*static*/ ChangeLogBlock* ChangeLogBlock::allocate(EditOffset edit_offset_lower_bound,
                                                     batt::Grant&& grant,
                                                     usize n_bytes) noexcept
 {
@@ -33,7 +33,8 @@ namespace turtle_kv {
 
   void* data = memory.release_ownership();
 
-  ChangeLogBlock* buffer = new (data) ChangeLogBlock{owner_id, std::move(grant), n_bytes};
+  ChangeLogBlock* buffer =
+      new (data) ChangeLogBlock{edit_offset_lower_bound, std::move(grant), n_bytes};
 
   return buffer;
 }
@@ -81,11 +82,11 @@ namespace turtle_kv {
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-/*explicit*/ ChangeLogBlock::ChangeLogBlock(u64 edit_offset_lower_bound,
+/*explicit*/ ChangeLogBlock::ChangeLogBlock(EditOffset edit_offset_lower_bound,
                                             batt::Grant&& grant,
                                             usize block_size) noexcept
     : magic_{ChangeLogBlock::kMagic}
-    , edit_offset_lower_bound_{edit_offset_lower_bound}
+    , edit_offset_lower_bound_{edit_offset_lower_bound.value()}
     , block_size_{BATT_CHECKED_CAST(u16, block_size)}
     , slot_count_{0}
     , space_{BATT_CHECKED_CAST(u16,

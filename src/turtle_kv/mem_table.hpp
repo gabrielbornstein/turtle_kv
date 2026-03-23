@@ -275,8 +275,8 @@ template <typename SerializeFn>
 void MemTable::StorageImpl::store_data(usize n_bytes, SerializeFn&& serialize_fn) noexcept
 {
   usize n_bytes_plus_offset = n_bytes + sizeof(big_u32);
-  this->status = batt::to_status(this->context.append_slot(
-      this->mem_table.next_block_offset_,
+  this->status = this->context.append_slot(
+      /*min_edit_offset_lower_bound=*/EditOffset{0},
       n_bytes_plus_offset,
       [&](ChangeLogWriter::BlockBuffer* buffer, MutableBuffer dst) {
         MemTable& mem_table = this->mem_table;
@@ -311,7 +311,7 @@ void MemTable::StorageImpl::store_data(usize n_bytes, SerializeFn&& serialize_fn
         dst += sizeof(big_u32);
 
         serialize_fn(dst, slot_offset);
-      }));
+      });
 }
 
 /** \brief Returns the greatest ordered DeltaBatchId included in the passed MemTable.
