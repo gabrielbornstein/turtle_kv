@@ -166,8 +166,8 @@ struct MemTableValueEntryInserter {
           char* const value_dst = place_next<char>(key_dst, key_len);
           std::memcpy(value_dst, this->value.data(), value_len);
 
-          this->entry = new (entry_memory)
-              MemTableValueEntry{key_dst, value_dst, (u32)value_len, EditOffset{(i64)offset}};
+          this->entry =
+              new (entry_memory) MemTableValueEntry{key_dst, value_dst, (u32)value_len, offset};
         });
 
     return OkStatus();
