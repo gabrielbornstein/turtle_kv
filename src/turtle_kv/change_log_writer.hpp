@@ -231,6 +231,13 @@ class ChangeLogWriter
    */
   void join() noexcept;
 
+  /** \brief Returns the next available EditOffset (logical time stamp) for this log.
+   */
+  EditOffset next_edit_offset() const noexcept
+  {
+    return EditOffset{this->next_edit_offset_.load()};
+  }
+
   //+++++++++++-+-+--+----- --- -- -  -  -   -
  private:
   struct State {
