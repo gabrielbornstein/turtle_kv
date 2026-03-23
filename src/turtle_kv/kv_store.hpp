@@ -195,9 +195,37 @@ class KVStore : public Table
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
 
+  /** \brief Creates and returns a new MemTable, with current checkpoint distance settings and the
+   * specified EditOffset lower bound.
+   */
   boost::intrusive_ptr<MemTable> create_mem_table(EditOffset edit_offset_lower_bound);
 
-  Status update_checkpoint(const State* observed_state);
+  /** \brief Finalizes the MemTable in `observed_state`, creating a new MemTable to replace it (or
+   * waiting for another thread to do so), and finally handing off the old MemTable to the
+   * checkpoint update pipeline.
+   */
+  Status finalize_mem_table(const State* observed_state,
+                            ChangeLogWriter::Context& log_writer_context);
+
+  /** \brief Waits for the passed MemTable to be the next one that should be pushed to
+   * `this->finalized_mem_table_channel_`, and then pushes it to the channel.
+   */
+  Status push_mem_table_to_channel(boost::intrusive_ptr<MemTable>&& mem_table);
+
+  /** \brief Creates a new MemTable (with the passed EditOffset as its lower bound) and swaps it in
+   * to the active state.
+   *
+   * `*observed_state` is updated as a side-effect of this function.
+   */
+  Status reset_active_mem_table(EditOffset current_edit_offset, const State** observed_state);
+
+  /** \brief Passes the given MemTable to the checkpoint update pipeline.
+   *
+   * This should be called only after `reset_active_mem_table` has installed a new MemTable.
+   */
+  Status hand_off_finalized_mem_table(boost::intrusive_ptr<MemTable>&& old_mem_table);
+
+  void wait_for_new_mem_table(EditOffset target_edit_offset);
 
   void info_task_main() noexcept;
 
@@ -276,7 +304,10 @@ class KVStore : public Table
 
   batt::Task info_task_;
 
-  // TODO [tastolfi 2026-03-23] need a way to check/enforce ordering of MemTable push to channel.
+  // The EditOffset lower bound of the next finalized MemTable to be pushed to the channel.
+  //
+  std::atomic<i64> next_mem_table_edit_offset_{
+      this->state_.load()->mem_table_->edit_offset_lower_bound().value()};
 
   PipelineChannel<boost::intrusive_ptr<MemTable>> finalized_mem_table_channel_;
 

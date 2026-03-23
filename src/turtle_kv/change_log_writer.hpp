@@ -121,6 +121,13 @@ class ChangeLogWriter
 
     //+++++++++++-+-+--+----- --- -- -  -  -   -
 
+    /** \brief Returns a reference to the ChangeLogWriter associated with this Context.
+     */
+    ChangeLogWriter& writer() noexcept
+    {
+      return this->writer_;
+    }
+
     /** \brief Remove the entire stack of BlockBuffer objects from this context.
      *
      * This function is thread-safe and lock-free.

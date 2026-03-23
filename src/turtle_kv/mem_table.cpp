@@ -51,8 +51,6 @@ MemTable::~MemTable() noexcept
     buffer->remove_ref(1);
   }
 
-  [[maybe_unused]] const bool b = this->finalize();
-
   this->metrics_.mem_table_free.add(1);
   this->metrics_.mem_table_count_stats.update(this->metrics_.mem_table_alloc.get() -
                                               this->metrics_.mem_table_free.get());
@@ -193,7 +191,7 @@ Optional<ValueView> MemTable::finalized_get(const KeyView& key) noexcept
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-bool MemTable::finalize() noexcept
+bool MemTable::finalize(ChangeLogWriter::Context& context) noexcept
 {
   const i64 prior_committed = this->committed_bytes_total_.fetch_or(MemTable::kFinalizedMask);
   const i64 prior_prepared = this->prepared_bytes_total_.fetch_or(MemTable::kFinalizedMask);
@@ -214,6 +212,26 @@ bool MemTable::finalize() noexcept
     observed_committed = this->committed_bytes_total_.load();
   }
 
+  // If this is the first thread to call finalize, then we must set the upper bound.
+  //
+  if (newly_finalized) {
+    const EditOffset finalized_upper_bound = context.writer().next_edit_offset();
+    BATT_CHECK_GE(finalized_upper_bound, this->edit_offset_lower_bound_);
+    this->edit_offset_upper_bound_.store(finalized_upper_bound.value());
+    this->edit_offset_upper_bound_.notify_all();
+  } else {
+    // For all other threads that find their way in here, wait until the first has set the true
+    // value of edit_offset_upper_bound_.
+    //
+    for (;;) {
+      const EditOffset observed_upper_bound{this->edit_offset_upper_bound_.load()};
+      if (observed_upper_bound >= this->edit_offset_lower_bound_) {
+        break;
+      }
+      this->edit_offset_upper_bound_.wait(observed_upper_bound.value());
+    }
+  }
+
   return newly_finalized;
 }
 
@@ -221,7 +239,8 @@ bool MemTable::finalize() noexcept
 //
 bool MemTable::is_finalized() const
 {
-  return (this->committed_bytes_total_.load() & MemTable::kFinalizedMask) != 0;
+  return (this->committed_bytes_total_.load() & MemTable::kFinalizedMask) != 0 &&
+         this->edit_offset_lower_bound_ <= EditOffset{this->edit_offset_upper_bound_.load()};
 }
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -

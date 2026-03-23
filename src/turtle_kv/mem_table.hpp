@@ -98,6 +98,7 @@ class MemTable : public batt::RefCounted<MemTable>
    * MemTable::finalize() has been called.
    */
   static constexpr i64 kFinalizedMask = i64{1} << 62;  // single bit, non-negative.
+  static_assert(kFinalizedMask > 0);
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
 
@@ -123,7 +124,12 @@ class MemTable : public batt::RefCounted<MemTable>
   usize scan(const KeyView& min_key,
              const Slice<std::pair<KeyView, ValueView>>& items_out) noexcept;
 
-  [[nodiscard]] bool finalize() noexcept;
+  /** \brief Marks the MemTable as finalized (read-only), waits for any in-progress updates to
+   * complete, and then returns true iff the calling thread is the first to call finalize().
+   *
+   * This function will only return true for a single (concurrent) caller.
+   */
+  [[nodiscard]] bool finalize(ChangeLogWriter::Context& context) noexcept;
 
   bool is_finalized() const;
 
@@ -147,14 +153,22 @@ class MemTable : public batt::RefCounted<MemTable>
     return this->art_index_;
   }
 
-  void set_edit_offset_upper_bound(EditOffset offset)
+  /** \brief Returns the starting EditOffset passed in at construction time.
+   */
+  EditOffset edit_offset_lower_bound() const
   {
-    this->edit_offset_upper_bound_ = offset;
+    return this->edit_offset_lower_bound_;
   }
 
+  /** \brief Returns the final EditOffset when this MemTable was finalized.  Will panic if this
+   * MemTable has not been finalized yet.
+   */
   EditOffset edit_offset_upper_bound() const
   {
-    return this->edit_offset_upper_bound_.value_or_panic();
+    BATT_CHECK(this->is_finalized())
+        << "The edit offset upper bound is not known until the MemTable is finalized!";
+
+    return EditOffset{this->edit_offset_upper_bound_.load()};
   }
 
   /** \brief Returns the current maximum byte size limit.
@@ -214,7 +228,7 @@ class MemTable : public batt::RefCounted<MemTable>
 
   // Should be set after the MemTable is finalized.
   //
-  Optional<EditOffset> edit_offset_upper_bound_;
+  std::atomic<i64> edit_offset_upper_bound_{this->edit_offset_lower_bound_.value() - 1};
 
   const i64 max_bytes_per_batch_;
 

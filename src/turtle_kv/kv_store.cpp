@@ -528,45 +528,52 @@ boost::intrusive_ptr<MemTable> KVStore::create_mem_table(EditOffset edit_offset_
 //
 Status KVStore::put(const KeyView& key, const ValueView& value) noexcept /*override*/
 {
+  for (;;) {
 #if TURTLE_KV_PROFILE_UPDATES
-  this->metrics_.put_count.add(1);
-  LatencyTimer put_timer{Every2ToTheConst<8>{}, this->metrics_.put_latency};
+    this->metrics_.put_count.add(1);
+    LatencyTimer put_timer{Every2ToTheConst<8>{}, this->metrics_.put_latency};
 #endif
 
-  // Pin the current state so we can access the active MemTable.
-  //
-  const State* const observed_state = this->state_.load();
-  BATT_CHECK_GT(observed_state->use_count(), 0);
+    // Pin the current state so we can access the active MemTable.
+    //
+    const State* const observed_state = this->state_.load();
+    BATT_CHECK_GT(observed_state->use_count(), 0);
 
-  boost::intrusive_ptr<const State> pinned_state{observed_state};
-  BATT_CHECK_GT(observed_state->use_count(), 1);
+    boost::intrusive_ptr<const State> pinned_state{observed_state};
+    BATT_CHECK_GT(observed_state->use_count(), 1);
 
-  MemTable* const observed_mem_table = observed_state->mem_table_.get();
+    MemTable* const observed_mem_table = observed_state->mem_table_.get();
 
-  ChangeLogWriter::Context& log_writer_context =
-      this->per_thread_.get(this).log_writer_context(observed_mem_table->edit_offset_upper_bound());
-
-#if TURTLE_KV_PROFILE_UPDATES
-  LatencyTimer put_mem_table_timer{Every2ToTheConst<8>{}, this->metrics_.put_memtable_latency};
-#endif
-
-  // Insert the key/value pair into the active MemTable; this will also append a change log buffer.
-  //
-  Status status = observed_mem_table->put(log_writer_context, key, value);
+    ChangeLogWriter::Context& log_writer_context = this->per_thread_.get(this).log_writer_context(
+        observed_mem_table->edit_offset_lower_bound());
 
 #if TURTLE_KV_PROFILE_UPDATES
-  put_mem_table_timer.stop();
+    LatencyTimer put_mem_table_timer{Every2ToTheConst<8>{}, this->metrics_.put_memtable_latency};
 #endif
 
-  // If the MemTable is too full to accept this update, then finalize the current MemTable and try
-  // again.
-  //
-  if (status == batt::StatusCode::kResourceExhausted) {
+    // Insert the key/value pair into the active MemTable; this will also append a change log
+    // buffer.
+    //
+    Status status = observed_mem_table->put(log_writer_context, key, value);
+
+#if TURTLE_KV_PROFILE_UPDATES
+    put_mem_table_timer.stop();
+#endif
+
+    // On success and unrecoverable errors, just return immediately.
+    //
+    if (status != batt::StatusCode::kResourceExhausted) {
+      return status;
+    }
+
+    // If the MemTable is too full to accept this update, then finalize the current MemTable and try
+    // again.
+    //
 #if TURTLE_KV_PROFILE_UPDATES
     this->metrics_.put_memtable_full_count.add(1);
 #endif
 
-    BATT_REQUIRE_OK(this->update_checkpoint(observed_state));
+    BATT_REQUIRE_OK(this->finalize_mem_table(observed_state, log_writer_context));
 
 #if TURTLE_KV_PROFILE_UPDATES
     LatencyTimer put_wait_trim_timer{this->metrics_.put_wait_trim_latency};
@@ -585,12 +592,8 @@ Status KVStore::put(const KeyView& key, const ValueView& value) noexcept /*overr
     this->metrics_.put_retry_count.add(1);
 #endif
 
-    // Now that we have a new MemTable with plenty of space, try again.
-    //
-    return this->put(key, value);
+    // Now that we have a new MemTable with plenty of space, try again...
   }
-
-  return status;
 }
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
@@ -801,97 +804,90 @@ Status KVStore::remove(const KeyView& key) noexcept /*override*/
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-Status KVStore::update_checkpoint(const State* observed_state)
+Status KVStore::finalize_mem_table(const State* observed_state,
+                                   ChangeLogWriter::Context& log_writer_context)
+{
+  boost::intrusive_ptr<MemTable> old_mem_table = observed_state->mem_table_;
+  const bool newly_finalized = old_mem_table->finalize(log_writer_context);
+  const EditOffset current_edit_offset = old_mem_table->edit_offset_upper_bound();
+
+  if (newly_finalized) {
+    // If this thread wins the race to finalize the MemTable, then create a new one and install it
+    // as the active MemTable.
+    //
+    this->reset_active_mem_table(current_edit_offset, &observed_state);
+
+    // Since we successfully exchanged the successor to `observed_state`, when this scope exits we
+    // must release the ref count once after adding the old state to the obsolete states list.
+    // Eventually it will be cleaned up by the epoch thread.
+    //
+    auto on_scope_exit = batt::finally([&] {
+      this->add_obsolete_state(observed_state);
+    });
+
+    this->hand_off_finalized_mem_table(std::move(old_mem_table));
+
+  } else {
+    // A different thread won the race to finalize the MemTable; wait for the next MemTable to be
+    // installed in `State` by that thread.
+    //
+    this->wait_for_new_mem_table(/*target_edit_offset=*/current_edit_offset);
+  }
+
+  return OkStatus();
+}
+
+//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
+//
+Status KVStore::reset_active_mem_table(EditOffset current_edit_offset, const State** observed_state)
 {
 #if TURTLE_KV_PROFILE_UPDATES
   LatencyTimer mem_table_create_timer{this->metrics_.put_memtable_create_latency};
 #endif
 
-  // Gather some information from the current MemTable before we send it off.
-  //
-  boost::intrusive_ptr<MemTable> old_mem_table = observed_state->mem_table_;
-
-  // Create a new state to replace the old.
-  //
   State* new_state = new State{};
 
   BATT_CHECK_EQ(new_state->use_count(), 0);
   intrusive_ptr_add_ref(new_state);
   BATT_CHECK_EQ(new_state->use_count(), 1);
 
-  // TODO [tastolfi 2026-03-23] pass the *correct* edit_offset from the end of one MemTable to the
-  // beginning of the next.
-  //
-  new_state->mem_table_ = this->create_mem_table(EditOffset{0});
+  new_state->mem_table_ = this->create_mem_table(current_edit_offset);
+  BATT_CHECK_EQ(new_state->mem_table_->edit_offset_lower_bound(), current_edit_offset);
 
   for (;;) {
-    // Multiple threads are potentially racing to install a new active MemTable;
-    // the important thing is that the old mem table has been replaced.
-    //
-    if (observed_state->mem_table_ != old_mem_table) {
-      BATT_CHECK_NE(observed_state, new_state);
-      BATT_CHECK_EQ(new_state->use_count(), 1);
-      intrusive_ptr_release(new_state);
-      return OkStatus();
+    if (*observed_state == new_state) {
+      break;
     }
 
-    BATT_CHECK(observed_state->base_checkpoint_.tree()->is_serialized());
+    // Sanity check.
+    //
+    BATT_CHECK((*observed_state)->base_checkpoint_.tree()->is_serialized());
 
-    new_state->deltas_ = observed_state->deltas_;
-    new_state->deltas_.emplace_back(observed_state->mem_table_);
-    new_state->base_checkpoint_ = observed_state->base_checkpoint_;
+    // Copy the observed state to the new State object, and extend deltas with the finalized
+    // MemTable.
+    //
+    new_state->base_checkpoint_ = (*observed_state)->base_checkpoint_;
+    new_state->deltas_ = (*observed_state)->deltas_;
+    new_state->deltas_.emplace_back((*observed_state)->mem_table_);
 
     // Try to swap our new state object for the current one.
     //
-    if (this->state_.compare_exchange_weak(observed_state, new_state)) {
+    if (this->state_.compare_exchange_weak(*observed_state, new_state)) {
       break;
     }
   }
+
   this->deltas_size_->fetch_add(1);
 
-#if TURTLE_KV_PROFILE_UPDATES
-  mem_table_create_timer.stop();
-#endif
+  return OkStatus();
+}
 
-  // Since we successfully exchanged the successor to `observed_state`, when this scope exits we
-  // must release the ref count once after adding the old state to the obsolete states list.
-  // Eventually it will be cleaned up by the epoch thread.
-  //
-  auto on_scope_exit = batt::finally([&] {
-    this->add_obsolete_state(observed_state);
-  });
-
-  // Finalize the old mem table and hand it off to be compacted, applied to checkpoint, etc.
-  //
-  const bool finalize_ok = old_mem_table->finalize();
-  BATT_CHECK(finalize_ok);
-
-// As long as no puts are concurrently happening, this variant holds true.
+//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-#if 0  // TODO [tastolfi 2026-03-23] 
-  BATT_CHECK_EQ(old_mem_table->next_offset(),
-                old_mem_table->edit_offset_upper_bound().value_or_panic().value());
-  
-  BATT_CHECK_EQ(next_mem_table_id,
-                old_mem_table->edit_offset_upper_bound().value_or_panic().value());
-#endif
-
-  // Wait for any previous MemTables to be consumed by the compactor task.
-  //
-#if 0  // TODO [tastolfi 2026-03-23] 
-  const u64 this_mem_table_id = old_mem_table->id();
-  while (this->next_mem_table_id_to_push_.load() != this_mem_table_id) {
-    batt::spin_yield();
-  }
-#endif
-
-  //----- --- -- -  -  -   -
+Status KVStore::hand_off_finalized_mem_table(boost::intrusive_ptr<MemTable>&& old_mem_table)
+{
   if (this->runtime_options_.use_threaded_checkpoint_pipeline) {
-#if TURTLE_KV_PROFILE_UPDATES
-    LatencyTimer queue_push_timer{this->metrics_.put_memtable_queue_push_latency};
-#endif
-
-    BATT_REQUIRE_OK(this->finalized_mem_table_channel_.write(std::move(old_mem_table)));
+    BATT_REQUIRE_OK(this->push_mem_table_to_channel(std::move(old_mem_table)));
 
   } else {
     BATT_REQUIRE_OK(this->scan_mem_table_to_build_batches(  //
@@ -907,14 +903,45 @@ Status KVStore::update_checkpoint(const State* observed_state)
           return OkStatus();
         }));
   }
-  //----- --- -- -  -  -   -
 
-#if 0  // TODO [tastolfi 2026-03-23] 
-  // Signal to the next mem table, it is ok to push.  We know this is race-free since only the
-  // thread who succeeded in the CAS loop above is allowed to do this.
-  //
-  this->next_mem_table_id_to_push_.store(next_mem_table_id);
+  return OkStatus();
+}
+
+//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
+//
+void KVStore::wait_for_new_mem_table(EditOffset target_edit_offset)
+{
+  for (;;) {
+    // Spin until we see a MemTable with a sufficiently advanced starting edit offset.
+    //
+    const State* observed_state = this->state_.load();
+    if (observed_state->mem_table_->edit_offset_lower_bound() >= target_edit_offset) {
+      break;
+    }
+  }
+}
+
+//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
+//
+Status KVStore::push_mem_table_to_channel(boost::intrusive_ptr<MemTable>&& mem_table)
+{
+  BATT_CHECK(mem_table->is_finalized());
+
+#if TURTLE_KV_PROFILE_UPDATES
+  LatencyTimer queue_push_timer{this->metrics_.put_memtable_queue_push_latency};
 #endif
+
+  const EditOffset current_edit_offset = mem_table->edit_offset_lower_bound();
+  const EditOffset next_edit_offset = mem_table->edit_offset_upper_bound();
+
+  while (this->next_mem_table_edit_offset_.load() != current_edit_offset) {
+    batt::spin_yield();
+  }
+
+  BATT_REQUIRE_OK(this->finalized_mem_table_channel_.write(std::move(mem_table)));
+
+  const i64 replaced_value = this->next_mem_table_edit_offset_.exchange(next_edit_offset);
+  BATT_CHECK_EQ(replaced_value, current_edit_offset);
 
   return OkStatus();
 }
