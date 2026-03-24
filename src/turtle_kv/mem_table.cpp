@@ -310,12 +310,44 @@ StatusOr<std::pair<KeyView, ValueView>> MemTable::parse_slot(ChangeLogBlock* blo
   return std::make_pair(KeyView{key}, ValueView::from_str(value));
 }
 
+//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
+//
 Status MemTable::put_recovered_slot(ChangeLogBlock* block,
                                     EditOffset edit_offset,
                                     const KeyView& key,
                                     const ValueView& value)  // ?
 {
+  this->attach_block_buffer(block);
+
+  MemTableRecoveryInserter inserter{
+      edit_offset,
+      key,
+      value,
+  };
+
+  BATT_REQUIRE_OK(this->art_index_.insert(key, inserter));
+
   return batt::OkStatus();
+}
+
+//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
+//
+void MemTable::attach_block_buffer(ChangeLogBlock* buffer)
+{
+  if (buffer->ref_count() == 1) {
+    buffer->add_ref(1);
+    this->metrics_.mem_table_log_bytes_allocated.add(buffer->block_size());
+    i64 cache_alloc_delta = 0;
+    {
+      absl::MutexLock lock{&this->block_list_mutex_};
+
+      this->block_size_total_ += buffer->block_size();
+      this->blocks_.emplace_back(buffer);
+
+      cache_alloc_delta = this->update_external_cache_alloc();
+    }
+    this->handle_external_cache_alloc(cache_alloc_delta);
+  }
 }
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
