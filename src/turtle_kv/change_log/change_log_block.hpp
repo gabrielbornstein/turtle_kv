@@ -375,7 +375,7 @@ class ChangeLogBlock
    */
   little_i64 edit_offset_lower_bound_;
 
-  /** \brief The total size of the block, including this object.
+  /** \brief The total size (byte) of the block, including this object.
    */
   little_u16 block_size_;
 
@@ -387,17 +387,17 @@ class ChangeLogBlock
    */
   little_u16 space_;
 
+  /** \brief Whether this block has been "attached" to some higher-level object.
+   */
+  u8 is_attached_;
+
   // Pad the next field (this->ref_count_) out to (void*) this + 24 bytes;
   //
-  u8 padding0_[2];
+  u8 padding0_[5];
 
   /** \brief Atomic reference counter to manage the lifetime of the buffer.
    */
   std::atomic<i32> ref_count_;  // TODO [tastolfi 2025-12-16] move to ephemeral state
-
-  // Pad the next field (this->next_) out to (void*) this + 32 bytes;
-  //
-  u8 padding1_[4];
 
   /** \brief The next ChangeLogBlock in the current stack.
    */

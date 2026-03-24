@@ -260,6 +260,8 @@ class MemTable : public batt::RefCounted<MemTable>
 
   void commit_edit(i64 packed_edit_size);
 
+  void attach_block_buffer(ChangeLogBlock* block);
+
   /** \brief Returns the number of bytes to claim (if positive) or release (negative)
    * as external allocation from the PageCache.
    *
@@ -356,20 +358,7 @@ void MemTable::StorageImpl::store_data(usize n_bytes, SerializeFn&& serialize_fn
       [&](ChangeLogWriter::BlockBuffer* buffer, MutableBuffer dst, EditOffset slot_edit_offset) {
         MemTable& mem_table = this->mem_table;
 
-        if (buffer->ref_count() == 1) {
-          buffer->add_ref(1);
-          mem_table.metrics_.mem_table_log_bytes_allocated.add(buffer->block_size());
-          i64 cache_alloc_delta = 0;
-          {
-            absl::MutexLock lock{&this->mem_table.block_list_mutex_};
-
-            mem_table.block_size_total_ += buffer->block_size();
-            mem_table.blocks_.emplace_back(buffer);
-
-            cache_alloc_delta = mem_table.update_external_cache_alloc();
-          }
-          mem_table.handle_external_cache_alloc(cache_alloc_delta);
-        }
+        mem_table.attach_block_buffer(buffer);
 
         serialize_fn(dst, slot_edit_offset);
       });

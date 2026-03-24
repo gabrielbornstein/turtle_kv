@@ -199,4 +199,50 @@ struct MemTableValueEntryInserter {
     return OkStatus();
   }
 };
+
+struct MemTableRecoveryInserter {
+  explicit MemTableRecoveryInserter(EditOffset edit_offset,
+                                    const KeyView& key,
+                                    const ValueView& value) noexcept
+      : edit_offset_{edit_offset}
+      , key_{key}
+      , value_{value}
+  {
+  }
+
+  MemTableRecoveryInserter(const MemTableRecoveryInserter&) = delete;
+  MemTableRecoveryInserter& operator=(const MemTableRecoveryInserter&) = delete;
+
+  //+++++++++++-+-+--+----- --- -- -  -  -   -
+  // Inputs
+
+  EditOffset edit_offset_;
+  KeyView key_;
+  ValueView value_;
+
+  //+++++++++++-+-+--+----- --- -- -  -  -   -
+
+  Status insert_new(void* entry_memory)
+  {
+    new (entry_memory) MemTableValueEntry{
+        this->key_.data(),
+        this->value_.data(),
+        BATT_CHECKED_CAST(u32, this->value_.size()),
+        this->edit_offset_,
+    };
+
+    return OkStatus();
+  }
+
+  Status update_existing(MemTableValueEntry* p_entry)
+  {
+    p_entry->key_data_ = this->key_.data();
+    p_entry->value_data_ = this->value_.data();
+    p_entry->value_size_ = BATT_CHECKED_CAST(u32, this->value_.size());
+    p_entry->offset_ = this->edit_offset_;
+
+    return OkStatus();
+  }
+};
+
 }  // namespace turtle_kv
