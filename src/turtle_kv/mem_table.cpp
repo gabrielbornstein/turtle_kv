@@ -1,3 +1,11 @@
+//=##=##=#==#=#==#===#+==#+==========+==+=+=+=+=+=++=+++=+++++=-++++=-+++++++++++
+//
+// Part of the TurtleKV Project, under Apache License v2.0.
+// See https://www.apache.org/licenses/LICENSE-2.0 for license information.
+// SPDX short identifier: Apache-2.0
+//
+//+++++++++++-+-+--+----- --- -- -  -  -   -
+
 #include <turtle_kv/mem_table.hpp>
 //
 
@@ -17,11 +25,13 @@ namespace turtle_kv {
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
 /*explicit*/ MemTable::MemTable(llfs::PageCache& page_cache,
+                                const ChangeLogWriter& log_writer,
                                 KVStoreMetrics& metrics,
                                 EditOffset edit_offset_lower_bound,
                                 usize max_bytes_per_batch,
                                 usize max_batch_count) noexcept
     : page_cache_{page_cache}
+    , log_writer_{log_writer}
     , metrics_{metrics}
     , edit_offset_lower_bound_{edit_offset_lower_bound}
     , max_bytes_per_batch_{BATT_CHECKED_CAST(i64, max_bytes_per_batch)}
@@ -191,7 +201,7 @@ Optional<ValueView> MemTable::finalized_get(const KeyView& key) noexcept
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-bool MemTable::finalize(const ChangeLogWriter& writer) noexcept
+bool MemTable::finalize() noexcept
 {
   const i64 prior_committed = this->committed_bytes_total_.fetch_or(MemTable::kFinalizedMask);
   const i64 prior_prepared = this->prepared_bytes_total_.fetch_or(MemTable::kFinalizedMask);
@@ -223,16 +233,23 @@ bool MemTable::finalize(const ChangeLogWriter& writer) noexcept
     // For all other threads that find their way in here, wait until the first has set the true
     // value of edit_offset_upper_bound_.
     //
-    for (;;) {
-      const EditOffset observed_upper_bound{this->edit_offset_upper_bound_.load()};
-      if (observed_upper_bound >= this->edit_offset_lower_bound_) {
-        break;
-      }
-      this->edit_offset_upper_bound_.wait(observed_upper_bound.value());
-    }
+    this->await_finalize();
   }
 
   return newly_finalized;
+}
+
+//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
+//
+void MemTable::await_finalize() noexcept
+{
+  for (;;) {
+    const EditOffset observed_upper_bound{this->edit_offset_upper_bound_.load()};
+    if (observed_upper_bound >= this->edit_offset_lower_bound_) {
+      break;
+    }
+    this->edit_offset_upper_bound_.wait(observed_upper_bound.value());
+  }
 }
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -

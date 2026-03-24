@@ -58,14 +58,14 @@ namespace {
 BATT_STATIC_ASSERT_TYPE_EQ(KeyView, std::string_view);
 }
 
+/** \brief An in-memory index for recent key/value updates.
+ */
 class MemTable : public batt::RefCounted<MemTable>
 {
  public:
   using Self = MemTable;
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
-
-  class Scanner;
 
   /** \brief Produces a series of compacted batches from a finalized MemTable.
    */
@@ -76,8 +76,6 @@ class MemTable : public batt::RefCounted<MemTable>
   /** \brief The number of change log block slots to pre-allocate in this object.
    */
   static constexpr usize kBlockListPreAllocSize = 4096;
-
-  //----- --- -- -  -  -   -
 
   /** \brief this->magic_num_ is initialized to this value when a MemTable is constructed.
    */
@@ -103,34 +101,70 @@ class MemTable : public batt::RefCounted<MemTable>
   //+++++++++++-+-+--+----- --- -- -  -  -   -
 
   explicit MemTable(llfs::PageCache& page_cache,
+                    const ChangeLogWriter& log_writer,
                     KVStoreMetrics& metrics,
                     EditOffset edit_offset_lower_bound,
                     usize max_bytes_per_batch,
                     usize max_batch_count) noexcept;
 
+  /** \brief MemTable is not copyable.
+   */
   MemTable(const MemTable&) = delete;
+
+  /** \brief MemTable is not copyable.
+   */
   MemTable& operator=(const MemTable&) = delete;
 
+  /** \brief Destroys the MemTable, releasing all PageCache allocations and ChangeLogBlock
+   * references.
+   */
   ~MemTable() noexcept;
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
 
+  /** \brief Applies a single key/value update to the MemTable, recording the update in the
+   * change log via the passed context.
+   */
   Status put(ChangeLogWriter::Context& context,
              const KeyView& key,
              const ValueView& value) noexcept;
 
+  /** \brief Returns the value currently bound to the passed key, if present; otherwise, returns
+   * None.
+   */
   Optional<ValueView> get(const KeyView& key) noexcept;
 
+  /** \brief Performs a range query starting at `min_key` and continuing for `items_out.size()`
+   * maximum items.
+   *
+   * \return The number of key/value pairs written to `items_out`
+   */
   usize scan(const KeyView& min_key,
              const Slice<std::pair<KeyView, ValueView>>& items_out) noexcept;
+
+  //+++++++++++-+-+--+----- --- -- -  -  -   -
 
   /** \brief Marks the MemTable as finalized (read-only), waits for any in-progress updates to
    * complete, and then returns true iff the calling thread is the first to call finalize().
    *
    * This function will only return true for a single (concurrent) caller.
+   *
+   * \return true iff this is the first call to finalize for this MemTable.
    */
-  [[nodiscard]] bool finalize(const ChangeLogWriter& writer) noexcept;
+  [[nodiscard]] bool finalize() noexcept;
 
+  /** \brief Blocks the caller until the MemTable is finalized; *does not cause the MemTable to
+   * become finalized*.
+   */
+  void await_finalize() noexcept;
+
+  /** \brief Returns true iff the MemTable is finalized.
+   *
+   * If a caller wishes to block waiting for the MemTable to be finalized, they may call either
+   * `this->finalize(...)` (which will also cause the MemTable to *become* finalized) or
+   * `this->await_finalized()` (which simply blocks the caller until some other thread/task
+   * finalizes the MemTable).
+   */
   bool is_finalized() const;
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
