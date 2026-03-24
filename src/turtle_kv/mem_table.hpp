@@ -129,7 +129,7 @@ class MemTable : public batt::RefCounted<MemTable>
    *
    * This function will only return true for a single (concurrent) caller.
    */
-  [[nodiscard]] bool finalize(ChangeLogWriter::Context& context) noexcept;
+  [[nodiscard]] bool finalize(const ChangeLogWriter& writer) noexcept;
 
   bool is_finalized() const;
 

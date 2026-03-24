@@ -191,7 +191,7 @@ Optional<ValueView> MemTable::finalized_get(const KeyView& key) noexcept
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-bool MemTable::finalize(ChangeLogWriter::Context& context) noexcept
+bool MemTable::finalize(const ChangeLogWriter& writer) noexcept
 {
   const i64 prior_committed = this->committed_bytes_total_.fetch_or(MemTable::kFinalizedMask);
   const i64 prior_prepared = this->prepared_bytes_total_.fetch_or(MemTable::kFinalizedMask);
@@ -215,7 +215,7 @@ bool MemTable::finalize(ChangeLogWriter::Context& context) noexcept
   // If this is the first thread to call finalize, then we must set the upper bound.
   //
   if (newly_finalized) {
-    const EditOffset finalized_upper_bound = context.writer().next_edit_offset();
+    const EditOffset finalized_upper_bound = writer.next_edit_offset();
     BATT_CHECK_GE(finalized_upper_bound, this->edit_offset_lower_bound_);
     this->edit_offset_upper_bound_.store(finalized_upper_bound.value());
     this->edit_offset_upper_bound_.notify_all();

@@ -204,8 +204,7 @@ class KVStore : public Table
    * waiting for another thread to do so), and finally handing off the old MemTable to the
    * checkpoint update pipeline.
    */
-  Status finalize_mem_table(const State* observed_state,
-                            ChangeLogWriter::Context& log_writer_context);
+  Status finalize_mem_table(const State* observed_state);
 
   /** \brief Waits for the passed MemTable to be the next one that should be pushed to
    * `this->finalized_mem_table_channel_`, and then pushes it to the channel.
