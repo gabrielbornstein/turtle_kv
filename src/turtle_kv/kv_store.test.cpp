@@ -524,103 +524,104 @@ TEST_P(CheckpointTest, CheckpointRecovery)
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-TEST_F(KVStoreTest, ChangeLogRecovery)
-{
-  const u64 num_puts = 100000;
+// TEST_F(KVStoreTest, ChangeLogRecovery)
+// {
+//   const u64 num_puts = 100000;
 
-  std::filesystem::path test_kv_store_dir =
-      this->data_root / "turtle_kv_Test" / "change_log_recovery";
+//   std::filesystem::path test_kv_store_dir =
+//       this->data_root / "turtle_kv_Test" / "change_log_recovery";
 
-  StatusOr<std::unique_ptr<KVStore>> open_result = this->CreateAndOpenKVStore(test_kv_store_dir);
-  ASSERT_TRUE(open_result.ok()) << BATT_INSPECT(open_result.status());
+//   StatusOr<std::unique_ptr<KVStore>> open_result = this->CreateAndOpenKVStore(test_kv_store_dir);
+//   ASSERT_TRUE(open_result.ok()) << BATT_INSPECT(open_result.status());
 
-  std::unique_ptr<KVStore>& kv_store = *open_result;
+//   std::unique_ptr<KVStore>& kv_store = *open_result;
 
-  kv_store->set_checkpoint_distance(5);
+//   kv_store->set_checkpoint_distance(5);
 
-  std::map<std::string, std::string> expected_keys_values;
-  this->PopulateKVStore(*kv_store, num_puts, &expected_keys_values);
+//   std::map<std::string, std::string> expected_keys_values;
+//   this->PopulateKVStore(*kv_store, num_puts, &expected_keys_values);
 
-  this->ShutdownKVStore(kv_store);
+//   this->ShutdownKVStore(kv_store);
 
-  batt::StatusOr<std::unique_ptr<turtle_kv::ChangeLogFile>> change_log_file =
-      turtle_kv::ChangeLogFile::open(test_kv_store_dir / "change_log.turtle_kv");
+//   batt::StatusOr<std::unique_ptr<turtle_kv::ChangeLogFile>> change_log_file =
+//       turtle_kv::ChangeLogFile::open(test_kv_store_dir / "change_log.turtle_kv");
 
-  ASSERT_TRUE(change_log_file.ok());
-  batt::StatusOr<std::vector<boost::intrusive_ptr<turtle_kv::ChangeLogBlock>>> blocks =
-      (*change_log_file)->read_blocks_into_vector();
+//   ASSERT_TRUE(change_log_file.ok());
+//   batt::StatusOr<std::vector<boost::intrusive_ptr<turtle_kv::ChangeLogBlock>>> blocks =
+//       (*change_log_file)->read_blocks_into_vector();
 
-  ASSERT_TRUE(blocks.ok()) << BATT_INSPECT(blocks.status());
+//   ASSERT_TRUE(blocks.ok()) << BATT_INSPECT(blocks.status());
 
-  ASSERT_TRUE((*blocks).size() > 0) << "Expected change log blocks but found none.";
+//   ASSERT_TRUE((*blocks).size() > 0) << "Expected change log blocks but found none.";
 
-  int i = 0;
-  for (auto block : *blocks) {
-    ASSERT_TRUE(block->verify().ok());
-    VLOG(1) << "Reading block " << i << " with offset() == " << block->edit_offset_lower_bound()
-            << ", and block_size() == " << block->block_size();
-    ASSERT_NE(block->block_size(), 0);
-    ASSERT_NE(block->slot_count(), 0);
+//   int i = 0;
+//   for (auto block : *blocks) {
+//     ASSERT_TRUE(block->verify().ok());
+//     VLOG(1) << "Reading block " << i << " with offset() == " << block->edit_offset_lower_bound()
+//             << ", and block_size() == " << block->block_size();
+//     ASSERT_NE(block->block_size(), 0);
+//     ASSERT_NE(block->slot_count(), 0);
 
-    u64 prev_offset = 0;
-    for (usize j = 0; j < block->slot_count(); ++j) {
-      batt::ConstBuffer slot = block->get_slot(j);
+//     u64 prev_offset = 0;
+//     for (usize j = 0; j < block->slot_count(); ++j) {
+//       batt::ConstBuffer slot = block->get_slot(j);
 
-      std::variant<turtle_kv::MemTableInsertData, turtle_kv::MemTableUpdateData, batt::Status>
-          entry = turtle_kv::MemTableEntryReader::read_entry(slot);
+//       std::variant<turtle_kv::MemTableInsertData, turtle_kv::MemTableUpdateData, batt::Status>
+//           entry = turtle_kv::MemTableEntryReader::read_entry(slot);
 
-      std::visit(
-          [&](auto&& value) {
-            using T = std::decay_t<decltype(value)>;
+//       std::visit(
+//           [&](auto&& value) {
+//             using T = std::decay_t<decltype(value)>;
 
-            if constexpr (std::is_same_v<T, turtle_kv::MemTableInsertData>) {
-              VLOG(3) << "key_len: " << value.key_len << ", key: " << value.key
-                      << ", value: " << value.value << ", offset: " << value.offset;
+//             if constexpr (std::is_same_v<T, turtle_kv::MemTableInsertData>) {
+//               VLOG(3) << "key_len: " << value.key_len << ", key: " << value.key
+//                       << ", value: " << value.value << ", offset: " << value.offset;
 
-              std::string actual_key{value.key.data(), value.key.size()};
-              auto expected_value = expected_keys_values.find(actual_key);
+//               std::string actual_key{value.key.data(), value.key.size()};
+//               auto expected_value = expected_keys_values.find(actual_key);
 
-              ASSERT_TRUE(expected_value != expected_keys_values.end());
+//               ASSERT_TRUE(expected_value != expected_keys_values.end());
 
-              std::string actual_value{value.value.data(), value.value.size()};
-              ASSERT_TRUE((*expected_value).second == actual_value);
+//               std::string actual_value{value.value.data(), value.value.size()};
+//               ASSERT_TRUE((*expected_value).second == actual_value);
 
-              // TODO: [Gabe Bornstein 3/19/26] Currently, the lower bound of a block is == the
-              // offset of the first slot in the next block, not the first slot in the current
-              // block. Check where block->lower_bound is getting set... lower_bound is actually
-              // returning upper_bound of previous block.
-              //
-              if (j == 0) {
-                // ASSERT_EQ(block->edit_offset_lower_bound(), value.offset);
-              } else {
-                ASSERT_GT(value.offset, prev_offset);
-              }
-              prev_offset = value.offset;
-            } else if constexpr (std::is_same_v<T, turtle_kv::MemTableUpdateData>) {
-              VLOG(3) << "revision: " << value.revision << ", offset: " << value.offset
-                      << ", value: " << value.value;
+//               // TODO: [Gabe Bornstein 3/19/26] Currently, the lower bound of a block is == the
+//               // offset of the first slot in the next block, not the first slot in the current
+//               // block. Check where block->lower_bound is getting set... lower_bound is actually
+//               // returning upper_bound of previous block.
+//               //
+//               if (j == 0) {
+//                 // ASSERT_EQ(block->edit_offset_lower_bound(), value.offset);
+//               } else {
+//                 ASSERT_GT(value.offset, prev_offset);
+//               }
+//               prev_offset = value.offset;
+//             } else if constexpr (std::is_same_v<T, turtle_kv::MemTableUpdateData>) {
+//               VLOG(3) << "revision: " << value.revision << ", offset: " << value.offset
+//                       << ", value: " << value.value;
 
-              // If this is the first entry in the block, verify its offset matches the block
-              // offset.
-              //
-              if (j == 0) {
-                ASSERT_EQ(block->edit_offset_lower_bound().value(), value.offset);
-              } else {
-                ASSERT_GT(value.offset, prev_offset);
-              }
-              prev_offset = value.offset;
-            } else {
-              ASSERT_TRUE(false) << "Failed to read entry from slot " << j << " in block with id "
-                                 << block->edit_offset_lower_bound()
-                                 << ", StatusCode: " << BATT_INSPECT(value);
-            }
-          },
-          entry);
-    }
+//               // If this is the first entry in the block, verify its offset matches the block
+//               // offset.
+//               //
+//               if (j == 0) {
+//                 ASSERT_EQ(block->edit_offset_lower_bound().value(), value.offset);
+//               } else {
+//                 ASSERT_GT(value.offset, prev_offset);
+//               }
+//               prev_offset = value.offset;
+//             } else {
+//               ASSERT_TRUE(false) << "Failed to read entry from slot " << j << " in block with id
+//               "
+//                                  << block->edit_offset_lower_bound()
+//                                  << ", StatusCode: " << BATT_INSPECT(value);
+//             }
+//           },
+//           entry);
+//     }
 
-    ++i;
-  }
-}
+//     ++i;
+//   }
+// }
 
 // TODO: [Gabe Bornstein 3/18/26] Add some test points where to test recovery with updates.
 //

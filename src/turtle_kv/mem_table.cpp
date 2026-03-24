@@ -262,11 +262,16 @@ bool MemTable::is_finalized() const
 
 usize MemTable::slot_byte_size(const KeyView& key, const ValueView& value) const
 {
-  return 0;
+  return sizeof(little_u16)  // key size
+         + key.size() + value.size();
 }
 
 Status MemTable::serialize_slot(const KeyView& key, const ValueView& value, MutableBuffer dst) const
 {
+  // // TODO: [Gabe Bornstein 3/24/26] Currentlty, MemTableValueEntryInserter  is responsible for
+  // serializing a slot. What is the purpose of this function? Is it replacing
+  // MemTableValueEntryInserter? Or moving it's logic into here?
+  //
   return batt::OkStatus();
 }
 
@@ -274,7 +279,36 @@ StatusOr<std::pair<KeyView, ValueView>> MemTable::parse_slot(ChangeLogBlock* blo
                                                              EditOffset edit_offset,  //?
                                                              ConstBuffer payload) const
 {
-  return batt::OkStatus();
+  // TODO: [Gabe Bornstein 3/24/26] Consider what we could use block or edit_offset for.
+  //
+
+  const char* data = static_cast<const char*>(payload.data());
+  const std::size_t size = payload.size();
+
+  // Assum payload has already read offset and been incremented to the start of the slot.
+  //
+  if (size < sizeof(little_u16)) {
+    return {batt::StatusCode::kDataLoss};
+  }
+
+  const auto* key_len_dst = place_first<little_u16>(const_cast<char*>(data));
+  const u16 key_len = *key_len_dst;
+
+  // Check if payload has enough data.
+  //
+  const std::size_t expected_min_size = sizeof(little_u16) + key_len;
+  if (size < expected_min_size) {
+    return {batt::StatusCode::kDataLoss};
+  }
+
+  const char* key_data = place_next<char>(key_len_dst, 1);
+  std::string_view key{key_data, key_len};
+
+  const char* value_data = place_next<char>(key_data, key_len);
+  const std::size_t value_len = size - expected_min_size;
+  std::string_view value{value_data, value_len};
+
+  return std::make_pair(KeyView{key}, ValueView::from_str(value));
 }
 
 Status MemTable::put_recovered_slot(ChangeLogBlock* block,
