@@ -1,3 +1,11 @@
+//=##=##=#==#=#==#===#+==#+==========+==+=+=+=+=+=++=+++=+++++=-++++=-+++++++++++
+//
+// Part of the TurtleKV Project, under Apache License v2.0.
+// See https://www.apache.org/licenses/LICENSE-2.0 for license information.
+// SPDX short identifier: Apache-2.0
+//
+//+++++++++++-+-+--+----- --- -- -  -  -   -
+
 #include <turtle_kv/kv_store.hpp>
 //
 
@@ -359,6 +367,8 @@ u64 query_page_loader_reset_every_n()
     , current_epoch_{0}
     , state_{[&] {
       State* state = new State{};
+
+      // TODO [tastolfi 2026-03-24] - for recovery, starting at EditOffset{0} is wrong.
       state->mem_table_ = this->create_mem_table(EditOffset{0});
       state->base_checkpoint_ = Checkpoint::empty_at_batch(DeltaBatchId::min_value());
       state->base_checkpoint_.tree()->lock();

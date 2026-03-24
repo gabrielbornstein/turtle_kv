@@ -122,6 +122,31 @@ class MemTable : public batt::RefCounted<MemTable>
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
 
+#if 0
+  //----- --- -- -  -  -   -
+  // option 1:
+
+  Status put_recovered_slot(ChangeLogBlock* block,
+                            EditOffset edit_offset,
+                            ConstBuffer payload);  // ?
+#else
+  //----- --- -- -  -  -   -
+  // option 2:
+
+  usize slot_byte_size(const KeyView& key, const ValueView& value) const;
+
+  Status serialize_slot(const KeyView& key, const ValueView& value, MutableBuffer dst) const;
+
+  StatusOr<std::pair<KeyView, ValueView>> parse_slot(ChangeLogBlock* block,   //?
+                                                     EditOffset edit_offset,  //?
+                                                     ConstBuffer payload) const;
+
+  Status put_recovered_slot(ChangeLogBlock* block,
+                            EditOffset edit_offset,
+                            const KeyView& key,
+                            const ValueView& value);  // ?
+#endif
+
   /** \brief Applies a single key/value update to the MemTable, recording the update in the
    * change log via the passed context.
    */
