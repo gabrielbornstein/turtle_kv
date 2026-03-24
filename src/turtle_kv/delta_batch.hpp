@@ -1,7 +1,7 @@
 #pragma once
 
 #include <turtle_kv/api_types.hpp>
-#include <turtle_kv/change_log_read_lock.hpp>
+#include <turtle_kv/change_log/change_log_read_lock.hpp>
 #include <turtle_kv/delta_batch_id.hpp>
 #include <turtle_kv/mem_table.hpp>
 

@@ -8,9 +8,9 @@
 
 #pragma once
 
+#include <turtle_kv/change_log/change_log_block.hpp>
+#include <turtle_kv/change_log/change_log_file.hpp>
 #include <turtle_kv/change_log/edit_offset.hpp>
-#include <turtle_kv/change_log_block.hpp>
-#include <turtle_kv/change_log_file.hpp>
 
 #include <turtle_kv/import/constants.hpp>
 #include <turtle_kv/import/int_types.hpp>
@@ -140,10 +140,9 @@ class ChangeLogWriter
      * this Context. \return the sequence number (index) of the newly formatted slot.
      */
     template <typename SerializeFn>
-      requires std::invocable<const SerializeFn&, BlockBuffer*, MutableBuffer, EditOffset>
-    Status append_slot(EditOffset min_edit_offset_lower_bound,
-                       usize byte_size,
-                       const SerializeFn& fn) noexcept;
+    requires std::invocable<const SerializeFn&, BlockBuffer*, MutableBuffer, EditOffset> Status
+    append_slot(EditOffset min_edit_offset_lower_bound, usize byte_size, const SerializeFn& fn)
+    noexcept;
 
     //+++++++++++-+-+--+----- --- -- -  -  -   -
    private:
@@ -317,7 +316,7 @@ class ChangeLogWriter
 // #=##=##=#==#=#==#===#+==#+==========+==+=+=+=+=+=++=+++=+++++=-++++=-+++++++++++
 
 template <typename SerializeFn>
-  requires std::invocable<const SerializeFn&, ChangeLogBlock*, MutableBuffer, EditOffset>
+requires std::invocable<const SerializeFn&, ChangeLogBlock*, MutableBuffer, EditOffset>
 inline Status ChangeLogWriter::Context::append_slot(EditOffset min_edit_offset_lower_bound,
                                                     usize byte_size,
                                                     const SerializeFn& serialize_fn) noexcept

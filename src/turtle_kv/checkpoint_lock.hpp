@@ -1,6 +1,6 @@
 #pragma once
 
-#include <turtle_kv/change_log_read_lock.hpp>
+#include <turtle_kv/change_log/change_log_read_lock.hpp>
 #include <turtle_kv/delta_batch.hpp>
 
 #include <turtle_kv/import/optional.hpp>

@@ -8,7 +8,7 @@
 
 #pragma once
 
-#include <turtle_kv/change_log_writer.hpp>
+#include <turtle_kv/change_log/change_log_writer.hpp>
 #include <turtle_kv/checkpoint.hpp>
 #include <turtle_kv/checkpoint_generator.hpp>
 #include <turtle_kv/kv_store_config.hpp>
@@ -237,9 +237,8 @@ class KVStore : public Table
   void info_task_main() noexcept;
 
   template <typename Fn>
-    requires std::invocable<Fn, std::unique_ptr<DeltaBatch>>
-  Status scan_mem_table_to_build_batches(boost::intrusive_ptr<MemTable>&& mem_table,
-                                         Fn&& consume_fn);
+  requires std::invocable<Fn, std::unique_ptr<DeltaBatch>> Status
+  scan_mem_table_to_build_batches(boost::intrusive_ptr<MemTable>&& mem_table, Fn&& consume_fn);
 
   void mem_table_batch_scanner_thread_main();
 
