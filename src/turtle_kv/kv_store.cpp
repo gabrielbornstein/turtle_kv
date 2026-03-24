@@ -523,6 +523,7 @@ boost::intrusive_ptr<MemTable> KVStore::create_mem_table(EditOffset edit_offset_
 
   boost::intrusive_ptr<MemTable> mem_table{new MemTable{
       this->page_cache(),
+      *this->log_writer_,
       this->metrics_,
       edit_offset_lower_bound,
       /*max_bytes_per_batch=*/this->tree_options_.flush_size(),
@@ -817,7 +818,7 @@ Status KVStore::remove(const KeyView& key) noexcept /*override*/
 Status KVStore::finalize_mem_table(const State* observed_state)
 {
   boost::intrusive_ptr<MemTable> old_mem_table = observed_state->mem_table_;
-  const bool newly_finalized = old_mem_table->finalize(*this->log_writer_);
+  const bool newly_finalized = old_mem_table->finalize();
   const EditOffset current_edit_offset = old_mem_table->edit_offset_upper_bound();
 
   if (newly_finalized) {
@@ -1053,9 +1054,9 @@ void KVStore::mem_table_batch_scanner_thread_main()
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
 template <typename Fn>
-  requires std::invocable<Fn, std::unique_ptr<DeltaBatch>>
-Status KVStore::scan_mem_table_to_build_batches(boost::intrusive_ptr<MemTable>&& mem_table,
-                                                Fn&& consume_fn)
+requires std::invocable<Fn, std::unique_ptr<DeltaBatch>> Status
+KVStore::scan_mem_table_to_build_batches(boost::intrusive_ptr<MemTable>&& mem_table,
+                                         Fn&& consume_fn)
 {
   MemTable::BatchCompactor batch_compactor{*mem_table,
                                            /*byte_size_limit=*/this->tree_options_.flush_size()};

@@ -225,7 +225,7 @@ bool MemTable::finalize() noexcept
   // If this is the first thread to call finalize, then we must set the upper bound.
   //
   if (newly_finalized) {
-    const EditOffset finalized_upper_bound = writer.next_edit_offset();
+    const EditOffset finalized_upper_bound = this->log_writer_.next_edit_offset();
     BATT_CHECK_GE(finalized_upper_bound, this->edit_offset_lower_bound_);
     this->edit_offset_upper_bound_.store(finalized_upper_bound.value());
     this->edit_offset_upper_bound_.notify_all();
@@ -258,6 +258,31 @@ bool MemTable::is_finalized() const
 {
   return (this->committed_bytes_total_.load() & MemTable::kFinalizedMask) != 0 &&
          this->edit_offset_lower_bound_ <= EditOffset{this->edit_offset_upper_bound_.load()};
+}
+
+usize MemTable::slot_byte_size(const KeyView& key, const ValueView& value) const
+{
+  return 0;
+}
+
+Status MemTable::serialize_slot(const KeyView& key, const ValueView& value, MutableBuffer dst) const
+{
+  return batt::OkStatus();
+}
+
+StatusOr<std::pair<KeyView, ValueView>> MemTable::parse_slot(ChangeLogBlock* block,   //?
+                                                             EditOffset edit_offset,  //?
+                                                             ConstBuffer payload) const
+{
+  return batt::OkStatus();
+}
+
+Status MemTable::put_recovered_slot(ChangeLogBlock* block,
+                                    EditOffset edit_offset,
+                                    const KeyView& key,
+                                    const ValueView& value)  // ?
+{
+  return batt::OkStatus();
 }
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -

@@ -279,6 +279,8 @@ class MemTable : public batt::RefCounted<MemTable>
 
   llfs::PageCache& page_cache_;
 
+  const ChangeLogWriter& log_writer_;
+
   KVStoreMetrics& metrics_;
 
   // Passed in at construction time.

@@ -19,6 +19,8 @@ namespace turtle_kv {
 class ChangeLogReader
 {
  public:
+  // Function responsible for parsing one slot at a time.
+  //
   using SlotVisitorFn =
       std::function<Status(ChangeLogBlock* block, EditOffset edit_offset, ConstBuffer payload)>;
 
