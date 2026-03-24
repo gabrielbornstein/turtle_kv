@@ -9,9 +9,9 @@
 #pragma once
 
 #include <turtle_kv/api_types.hpp>
-#include <turtle_kv/change_log_block.hpp>
-#include <turtle_kv/change_log_file_metrics.hpp>
-#include <turtle_kv/change_log_read_lock.hpp>
+#include <turtle_kv/change_log/change_log_block.hpp>
+#include <turtle_kv/change_log/change_log_file_metrics.hpp>
+#include <turtle_kv/change_log/change_log_read_lock.hpp>
 #include <turtle_kv/file_utils.hpp>
 
 #include <turtle_kv/import/buffer.hpp>

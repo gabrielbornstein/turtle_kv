@@ -9,7 +9,7 @@
 #pragma once
 #define TURTLE_KV_MEM_TABLE_HPP
 
-#include <turtle_kv/change_log_writer.hpp>
+#include <turtle_kv/change_log/change_log_writer.hpp>
 #include <turtle_kv/concurrent_hash_index.hpp>
 #include <turtle_kv/delta_batch_id.hpp>
 #include <turtle_kv/kv_store_metrics.hpp>
