@@ -164,8 +164,8 @@ class MemTable : public batt::RefCounted<MemTable>
    *
    * \return The number of key/value pairs written to `items_out`
    */
-  usize scan(const KeyView& min_key,
-             const Slice<std::pair<KeyView, ValueView>>& items_out) noexcept;
+  usize scan_DEPRECATED(const KeyView& min_key,
+                        const Slice<std::pair<KeyView, ValueView>>& items_out) noexcept;
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
 

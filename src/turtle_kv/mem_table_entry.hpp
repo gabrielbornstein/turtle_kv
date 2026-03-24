@@ -73,11 +73,13 @@ class MemTableValueEntry
   MemTableValueEntry& operator=(const MemTableValueEntry&) = default;
 
   explicit MemTableValueEntry(const char* key_data,
+                              u32 key_size,
                               const char* value_data,
                               u32 value_size,
                               EditOffset offset) noexcept
       : key_data_{key_data}
       , value_data_{value_data}
+      , key_size_{key_size}
       , value_size_{value_size}
       , offset_{offset}
   {
@@ -87,7 +89,8 @@ class MemTableValueEntry
 
   const char* key_data_;
   const char* value_data_;
-  mutable u32 value_size_;
+  u32 key_size_;
+  /*mutable*/ u32 value_size_;
   EditOffset offset_{0};
 
   KeyView key_view() const
@@ -163,8 +166,8 @@ struct MemTableValueEntryInserter {
           char* const value_dst = place_next<char>(key_dst, key_len);
           std::memcpy(value_dst, this->value.data(), value_len);
 
-          this->entry =
-              new (entry_memory) MemTableValueEntry{key_dst, value_dst, (u32)value_len, offset};
+          this->entry = new (entry_memory)
+              MemTableValueEntry{key_dst, (u32)key_len, value_dst, (u32)value_len, offset};
         });
 
     return OkStatus();
@@ -226,6 +229,7 @@ struct MemTableRecoveryInserter {
   {
     new (entry_memory) MemTableValueEntry{
         this->key_.data(),
+        BATT_CHECKED_CAST(u32, this->key_.size()),
         this->value_.data(),
         BATT_CHECKED_CAST(u32, this->value_.size()),
         this->edit_offset_,

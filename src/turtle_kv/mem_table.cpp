@@ -171,8 +171,8 @@ Optional<ValueView> MemTable::get(const KeyView& key) noexcept
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-usize MemTable::scan(const KeyView& min_key,
-                     const Slice<std::pair<KeyView, ValueView>>& items_out) noexcept
+usize MemTable::scan_DEPRECATED(const KeyView& min_key,
+                                const Slice<std::pair<KeyView, ValueView>>& items_out) noexcept
 {
   usize n_found = 0;
   {
@@ -271,6 +271,9 @@ Status MemTable::serialize_slot(const KeyView& key, const ValueView& value, Muta
   // // TODO: [Gabe Bornstein 3/24/26] Currentlty, MemTableValueEntryInserter  is responsible for
   // serializing a slot. What is the purpose of this function? Is it replacing
   // MemTableValueEntryInserter? Or moving it's logic into here?
+  // tastolfi - Yes exactly!  Since the serialization code for insert_new and update_existing will
+  // be identical, this seems as good a place as any for a common helper function; it also feels
+  // natural to me, as it is the inverse operation of `parse_slot`.
   //
   return batt::OkStatus();
 }
