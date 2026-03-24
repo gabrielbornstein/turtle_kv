@@ -262,8 +262,7 @@ bool MemTable::is_finalized() const
 
 usize MemTable::slot_byte_size(const KeyView& key, const ValueView& value) const
 {
-  return sizeof(little_u16)  // key size
-         + key.size() + value.size();
+  return PackedSizeOfEdit{}(key.size(), value.size());
 }
 
 Status MemTable::serialize_slot(const KeyView& key, const ValueView& value, MutableBuffer dst) const

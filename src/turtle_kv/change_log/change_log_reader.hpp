@@ -42,7 +42,15 @@ class ChangeLogReader
      2. gain access to ref-countable ChangeLogBlock objects (so we can store these in MemTable)
    */
 
+  // For now, visitor will be defined in KVStore::recover. It will have visitor call
+  // MemTable::parse_slot, and add each parsed slot to a MemTable by calling
+  // MemTable::put_recovered_slot.
+  //
   virtual Status visit_slots(const SlotVisitorFn& visitor) = 0;
+  // 1. Call "read_slots_into_vector"
+  // 2. Put slots into a priority queue based on EditOffset.
+  // 3. Read slots from priority queue in order, calling visitor for each.
+  //
 
  protected:
   ChangeLogReader() = default;
