@@ -58,6 +58,40 @@ namespace {
 BATT_STATIC_ASSERT_TYPE_EQ(KeyView, std::string_view);
 }
 
+//=#=#==#==#===============+=+=+=+=++=++++++++++++++-++-+--+-+----+---------------
+// TODO [tastolfi 2026-03-25]
+//
+template <typename T>
+concept MemTableIndex = requires(T index) {
+  { &index } -> std::same_as<T*>;
+};
+
+//=#=#==#==#===============+=+=+=+=++=++++++++++++++-++-+--+-+----+---------------
+// TODO [tastolfi 2026-03-25]
+//
+template <typename T>
+concept MemTableLogStorage = requires(T log) {
+  { &log } -> std::same_as<T*>;
+};
+
+//=#=#==#==#===============+=+=+=+=++=++++++++++++++-++-+--+-+----+---------------
+// TODO [tastolfi 2026-03-25]
+//
+template <typename T>
+concept MemTableCacheAllocProxy = requires(T cache) {
+  { &cache } -> std::same_as<T*>;
+};
+
+//=#=#==#==#===============+=+=+=+=++=++++++++++++++-++-+--+-+----+---------------
+//
+template <typename IndexImplT, typename LogStorageT, typename CacheAllocProxyT>
+class BasicMemTable
+    : public batt::RefCounted<BasicMemTable<IndexImplT, LogStorageT, CacheAllocProxyT>>
+{
+};
+
+//=#=#==#==#===============+=+=+=+=++=++++++++++++++-++-+--+-+----+---------------
+//
 /** \brief An in-memory index for recent key/value updates.
  */
 class MemTable : public batt::RefCounted<MemTable>
@@ -139,14 +173,6 @@ class MemTable : public batt::RefCounted<MemTable>
    */
   Optional<ValueView> get(const KeyView& key) noexcept;
 
-  /** \brief Performs a range query starting at `min_key` and continuing for `items_out.size()`
-   * maximum items.
-   *
-   * \return The number of key/value pairs written to `items_out`
-   */
-  usize scan_DEPRECATED(const KeyView& min_key,
-                        const Slice<std::pair<KeyView, ValueView>>& items_out) noexcept;
-
   //+++++++++++-+-+--+----- --- -- -  -  -   -
 
   /** \brief Marks the MemTable as finalized (read-only), waits for any in-progress updates to
@@ -176,9 +202,6 @@ class MemTable : public batt::RefCounted<MemTable>
 
   Optional<ValueView> finalized_get(const KeyView& key) noexcept;
 
-  usize finalized_scan(const KeyView& min_key,
-                       const Slice<std::pair<KeyView, ValueView>>& items_out) noexcept;
-
   //+++++++++++-+-+--+----- --- -- -  -  -   -
 
   // TODO: [Gabe Bornstein 1/7/25] The art index is public? That doesn't feel right...
@@ -199,8 +222,10 @@ class MemTable : public batt::RefCounted<MemTable>
     return this->edit_offset_lower_bound_;
   }
 
-  /** \brief Returns the final EditOffset when this MemTable was finalized.  Will panic if this
-   * MemTable has not been finalized yet.
+  /** \brief Returns the final EditOffset when this MemTable was finalized.  WARNING: Will panic if
+   * this MemTable has not been finalized yet.
+   *
+   * \see is_finalized
    */
   EditOffset edit_offset_upper_bound() const
   {
@@ -226,10 +251,9 @@ class MemTable : public batt::RefCounted<MemTable>
     ChangeLogWriter::Context& context;
     Status status;
 
-    template <typename SerializeFn = void(MutableBuffer, u64)>
-    void store_data(  // EditOffset slot_edit_offset,
-        usize n_bytes,
-        SerializeFn&& serialize_fn) noexcept;
+    template <typename SerializeFn>
+      requires(std::invocable<SerializeFn, MutableBuffer, EditOffset>)
+    void store_data(usize n_bytes, SerializeFn&& serialize_fn) noexcept;
   };
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
@@ -329,6 +353,7 @@ class MemTable : public batt::RefCounted<MemTable>
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
 template <typename SerializeFn>
+  requires(std::invocable<SerializeFn, MutableBuffer, EditOffset>)
 void MemTable::StorageImpl::store_data(usize n_bytes, SerializeFn&& serialize_fn) noexcept
 {
   usize n_bytes_plus_offset = n_bytes + sizeof(big_u32);
