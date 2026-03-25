@@ -17,6 +17,10 @@
 #include <turtle_kv/kv_store_scanner.hpp>
 #include <turtle_kv/page_file.hpp>
 
+#include <turtle_kv/change_log/change_log_reader.hpp>
+
+#include <turtle_kv/core/packed_key_value_slot.hpp>
+
 #include <turtle_kv/tree/filter_builder.hpp>
 #include <turtle_kv/tree/in_memory_node.hpp>
 #include <turtle_kv/tree/leaf_page_view.hpp>
@@ -1008,6 +1012,45 @@ using CheckpointEvent = llfs::PackedVariant<turtle_kv::PackedCheckpoint>;
   return turtle_kv::Checkpoint::recover(checkpoint_log_volume,
                                         prev_checkpoint.first,
                                         prev_checkpoint.second);
+}
+
+//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
+//
+// TODO: [Gabe Bornstein 3/25/26] Add a KVStore::recover function that recovers checkpoint,
+// mem_table, and updates KVStore.state_ to reflect the newly recovered checkpoint and mem_table.
+//
+batt::StatusOr<boost::intrusive_ptr<turtle_kv::MemTable>> KVStore::recover_latest_mem_table(
+    turtle_kv::ChangeLogFile& log)
+{
+  boost::intrusive_ptr<MemTable> mem_table = nullptr;
+
+  bool first_slot = true;
+
+  batt::Status status = ChangeLogReader::visit_slots(
+      log,
+      [this, &mem_table, &first_slot](ChangeLogBlock* block,
+                                      EditOffset edit_offset,
+                                      ConstBuffer payload) -> batt::Status {
+        if (first_slot) {
+          mem_table = this->create_mem_table(edit_offset);
+          first_slot = false;
+        }
+
+        StatusOr<std::pair<KeyView, ValueView>> unpacked_slot = unpack_key_value_slot(payload);
+        BATT_REQUIRE_OK(unpacked_slot);
+
+        batt::Status recovered_slot_status = mem_table->put_recovered_slot(block,
+                                                                           edit_offset,
+                                                                           unpacked_slot->first,
+                                                                           unpacked_slot->second);
+        BATT_REQUIRE_OK(recovered_slot_status);
+
+        return batt::OkStatus();
+      });
+
+  BATT_REQUIRE_OK(status);
+  BATT_CHECK_NE(mem_table, nullptr);
+  return mem_table;
 }
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -

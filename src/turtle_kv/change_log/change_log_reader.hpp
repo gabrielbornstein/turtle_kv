@@ -22,6 +22,9 @@ class ChangeLogReader
   // Function responsible for parsing one slot at a time.
   //
   using SlotVisitorFn =
+      // TODO: [Gabe Bornstein 3/25/26] Is block necessary? We should just need the slot data
+      // really.
+      //
       std::function<Status(ChangeLogBlock* block, EditOffset edit_offset, ConstBuffer payload)>;
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
@@ -35,22 +38,63 @@ class ChangeLogReader
   /*
     Use cases:
      1. Recover MemTable(s) from a recovered log
-
-
-    Requirements:
-     1. read slots in EditOffset order
-     2. gain access to ref-countable ChangeLogBlock objects (so we can store these in MemTable)
    */
 
-  // For now, visitor will be defined in KVStore::recover. It will have visitor call
-  // MemTable::parse_slot, and add each parsed slot to a MemTable by calling
-  // MemTable::put_recovered_slot.
+  // +++++++++++-+-+--+----- --- -- -  -  -   -
   //
-  virtual Status visit_slots(const SlotVisitorFn& visitor) = 0;
-  // 1. Call "read_slots_into_vector"
-  // 2. Put slots into a priority queue based on EditOffset.
-  // 3. Read slots from priority queue in order, calling visitor for each.
-  //
+  static Status visit_slots(ChangeLogFile& log, const SlotVisitorFn& visitor)
+  {
+    batt::StatusOr<std::vector<boost::intrusive_ptr<ChangeLogBlock>>> blocks =
+        log.read_blocks_into_vector();
+
+    if (!blocks.ok()) {
+      return blocks.status();
+    }
+
+    struct SlotEntry {
+      boost::intrusive_ptr<ChangeLogBlock> block;
+      EditOffset edit_offset;
+      ConstBuffer payload;
+
+      bool operator>(const SlotEntry& other) const
+      {
+        return this->edit_offset > other.edit_offset;
+      }
+    };
+
+    constexpr usize kPerSlotEditOffsetDeltaOverhead = sizeof(little_i32);
+
+    // Put slots into a priority queue based on EditOffset.
+    //
+    std::priority_queue<SlotEntry, std::vector<SlotEntry>, std::greater<SlotEntry>> slot_queue;
+    for (const auto& block : *blocks) {
+      for (usize i = 0; i < block->slot_count(); ++i) {
+        ConstBuffer slot_buffer = block->get_slot(i);
+        EditOffset current_edit_offset = EditOffset{*((little_i32*)slot_buffer.data())};
+
+        slot_queue.push(SlotEntry{.block = block,
+                                  .edit_offset = current_edit_offset,
+                                  .payload = slot_buffer + kPerSlotEditOffsetDeltaOverhead});
+      }
+    }
+
+    while (!slot_queue.empty()) {
+      const SlotEntry& current_slot = slot_queue.top();
+
+      // For now, visitor will be defined in KVStore::recover. It will have visitor call
+      // MemTable::parse_slot, and add each parsed slot to a MemTable by calling
+      // MemTable::put_recovered_slot.
+      //
+      Status visit_status =
+          visitor(current_slot.block.get(), current_slot.edit_offset, current_slot.payload);
+
+      BATT_REQUIRE_OK(visit_status);
+
+      slot_queue.pop();
+    }
+
+    return batt::OkStatus();
+  }
 
  protected:
   ChangeLogReader() = default;

@@ -24,14 +24,14 @@ class ValueView
   struct I32Data {
   };
 
-  enum OpCode : u16 {
+  enum OpCode : u8 {
     OP_DELETE = 0,
     OP_NOOP = 1,
     OP_WRITE = 2,
     OP_ADD_I32 = 3,
     OP_PAGE_SLICE = 4,
     BEGIN_OP_UNDEFINED,
-    END_OP_UNDEFINED = 0x7fff,
+    END_OP_UNDEFINED = 0x7f,
   };
 
   friend inline std::ostream& operator<<(std::ostream& out, OpCode code)
@@ -63,7 +63,7 @@ class ValueView
 
   static constexpr OpCodePair op_pair(OpCode first, OpCode second)
   {
-    return (u32{first} << 16) | u32{second};
+    return (u32{first} << 24) | u32{second};
   }
 
   static constexpr usize kMaxSmallStrSize = 8;
@@ -104,7 +104,9 @@ class ValueView
 
   static ValueView from_packed(OpCode op, const std::string_view& str)
   {
-    if (str.size() <= kMaxSmallStrSize) {
+    constexpr bool kNeedToFixInlineData = true;
+
+    if (!kNeedToFixInlineData && str.size() <= kMaxSmallStrSize) {
       return ValueView{op, InlineData{}, str.data(), str.size()};
     }
     return ValueView{op, PtrData{}, str.data(), str.size()};
@@ -143,6 +145,7 @@ class ValueView
   template <typename I>
   static ValueView write_i32(I i)
   {
+    BATT_PANIC() << "This is currently broken!  Fix before using.";
     static_assert(std::is_same_v<I, i32>, "type of `i` must be i32");
     return ValueView{OP_WRITE, I32Data{}, i};
   }
@@ -150,6 +153,7 @@ class ValueView
   template <typename I>
   static ValueView add_i32(I i)
   {
+    BATT_PANIC() << "This is currently broken!  Fix before using.";
     static_assert(std::is_same_v<I, i32>, "type of `i` must be i32");
     return ValueView{OP_ADD_I32, I32Data{}, i};
   }
@@ -164,12 +168,14 @@ class ValueView
   explicit ValueView(OpCode op, InlineData, const char* ptr, usize size) noexcept
       : size_tag_{tag_from_op_and_size(true, op, size)}
   {
+    BATT_PANIC() << "This is currently broken!  Fix before using.";
     std::memcpy(this->data_.chars_, ptr, size);
   }
 
   explicit ValueView(OpCode op, I32Data, i32 i) noexcept
       : size_tag_{tag_from_op_and_size(true, op, sizeof(i32))}
   {
+    BATT_PANIC() << "This is currently broken!  Fix before using.";
     this->data_.i32_ = i;
   }
 
@@ -217,6 +223,7 @@ class ValueView
   const char* data() const
   {
     if (this->is_self_contained()) {
+      BATT_PANIC() << "This is currently broken!  Fix before using.";
       return this->data_.chars_;
     }
     return this->data_.ptr_;
@@ -279,6 +286,7 @@ class ValueView
   bool needs_combine() const
   {
     if (this->op() == OP_ADD_I32) {
+      BATT_PANIC() << "This is currently broken!  Fix before using.";
       return true;
     }
     return false;
