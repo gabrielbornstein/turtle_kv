@@ -171,22 +171,22 @@ Optional<ValueView> MemTable::get(const KeyView& key) noexcept
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-usize MemTable::scan_DEPRECATED(const KeyView& min_key,
-                                const Slice<std::pair<KeyView, ValueView>>& items_out) noexcept
-{
-  usize n_found = 0;
-  {
-    ART<MemTableValueEntry>::Scanner<ARTBase::Synchronized::kTrue> scanner{this->art_index_,
-                                                                           min_key};
+// usize MemTable::scan_DEPRECATED(const KeyView& min_key,
+//                                 const Slice<std::pair<KeyView, ValueView>>& items_out) noexcept
+// {
+//   usize n_found = 0;
+//   {
+//     ART<MemTableValueEntry>::Scanner<ARTBase::Synchronized::kTrue> scanner{this->art_index_,
+//                                                                            min_key};
 
-    for (; n_found < items_out.size() && !scanner.is_done(); ++n_found) {
-      items_out[n_found].first = scanner.get_key();
-      items_out[n_found].second = scanner.get_value().value_view();
-      scanner.advance();
-    }
-  }
-  return n_found;
-}
+//     for (; n_found < items_out.size() && !scanner.is_done(); ++n_found) {
+//       items_out[n_found].first = scanner.get_key();
+//       items_out[n_found].second = scanner.get_value().value_view();
+//       scanner.advance();
+//     }
+//   }
+//   return n_found;
+// }
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //

@@ -22,9 +22,6 @@ class ChangeLogReader
   // Function responsible for parsing one slot at a time.
   //
   using SlotVisitorFn =
-      // TODO: [Gabe Bornstein 3/25/26] Is block necessary? We should just need the slot data
-      // really.
-      //
       std::function<Status(ChangeLogBlock* block, EditOffset edit_offset, ConstBuffer payload)>;
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
@@ -34,18 +31,28 @@ class ChangeLogReader
 
   virtual ~ChangeLogReader() = default;
 
-  //+++++++++++-+-+--+----- --- -- -  -  -   -
-  /*
-    Use cases:
-     1. Recover MemTable(s) from a recovered log
-   */
+  //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
+  //
+  static StatusOr<std::unique_ptr<ChangeLogReader>> open(const std::filesystem::path& path) noexcept
+  {
+    BATT_ASSIGN_OK_RESULT(std::unique_ptr<ChangeLogFile> log_file, ChangeLogFile::open(path));
+
+    return {std::make_unique<ChangeLogReader>(std::move(log_file))};
+  }
+
+  //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
+  //
+  explicit ChangeLogReader(std::unique_ptr<ChangeLogFile>&& change_log) noexcept
+      : change_log_{std::move(change_log)}
+  {
+  }
 
   // +++++++++++-+-+--+----- --- -- -  -  -   -
   //
-  static Status visit_slots(ChangeLogFile& log, const SlotVisitorFn& visitor)
+  Status visit_slots(const SlotVisitorFn& visitor)
   {
     batt::StatusOr<std::vector<boost::intrusive_ptr<ChangeLogBlock>>> blocks =
-        log.read_blocks_into_vector();
+        this->change_log_->read_blocks_into_vector();
 
     if (!blocks.ok()) {
       return blocks.status();
@@ -78,13 +85,11 @@ class ChangeLogReader
       }
     }
 
+    // Call visitor on the slot with the lowest EditOffset until all slots are processed.
+    //
     while (!slot_queue.empty()) {
       const SlotEntry& current_slot = slot_queue.top();
 
-      // For now, visitor will be defined in KVStore::recover. It will have visitor call
-      // MemTable::parse_slot, and add each parsed slot to a MemTable by calling
-      // MemTable::put_recovered_slot.
-      //
       Status visit_status =
           visitor(current_slot.block.get(), current_slot.edit_offset, current_slot.payload);
 
@@ -96,8 +101,10 @@ class ChangeLogReader
     return batt::OkStatus();
   }
 
- protected:
-  ChangeLogReader() = default;
+ private:
+  /** \brief The state of the log file.
+   */
+  std::unique_ptr<ChangeLogFile> change_log_;
 };
 
 }  // namespace turtle_kv
