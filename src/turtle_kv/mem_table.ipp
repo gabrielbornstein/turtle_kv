@@ -260,7 +260,7 @@ template <typename StorageT>
 Status MemTable<StorageT>::put_recovered_slot(StorageBlockBuffer* block_buffer,
                                               EditOffset edit_offset,
                                               const KeyView& key,
-                                              const ValueView& value)  // ?
+                                              const ValueView& value)
 {
   this->attach_block_buffer(block_buffer);
 
