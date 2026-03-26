@@ -22,7 +22,7 @@
 
 namespace turtle_kv {
 
-class MemTable;
+class MemTableBase;
 
 //=#=#==#==#===============+=+=+=+=++=++++++++++++++-++-+--+-+----+---------------
 
@@ -39,7 +39,7 @@ class DeltaBatch
   /** \brief Constructs a new DeltaBatch.
    */
   explicit DeltaBatch(DeltaBatchId batch_id,
-                      boost::intrusive_ptr<MemTable>&& mem_table,
+                      boost::intrusive_ptr<MemTableBase>&& mem_table,
                       ResultSet&& result_set) noexcept;
 
   /** \brief DeltaBatch objects are not copy-/move-constructible.
@@ -97,7 +97,7 @@ class DeltaBatch
 
   /** \brief
    */
-  const MemTable& mem_table() const noexcept
+  const MemTableBase& mem_table() const noexcept
   {
     return *this->mem_table_;
   }
@@ -120,7 +120,7 @@ class DeltaBatch
  private:
   const DeltaBatchId batch_id_;
 
-  boost::intrusive_ptr<MemTable> mem_table_;
+  boost::intrusive_ptr<MemTableBase> mem_table_;
 
   /** \brief The merged/compacted edits from the log.
    */

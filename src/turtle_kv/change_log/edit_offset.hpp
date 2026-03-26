@@ -6,6 +6,8 @@
 #include <batteries/checked_cast.hpp>
 #include <batteries/utility.hpp>
 
+#include <boost/intrusive_ptr.hpp>
+
 #include <ostream>
 
 namespace turtle_kv {
@@ -138,5 +140,39 @@ inline EditOffset operator+(EditOffset left, SlotEditOffsetDelta right)
 {
   return EditOffset{left.value() + right.value()};
 }
+
+//=#=#==#==#===============+=+=+=+=++=++++++++++++++-++-+--+-+----+---------------
+
+inline EditOffset get_edit_offset_upper_bound(EditOffset edit_offset)
+{
+  return edit_offset;
+}
+
+/** \brief Returns the editoffset upper bound of the object pointed to by ptr.
+ */
+template <typename T>
+inline EditOffset get_edit_offset_upper_bound(const std::unique_ptr<T>& ptr)
+{
+  return get_edit_offset_upper_bound(*ptr);
+}
+
+/** \brief Returns the edit offset upper bound of the object pointed to by ptr.
+ */
+template <typename T>
+inline EditOffset get_edit_offset_upper_bound(const boost::intrusive_ptr<T>& ptr)
+{
+  return get_edit_offset_upper_bound(*ptr);
+}
+
+/** \brief Comparison function (i.e. "less-than") that compares objects by their edit_offset upper
+ * bound.
+ */
+struct OrderByEditOffsetUpperBound {
+  template <typename L, typename R>
+  bool operator()(const L& l, const R& r) const
+  {
+    return get_edit_offset_upper_bound(l) < get_edit_offset_upper_bound(r);
+  }
+};
 
 }  // namespace turtle_kv

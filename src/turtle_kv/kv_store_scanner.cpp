@@ -134,7 +134,7 @@ Status KVStoreScanner::start()
       for (usize delta_i = n_deltas; delta_i > 0;) {
         --delta_i;
 
-        MemTable& delta_mem_table = *this->pinned_state_->deltas_[delta_i];
+        MemTableImpl& delta_mem_table = *this->pinned_state_->deltas_[delta_i];
 
         // Delta case : single ART index for keys and values
         //

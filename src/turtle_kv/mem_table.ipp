@@ -6,6 +6,9 @@
 //
 //+++++++++++-+-+--+----- --- -- -  -  -   -
 
+#pragma once
+#define TURTLE_KV_MEM_TABLE_IPP
+
 #include <turtle_kv/mem_table.hpp>
 //
 
@@ -24,14 +27,15 @@ namespace turtle_kv {
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-/*explicit*/ MemTable::MemTable(llfs::PageCache& page_cache,
-                                const ChangeLogWriter& log_writer,
-                                KVStoreMetrics& metrics,
-                                EditOffset edit_offset_lower_bound,
-                                usize max_bytes_per_batch,
-                                usize max_batch_count) noexcept
+template <typename StorageT>
+/*explicit*/ MemTable<StorageT>::MemTable(llfs::PageCache& page_cache,
+                                          const StorageWriter& storage_writer,
+                                          KVStoreMetrics& metrics,
+                                          EditOffset edit_offset_lower_bound,
+                                          usize max_bytes_per_batch,
+                                          usize max_batch_count) noexcept
     : page_cache_{page_cache}
-    , log_writer_{log_writer}
+    , storage_writer_{storage_writer}
     , metrics_{metrics}
     , edit_offset_lower_bound_{edit_offset_lower_bound}
     , max_bytes_per_batch_{BATT_CHECKED_CAST(i64, max_bytes_per_batch)}
@@ -40,7 +44,7 @@ namespace turtle_kv {
     , art_index_{this->art_metrics_}
     , max_byte_size_{this->calculate_max_byte_size()}
     , block_list_mutex_{}
-    , blocks_{}
+    , block_buffers_{}
 {
   this->metrics_.mem_table_alloc.add(1);
   this->metrics_.mem_table_count_stats.update(this->metrics_.mem_table_alloc.get() -
@@ -49,7 +53,8 @@ namespace turtle_kv {
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-MemTable::~MemTable() noexcept
+template <typename StorageT>
+MemTable<StorageT>::~MemTable() noexcept
 {
   // Try to detect double-deletions.
   //
@@ -57,7 +62,7 @@ MemTable::~MemTable() noexcept
 
   this->metrics_.mem_table_log_bytes_freed.add(this->block_size_total_);
 
-  for (ChangeLogWriter::BlockBuffer* buffer : this->blocks_) {
+  for (StorageBlockBuffer* buffer : this->block_buffers_) {
     buffer->remove_ref(1);
   }
 
@@ -68,9 +73,10 @@ MemTable::~MemTable() noexcept
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-Status MemTable::put(ChangeLogWriter::Context& context,
-                     const KeyView& key,
-                     const ValueView& value) noexcept
+template <typename StorageT>
+Status MemTable<StorageT>::put(StorageWriterContext& storage_writer_context,
+                               const KeyView& key,
+                               const ValueView& value) noexcept
 {
   // First, make sure the key/value pair will fit in this MemTable (and make sure the MemTable
   // hasn't been finalized).
@@ -86,10 +92,10 @@ Status MemTable::put(ChangeLogWriter::Context& context,
     this->commit_edit(item_size);
   });
 
-  StorageImpl storage{*this, context, OkStatus()};
+  PerOpStorageContext op_storage_context{*this, storage_writer_context};
   {
-    MemTableValueEntryInserter<StorageImpl> inserter{
-        storage,
+    MemTableValueEntryInserter<PerOpStorageContext> inserter{
+        op_storage_context,
         key,
         value,
     };
@@ -97,14 +103,15 @@ Status MemTable::put(ChangeLogWriter::Context& context,
     BATT_REQUIRE_OK(this->art_index_.insert(key, inserter));
   }
 
-  return storage.status;
+  return OkStatus();
   //
   // ~on_scope_exit calls commit_edit.
 }
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-Status MemTable::prepare_edit(i64 packed_edit_size)
+template <typename StorageT>
+Status MemTable<StorageT>::prepare_edit(i64 packed_edit_size)
 {
   // Update the maximum item size.  We track this so that we can make a conservative estimate of how
   // much space might be wasted per batch, once the MemTable is finalized/compacted.
@@ -149,7 +156,8 @@ Status MemTable::prepare_edit(i64 packed_edit_size)
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-void MemTable::commit_edit(i64 packed_edit_size)
+template <typename StorageT>
+void MemTable<StorageT>::commit_edit(i64 packed_edit_size)
 {
   const i64 prior_value = this->committed_bytes_total_.fetch_add(packed_edit_size);
   if ((prior_value & MemTable::kFinalizedMask) != 0) {
@@ -159,7 +167,8 @@ void MemTable::commit_edit(i64 packed_edit_size)
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-Optional<ValueView> MemTable::get(const KeyView& key) noexcept
+template <typename StorageT>
+Optional<ValueView> MemTable<StorageT>::get(const KeyView& key) noexcept
 {
   Optional<MemTableValueEntry> entry = this->art_index_.find(key);
   if (!entry) {
@@ -171,26 +180,8 @@ Optional<ValueView> MemTable::get(const KeyView& key) noexcept
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-usize MemTable::scan_DEPRECATED(const KeyView& min_key,
-                                const Slice<std::pair<KeyView, ValueView>>& items_out) noexcept
-{
-  usize n_found = 0;
-  {
-    ART<MemTableValueEntry>::Scanner<ARTBase::Synchronized::kTrue> scanner{this->art_index_,
-                                                                           min_key};
-
-    for (; n_found < items_out.size() && !scanner.is_done(); ++n_found) {
-      items_out[n_found].first = scanner.get_key();
-      items_out[n_found].second = scanner.get_value().value_view();
-      scanner.advance();
-    }
-  }
-  return n_found;
-}
-
-//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
-//
-Optional<ValueView> MemTable::finalized_get(const KeyView& key) noexcept
+template <typename StorageT>
+Optional<ValueView> MemTable<StorageT>::finalized_get(const KeyView& key) noexcept
 {
   const MemTableValueEntry* entry = this->art_index_.unsynchronized_find(key);
   if (!entry) {
@@ -201,7 +192,8 @@ Optional<ValueView> MemTable::finalized_get(const KeyView& key) noexcept
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-bool MemTable::finalize() noexcept
+template <typename StorageT>
+bool MemTable<StorageT>::finalize() noexcept
 {
   const i64 prior_committed = this->committed_bytes_total_.fetch_or(MemTable::kFinalizedMask);
   const i64 prior_prepared = this->prepared_bytes_total_.fetch_or(MemTable::kFinalizedMask);
@@ -241,7 +233,8 @@ bool MemTable::finalize() noexcept
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-void MemTable::await_finalize() noexcept
+template <typename StorageT>
+void MemTable<StorageT>::await_finalize() noexcept
 {
   for (;;) {
     const EditOffset observed_upper_bound{this->edit_offset_upper_bound_.load()};
@@ -254,7 +247,8 @@ void MemTable::await_finalize() noexcept
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-bool MemTable::is_finalized() const
+template <typename StorageT>
+bool MemTable<StorageT>::is_finalized() const
 {
   return (this->committed_bytes_total_.load() & MemTable::kFinalizedMask) != 0 &&
          this->edit_offset_lower_bound_ <= EditOffset{this->edit_offset_upper_bound_.load()};
@@ -262,12 +256,13 @@ bool MemTable::is_finalized() const
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-Status MemTable::put_recovered_slot(ChangeLogBlock* block,
-                                    EditOffset edit_offset,
-                                    const KeyView& key,
-                                    const ValueView& value)  // ?
+template <typename StorageT>
+Status MemTable<StorageT>::put_recovered_slot(StorageBlockBuffer* block_buffer,
+                                              EditOffset edit_offset,
+                                              const KeyView& key,
+                                              const ValueView& value)  // ?
 {
-  this->attach_block_buffer(block);
+  this->attach_block_buffer(block_buffer);
 
   MemTableRecoveryInserter inserter{
       edit_offset,
@@ -282,17 +277,18 @@ Status MemTable::put_recovered_slot(ChangeLogBlock* block,
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-void MemTable::attach_block_buffer(ChangeLogBlock* buffer)
+template <typename StorageT>
+void MemTable<StorageT>::attach_block_buffer(StorageBlockBuffer* block_buffer)
 {
-  if (buffer->ref_count() == 1) {
-    buffer->add_ref(1);
-    this->metrics_.mem_table_log_bytes_allocated.add(buffer->block_size());
+  if (block_buffer->ref_count() == 1) {
+    block_buffer->add_ref(1);
+    this->metrics_.mem_table_log_bytes_allocated.add(block_buffer->block_size());
     i64 cache_alloc_delta = 0;
     {
       absl::MutexLock lock{&this->block_list_mutex_};
 
-      this->block_size_total_ += buffer->block_size();
-      this->blocks_.emplace_back(buffer);
+      this->block_size_total_ += block_buffer->block_size();
+      this->block_buffers_.emplace_back(block_buffer);
 
       cache_alloc_delta = this->update_external_cache_alloc();
     }
@@ -302,7 +298,8 @@ void MemTable::attach_block_buffer(ChangeLogBlock* buffer)
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-i64 MemTable::update_external_cache_alloc()
+template <typename StorageT>
+i64 MemTable<StorageT>::update_external_cache_alloc()
 {
   // The number of bytes to claim (if positive) or release (negative) as external allocation
   // from the PageCache; the return value of this function.
@@ -312,7 +309,8 @@ i64 MemTable::update_external_cache_alloc()
   ++this->since_last_cache_alloc_update_;
 
   if (!this->cache_alloc_in_progress_ &&
-      this->since_last_cache_alloc_update_ >= MemTable::kBlocksPerExternalCacheAllocUpdate) {
+      this->since_last_cache_alloc_update_ >=
+          MemTable<StorageT>::kBlocksPerExternalCacheAllocUpdate) {
     this->cache_alloc_in_progress_ = true;
     this->since_last_cache_alloc_update_ = 0;
 
@@ -340,7 +338,8 @@ i64 MemTable::update_external_cache_alloc()
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-void MemTable::handle_external_cache_alloc(i64 cache_alloc_delta)
+template <typename StorageT>
+void MemTable<StorageT>::handle_external_cache_alloc(i64 cache_alloc_delta)
 {
   if (cache_alloc_delta > 0) {
     const i64 observed_current_size = this->prepared_bytes_total_.load();
@@ -390,7 +389,8 @@ void MemTable::handle_external_cache_alloc(i64 cache_alloc_delta)
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-i64 MemTable::calculate_max_byte_size() const
+template <typename StorageT>
+i64 MemTable<StorageT>::calculate_max_byte_size() const
 {
   const i64 max_wasted_per_batch = this->max_item_size_.load() - 1;
   const i64 min_full_batch_size = this->max_bytes_per_batch_ - max_wasted_per_batch;
@@ -398,12 +398,13 @@ i64 MemTable::calculate_max_byte_size() const
 }
 
 //=#=#==#==#===============+=+=+=+=++=++++++++++++++-++-+--+-+----+---------------
-// class MemTable::BatchCompactor
+// class MemTable<StorageT>::BatchCompactor
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-/*explicit*/ MemTable::BatchCompactor::BatchCompactor(MemTable& mem_table,
-                                                      usize byte_size_limit) noexcept
+template <typename StorageT>
+/*explicit*/ MemTable<StorageT>::BatchCompactor::BatchCompactor(MemTable& mem_table,
+                                                                usize byte_size_limit) noexcept
     : mem_table_{mem_table}
     , byte_size_limit_{byte_size_limit}
     , batch_count_{0}
@@ -415,15 +416,17 @@ i64 MemTable::calculate_max_byte_size() const
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-bool MemTable::BatchCompactor::has_next() const
+template <typename StorageT>
+bool MemTable<StorageT>::BatchCompactor::has_next() const
 {
   return !this->scanner_.is_done();
 }
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
+template <typename StorageT>
 MergeCompactor::ResultSet</*decay_to_items=*/false>
-MemTable::BatchCompactor::consume_next() noexcept
+MemTable<StorageT>::BatchCompactor::consume_next() noexcept
 {
   MergeCompactor::ResultSet</*decay_to_items=*/false> compacted_edits;
 

@@ -9,13 +9,16 @@
 #pragma once
 #define TURTLE_KV_MEM_TABLE_HPP
 
-#include <turtle_kv/change_log/change_log_writer.hpp>
+#include <turtle_kv/mem_table/mem_table_index.hpp>
+#include <turtle_kv/mem_table/mem_table_storage_impl.hpp>
+
 #include <turtle_kv/concurrent_hash_index.hpp>
 #include <turtle_kv/delta_batch_id.hpp>
 #include <turtle_kv/kv_store_metrics.hpp>
 #include <turtle_kv/mem_table_entry.hpp>
 #include <turtle_kv/scan_metrics.hpp>
 
+#include <turtle_kv/change_log/change_log_writer.hpp>
 #include <turtle_kv/change_log/edit_offset.hpp>
 
 #include <turtle_kv/core/edit_view.hpp>
@@ -58,48 +61,39 @@ namespace {
 BATT_STATIC_ASSERT_TYPE_EQ(KeyView, std::string_view);
 }
 
-//=#=#==#==#===============+=+=+=+=++=++++++++++++++-++-+--+-+----+---------------
-// TODO [tastolfi 2026-03-25]
-//
-template <typename T>
-concept MemTableIndex = requires(T index) {
-  { &index } -> std::same_as<T*>;
-};
-
-//=#=#==#==#===============+=+=+=+=++=++++++++++++++-++-+--+-+----+---------------
-// TODO [tastolfi 2026-03-25]
-//
-template <typename T>
-concept MemTableLogStorage = requires(T log) {
-  { &log } -> std::same_as<T*>;
-};
-
-//=#=#==#==#===============+=+=+=+=++=++++++++++++++-++-+--+-+----+---------------
-// TODO [tastolfi 2026-03-25]
-//
-template <typename T>
-concept MemTableCacheAllocProxy = requires(T cache) {
-  { &cache } -> std::same_as<T*>;
-};
-
-//=#=#==#==#===============+=+=+=+=++=++++++++++++++-++-+--+-+----+---------------
-//
-template <typename IndexImplT, typename LogStorageT, typename CacheAllocProxyT>
-class BasicMemTable
-    : public batt::RefCounted<BasicMemTable<IndexImplT, LogStorageT, CacheAllocProxyT>>
+class MemTableBase : public batt::RefCounted<MemTableBase>
 {
+ public:
+  MemTableBase(const MemTableBase&) = delete;
+  MemTableBase& operator=(const MemTableBase&) = delete;
+
+  virtual ~MemTableBase() = default;
+
+ protected:
+  MemTableBase() = default;
 };
 
 //=#=#==#==#===============+=+=+=+=++=++++++++++++++-++-+--+-+----+---------------
 //
 /** \brief An in-memory index for recent key/value updates.
  */
-class MemTable : public batt::RefCounted<MemTable>
+template <typename StorageT /*, typename IndexT*/>
+class MemTable : public MemTableBase
 {
  public:
   using Self = MemTable;
 
+  using Storage = StorageT;
+  using StorageWriter = typename Storage::Writer;
+  using StorageWriterContext = typename Storage::WriterContext;
+  using StorageBlockBuffer = typename Storage::BlockBuffer;
+
   //+++++++++++-+-+--+----- --- -- -  -  -   -
+
+  /** \brief A temporary object that captures the per-thread storage context needed to perform a
+   * `put` operation.
+   */
+  class PerOpStorageContext;
 
   /** \brief Produces a series of compacted batches from a finalized MemTable.
    */
@@ -135,7 +129,7 @@ class MemTable : public batt::RefCounted<MemTable>
   //+++++++++++-+-+--+----- --- -- -  -  -   -
 
   explicit MemTable(llfs::PageCache& page_cache,
-                    const ChangeLogWriter& log_writer,
+                    const StorageWriter& storage_writer,
                     KVStoreMetrics& metrics,
                     EditOffset edit_offset_lower_bound,
                     usize max_bytes_per_batch,
@@ -156,7 +150,7 @@ class MemTable : public batt::RefCounted<MemTable>
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
 
-  Status put_recovered_slot(ChangeLogBlock* block,
+  Status put_recovered_slot(StorageBlockBuffer* block,
                             EditOffset edit_offset,
                             const KeyView& key,
                             const ValueView& value);
@@ -164,9 +158,7 @@ class MemTable : public batt::RefCounted<MemTable>
   /** \brief Applies a single key/value update to the MemTable, recording the update in the
    * change log via the passed context.
    */
-  Status put(ChangeLogWriter::Context& context,
-             const KeyView& key,
-             const ValueView& value) noexcept;
+  Status put(StorageWriterContext& context, const KeyView& key, const ValueView& value) noexcept;
 
   /** \brief Returns the value currently bound to the passed key, if present; otherwise, returns
    * None.
@@ -246,16 +238,6 @@ class MemTable : public batt::RefCounted<MemTable>
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
  private:
-  struct StorageImpl {
-    MemTable& mem_table;
-    ChangeLogWriter::Context& context;
-    Status status;
-
-    template <typename SerializeFn>
-      requires(std::invocable<SerializeFn, MutableBuffer, EditOffset>)
-    void store_data(usize n_bytes, SerializeFn&& serialize_fn) noexcept;
-  };
-
   //+++++++++++-+-+--+----- --- -- -  -  -   -
 
   i64 calculate_max_byte_size() const;
@@ -264,7 +246,7 @@ class MemTable : public batt::RefCounted<MemTable>
 
   void commit_edit(i64 packed_edit_size);
 
-  void attach_block_buffer(ChangeLogBlock* block);
+  void attach_block_buffer(StorageBlockBuffer* block_buffer);
 
   /** \brief Returns the number of bytes to claim (if positive) or release (negative)
    * as external allocation from the PageCache.
@@ -285,7 +267,7 @@ class MemTable : public batt::RefCounted<MemTable>
 
   llfs::PageCache& page_cache_;
 
-  const ChangeLogWriter& log_writer_;
+  const StorageWriter& storage_writer_;
 
   KVStoreMetrics& metrics_;
 
@@ -317,7 +299,7 @@ class MemTable : public batt::RefCounted<MemTable>
 
   absl::Mutex block_list_mutex_;
 
-  batt::SmallVec<ChangeLogBlock*, MemTable::kBlockListPreAllocSize> blocks_;
+  batt::SmallVec<StorageBlockBuffer*, MemTable::kBlockListPreAllocSize> block_buffers_;
 
   // The total size (in bytes) of all change log block buffers owned by this MemTable.
   //
@@ -350,30 +332,44 @@ class MemTable : public batt::RefCounted<MemTable>
 
 // #=##=##=#==#=#==#===#+==#+==========+==+=+=+=+=+=++=+++=+++++=-++++=-+++++++++++
 
-//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
-//
-template <typename SerializeFn>
-  requires(std::invocable<SerializeFn, MutableBuffer, EditOffset>)
-void MemTable::StorageImpl::store_data(usize n_bytes, SerializeFn&& serialize_fn) noexcept
+/** \brief A temporary object that captures the per-thread storage context needed to perform a
+ * `put` operation.
+ */
+template <typename StorageT>
+class MemTable<StorageT>::PerOpStorageContext
 {
-  usize n_bytes_plus_offset = n_bytes + sizeof(big_u32);
-  this->status = this->context.append_slot(
-      /*min_edit_offset_lower_bound=*/this->mem_table.edit_offset_lower_bound_,
-      n_bytes_plus_offset,
-      [&](ChangeLogWriter::BlockBuffer* buffer, MutableBuffer dst, EditOffset slot_edit_offset) {
-        MemTable& mem_table = this->mem_table;
+ public:
+  explicit PerOpStorageContext(MemTable& mem_table,
+                               StorageWriterContext& storage_writer_context) noexcept
+      : mem_table_{mem_table}
+      , storage_writer_context_{storage_writer_context}
+  {
+  }
 
-        mem_table.attach_block_buffer(buffer);
+  template <typename SerializeFn>
+    requires(std::invocable<SerializeFn, MutableBuffer, EditOffset>)
+  Status store_data(usize n_bytes, SerializeFn&& serialize_fn) noexcept
+  {
+    return this->storage_writer_context_.append_slot(
+        /*min_edit_offset_lower_bound=*/this->mem_table_.edit_offset_lower_bound_,
+        n_bytes,
+        [&](StorageBlockBuffer* buffer, MutableBuffer dst, EditOffset slot_edit_offset) {
+          this->mem_table_.attach_block_buffer(buffer);
+          serialize_fn(dst, slot_edit_offset);
+        });
+  }
 
-        serialize_fn(dst, slot_edit_offset);
-      });
-}
+ private:
+  MemTable& mem_table_;
+  StorageWriterContext& storage_writer_context_;
+};
 
 /** \brief Returns the greatest ordered DeltaBatchId included in the passed MemTable.
  */
-inline DeltaBatchId get_batch_upper_bound(const MemTable& mem_table)
+template <typename StorageT>
+inline EditOffset get_edit_offset_upper_bound(const MemTable<StorageT>& mem_table)
 {
-  return DeltaBatchId::min_value();  // TODO [tastolfi 2026-03-20] this is broken!
+  return mem_table.edit_offset_upper_bound();
 }
 
 // #=##=##=#==#=#==#===#+==#+==========+==+=+=+=+=+=++=+++=+++++=-++++=-+++++++++++
@@ -382,7 +378,8 @@ inline DeltaBatchId get_batch_upper_bound(const MemTable& mem_table)
 /** \brief Produces a series of compacted key/value runs, each of which is limited to a maximum
  * size, and can be applied to a checkpoint tree using batch update.
  */
-class MemTable::BatchCompactor
+template <typename StorageT>
+class MemTable<StorageT>::BatchCompactor
 {
  public:
   using Self = BatchCompactor;
@@ -417,5 +414,7 @@ class MemTable::BatchCompactor
 
   ARTScanner scanner_;
 };
+
+using MemTableImpl = MemTable<MemTableChangeLogStorage>;
 
 }  // namespace turtle_kv

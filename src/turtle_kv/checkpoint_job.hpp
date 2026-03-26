@@ -59,7 +59,7 @@ struct CheckpointJob {
 
   batt::Promise<llfs::SlotRange> promise;
 
-  DeltaBatchId batch_id_upper_bound = DeltaBatchId::min_value();
+  EditOffset edit_offset_upper_bound;
 
   usize batch_count = 0;
 };

@@ -9,6 +9,8 @@
 #pragma once
 #define TURTLE_KV_MEM_TABLE_ENTRY_HPP
 
+#include <turtle_kv/mem_table/mem_table_entry_inserter.hpp>
+
 #include <turtle_kv/change_log/edit_offset.hpp>
 
 #include <turtle_kv/core/key_view.hpp>
@@ -166,6 +168,10 @@ struct MemTableValueEntryInserter {
 
     return OkStatus();
   }
+
+  //+++++++++++-+-+--+----- --- -- -  -  -   -
+
+  static_assert(MemTableEntryInserter<MemTableValueEntryInserter>);
 };
 
 struct MemTableRecoveryInserter {
@@ -206,6 +212,10 @@ struct MemTableRecoveryInserter {
 
     return OkStatus();
   }
+
+  //+++++++++++-+-+--+----- --- -- -  -  -   -
+
+  static_assert(MemTableEntryInserter<MemTableRecoveryInserter>);
 };
 
 }  // namespace turtle_kv

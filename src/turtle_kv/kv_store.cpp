@@ -517,11 +517,11 @@ void KVStore::join()
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-boost::intrusive_ptr<MemTable> KVStore::create_mem_table(EditOffset edit_offset_lower_bound)
+boost::intrusive_ptr<MemTableImpl> KVStore::create_mem_table(EditOffset edit_offset_lower_bound)
 {
   const usize max_batches_per_mem_table = this->get_checkpoint_distance();
 
-  boost::intrusive_ptr<MemTable> mem_table{new MemTable{
+  boost::intrusive_ptr<MemTableImpl> mem_table{new MemTableImpl{
       this->page_cache(),
       *this->log_writer_,
       this->metrics_,
@@ -553,7 +553,7 @@ Status KVStore::put(const KeyView& key, const ValueView& value) noexcept /*overr
     boost::intrusive_ptr<const State> pinned_state{observed_state};
     BATT_CHECK_GT(observed_state->use_count(), 1);
 
-    MemTable* const observed_mem_table = observed_state->mem_table_.get();
+    MemTableImpl* const observed_mem_table = observed_state->mem_table_.get();
 
     ChangeLogWriter::Context& log_writer_context = this->per_thread_.get(this).log_writer_context(
         observed_mem_table->edit_offset_lower_bound());
@@ -619,7 +619,7 @@ Status KVStore::force_checkpoint()
 
   const State* const observed_state = this->state_.load();
   boost::intrusive_ptr<const State> pinned_state{observed_state};
-  boost::intrusive_ptr<MemTable> pinned_mem_table = observed_state->mem_table_;
+  boost::intrusive_ptr<MemTableImpl> pinned_mem_table = observed_state->mem_table_;
   BATT_CHECK_GT(pinned_state->use_count(), 1);
 
   BATT_REQUIRE_OK(this->finalize_mem_table(observed_state));
@@ -706,7 +706,7 @@ StatusOr<ValueView> KVStore::get(const KeyView& key) noexcept /*override*/
   const usize observed_deltas_size = observed_state->deltas_.size();
   for (usize i = observed_deltas_size; i != 0;) {
     --i;
-    const boost::intrusive_ptr<MemTable>& delta = observed_state->deltas_[i];
+    const boost::intrusive_ptr<MemTableImpl>& delta = observed_state->deltas_[i];
 
     Optional<ValueView> delta_value =
         TURTLE_KV_COLLECT_LATENCY_SAMPLE(batt::Every2ToTheConst<18>{},
@@ -817,7 +817,7 @@ Status KVStore::remove(const KeyView& key) noexcept /*override*/
 //
 Status KVStore::finalize_mem_table(const State* observed_state)
 {
-  boost::intrusive_ptr<MemTable> old_mem_table = observed_state->mem_table_;
+  boost::intrusive_ptr<MemTableImpl> old_mem_table = observed_state->mem_table_;
   const bool newly_finalized = old_mem_table->finalize();
   const EditOffset current_edit_offset = old_mem_table->edit_offset_upper_bound();
 
@@ -896,7 +896,7 @@ Status KVStore::reset_active_mem_table(EditOffset current_edit_offset, const Sta
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-Status KVStore::hand_off_finalized_mem_table(boost::intrusive_ptr<MemTable>&& old_mem_table)
+Status KVStore::hand_off_finalized_mem_table(boost::intrusive_ptr<MemTableImpl>&& old_mem_table)
 {
   if (this->runtime_options_.use_threaded_checkpoint_pipeline) {
     BATT_REQUIRE_OK(this->push_mem_table_to_channel(std::move(old_mem_table)));
@@ -935,7 +935,7 @@ void KVStore::wait_for_new_mem_table(EditOffset target_edit_offset)
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-Status KVStore::push_mem_table_to_channel(boost::intrusive_ptr<MemTable>&& mem_table)
+Status KVStore::push_mem_table_to_channel(boost::intrusive_ptr<MemTableImpl>&& mem_table)
 {
   BATT_CHECK(mem_table->is_finalized());
 
@@ -1025,7 +1025,7 @@ void KVStore::mem_table_batch_scanner_thread_main()
 {
   Status status = [this]() -> Status {
     for (;;) {
-      StatusOr<boost::intrusive_ptr<MemTable>> mem_table =
+      StatusOr<boost::intrusive_ptr<MemTableImpl>> mem_table =
           this->finalized_mem_table_channel_.read();
 
       BATT_REQUIRE_OK(mem_table);
@@ -1054,12 +1054,13 @@ void KVStore::mem_table_batch_scanner_thread_main()
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
 template <typename Fn>
-requires std::invocable<Fn, std::unique_ptr<DeltaBatch>> Status
-KVStore::scan_mem_table_to_build_batches(boost::intrusive_ptr<MemTable>&& mem_table,
-                                         Fn&& consume_fn)
+  requires std::invocable<Fn, std::unique_ptr<DeltaBatch>>
+Status KVStore::scan_mem_table_to_build_batches(boost::intrusive_ptr<MemTableImpl>&& mem_table,
+                                                Fn&& consume_fn)
 {
-  MemTable::BatchCompactor batch_compactor{*mem_table,
-                                           /*byte_size_limit=*/this->tree_options_.flush_size()};
+  MemTableImpl::BatchCompactor batch_compactor{
+      *mem_table,
+      /*byte_size_limit=*/this->tree_options_.flush_size()};
   u64 batch_index = 0;
   bool has_next = batch_compactor.has_next();
 
@@ -1311,7 +1312,7 @@ Status KVStore::commit_checkpoint(std::unique_ptr<CheckpointJob>&& checkpoint_jo
         auto iter = std::lower_bound(old_state->deltas_.begin(),
                                      old_state->deltas_.end(),
                                      checkpoint_job,
-                                     OrderByBatchUpperBound{});
+                                     OrderByEditOffsetUpperBound{});
 
         // Copy over references to delta MemTables _newer_ than the checkpoint.
         //

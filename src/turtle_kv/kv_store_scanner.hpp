@@ -95,7 +95,7 @@ class KVStoreScanner
   //
   template <ARTBase::Synchronized kSync>
   struct MemTableScanState {
-    MemTable* mem_table_;
+    MemTableImpl* mem_table_;
     ART<void>::Scanner<kSync>* art_scanner_;
   };
 

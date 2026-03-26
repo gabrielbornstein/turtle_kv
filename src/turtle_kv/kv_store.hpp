@@ -185,8 +185,8 @@ class KVStore : public Table
  private:
   struct State : batt::RefCounted<State> {
     mutable Optional<i64> last_epoch_;
-    boost::intrusive_ptr<MemTable> mem_table_;
-    std::vector<boost::intrusive_ptr<MemTable>> deltas_;
+    boost::intrusive_ptr<MemTableImpl> mem_table_;
+    std::vector<boost::intrusive_ptr<MemTableImpl>> deltas_;
     Checkpoint base_checkpoint_;
   };
 
@@ -206,7 +206,7 @@ class KVStore : public Table
   /** \brief Creates and returns a new MemTable, with current checkpoint distance settings and the
    * specified EditOffset lower bound.
    */
-  boost::intrusive_ptr<MemTable> create_mem_table(EditOffset edit_offset_lower_bound);
+  boost::intrusive_ptr<MemTableImpl> create_mem_table(EditOffset edit_offset_lower_bound);
 
   /** \brief Finalizes the MemTable in `observed_state`, creating a new MemTable to replace it (or
    * waiting for another thread to do so), and finally handing off the old MemTable to the
@@ -217,7 +217,7 @@ class KVStore : public Table
   /** \brief Waits for the passed MemTable to be the next one that should be pushed to
    * `this->finalized_mem_table_channel_`, and then pushes it to the channel.
    */
-  Status push_mem_table_to_channel(boost::intrusive_ptr<MemTable>&& mem_table);
+  Status push_mem_table_to_channel(boost::intrusive_ptr<MemTableImpl>&& mem_table);
 
   /** \brief Creates a new MemTable (with the passed EditOffset as its lower bound) and swaps it in
    * to the active state.
@@ -230,15 +230,16 @@ class KVStore : public Table
    *
    * This should be called only after `reset_active_mem_table` has installed a new MemTable.
    */
-  Status hand_off_finalized_mem_table(boost::intrusive_ptr<MemTable>&& old_mem_table);
+  Status hand_off_finalized_mem_table(boost::intrusive_ptr<MemTableImpl>&& old_mem_table);
 
   void wait_for_new_mem_table(EditOffset target_edit_offset);
 
   void info_task_main() noexcept;
 
   template <typename Fn>
-  requires std::invocable<Fn, std::unique_ptr<DeltaBatch>> Status
-  scan_mem_table_to_build_batches(boost::intrusive_ptr<MemTable>&& mem_table, Fn&& consume_fn);
+    requires std::invocable<Fn, std::unique_ptr<DeltaBatch>>
+  Status scan_mem_table_to_build_batches(boost::intrusive_ptr<MemTableImpl>&& mem_table,
+                                         Fn&& consume_fn);
 
   void mem_table_batch_scanner_thread_main();
 
@@ -315,9 +316,9 @@ class KVStore : public Table
   std::atomic<i64> next_mem_table_edit_offset_{
       this->state_.load()->mem_table_->edit_offset_lower_bound().value()};
 
-  PipelineChannel<boost::intrusive_ptr<MemTable>> finalized_mem_table_channel_;
+  PipelineChannel<boost::intrusive_ptr<MemTableImpl>> finalized_mem_table_channel_;
 
-  Slice<PipelineChannel<boost::intrusive_ptr<MemTable>>> memtable_compact_channels_;
+  Slice<PipelineChannel<boost::intrusive_ptr<MemTableImpl>>> memtable_compact_channels_;
 
   //----- --- -- -  -  -   -
   // Checkpoint Update State.
