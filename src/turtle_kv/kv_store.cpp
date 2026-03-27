@@ -1020,17 +1020,18 @@ using CheckpointEvent = llfs::PackedVariant<turtle_kv::PackedCheckpoint>;
 // mem_table, and updates KVStore.state_ to reflect the newly recovered checkpoint and mem_table.
 //
 batt::StatusOr<boost::intrusive_ptr<turtle_kv::MemTable>> KVStore::recover_latest_mem_table(
-    turtle_kv::ChangeLogFile& log)
+    const std::filesystem::path& path)
 {
+  BATT_ASSIGN_OK_RESULT(std::unique_ptr<ChangeLogReader> log, ChangeLogReader::open(path));
+
   boost::intrusive_ptr<MemTable> mem_table = nullptr;
 
   bool first_slot = true;
 
-  batt::Status status = ChangeLogReader::visit_slots(
-      log,
-      [this, &mem_table, &first_slot](ChangeLogBlock* block,
-                                      EditOffset edit_offset,
-                                      ConstBuffer payload) -> batt::Status {
+  batt::Status status =
+      log->visit_slots([this, &mem_table, &first_slot](ChangeLogBlock* block,
+                                                       EditOffset edit_offset,
+                                                       ConstBuffer payload) -> batt::Status {
         if (first_slot) {
           mem_table = this->create_mem_table(edit_offset);
           first_slot = false;

@@ -164,7 +164,7 @@ class KVStore : public Table
       llfs::Volume& checkpoint_log_volume);
 
   batt::StatusOr<boost::intrusive_ptr<MemTable>> recover_latest_mem_table(
-      turtle_kv::ChangeLogFile& log);
+      const std::filesystem::path& path);
 
   usize get_checkpoint_distance() const noexcept
   {
