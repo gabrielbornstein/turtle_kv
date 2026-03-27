@@ -9,10 +9,8 @@
 #pragma once
 #define TURTLE_KV_MEM_TABLE_IPP
 
-#include <turtle_kv/mem_table.hpp>
+#include <turtle_kv/mem_table/mem_table.hpp>
 //
-
-#include <turtle_kv/on_page_cache_overcommit.hpp>
 
 #include <turtle_kv/import/env.hpp>
 
@@ -27,14 +25,15 @@ namespace turtle_kv {
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-template <typename StorageT>
-/*explicit*/ MemTable<StorageT>::MemTable(llfs::PageCache& page_cache,
-                                          const StorageWriter& storage_writer,
-                                          KVStoreMetrics& metrics,
-                                          EditOffset edit_offset_lower_bound,
-                                          usize max_bytes_per_batch,
-                                          usize max_batch_count) noexcept
-    : page_cache_{page_cache}
+template <typename StorageT, typename AllocationTrackerT>
+/*explicit*/ BasicMemTable<StorageT, AllocationTrackerT>::BasicMemTable(
+    AllocationTrackerT& allocation_tracker,
+    const StorageWriter& storage_writer,
+    MemTableMetrics& metrics,
+    EditOffset edit_offset_lower_bound,
+    usize max_bytes_per_batch,
+    usize max_batch_count) noexcept
+    : allocation_tracker_{allocation_tracker}
     , storage_writer_{storage_writer}
     , metrics_{metrics}
     , edit_offset_lower_bound_{edit_offset_lower_bound}
@@ -46,37 +45,38 @@ template <typename StorageT>
     , block_list_mutex_{}
     , block_buffers_{}
 {
-  this->metrics_.mem_table_alloc.add(1);
-  this->metrics_.mem_table_count_stats.update(this->metrics_.mem_table_alloc.get() -
-                                              this->metrics_.mem_table_free.get());
+  this->metrics_.alloc_count.add(1);
+  this->metrics_.count_stats.update(this->metrics_.alloc_count.get() -
+                                    this->metrics_.free_count.get());
 }
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-template <typename StorageT>
-MemTable<StorageT>::~MemTable() noexcept
+template <typename StorageT, typename AllocationTrackerT>
+BasicMemTable<StorageT, AllocationTrackerT>::~BasicMemTable() noexcept
 {
   // Try to detect double-deletions.
   //
   BATT_CHECK_EQ(this->magic_num_.exchange(Self::kDeadMagicNum), Self::kAliveMagicNum);
 
-  this->metrics_.mem_table_log_bytes_freed.add(this->block_size_total_);
+  this->metrics_.log_bytes_freed.add(this->block_size_total_);
 
   for (StorageBlockBuffer* buffer : this->block_buffers_) {
     buffer->remove_ref(1);
   }
 
-  this->metrics_.mem_table_free.add(1);
-  this->metrics_.mem_table_count_stats.update(this->metrics_.mem_table_alloc.get() -
-                                              this->metrics_.mem_table_free.get());
+  this->metrics_.free_count.add(1);
+  this->metrics_.count_stats.update(this->metrics_.alloc_count.get() -
+                                    this->metrics_.free_count.get());
 }
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-template <typename StorageT>
-Status MemTable<StorageT>::put(StorageWriterContext& storage_writer_context,
-                               const KeyView& key,
-                               const ValueView& value) noexcept
+template <typename StorageT, typename AllocationTrackerT>
+Status BasicMemTable<StorageT, AllocationTrackerT>::put(
+    StorageWriterContext& storage_writer_context,
+    const KeyView& key,
+    const ValueView& value) noexcept
 {
   // First, make sure the key/value pair will fit in this MemTable (and make sure the MemTable
   // hasn't been finalized).
@@ -101,6 +101,7 @@ Status MemTable<StorageT>::put(StorageWriterContext& storage_writer_context,
     };
 
     BATT_REQUIRE_OK(this->art_index_.insert(key, inserter));
+    BATT_CHECK_NOT_NULLPTR(inserter.entry_out);
   }
 
   return OkStatus();
@@ -110,8 +111,8 @@ Status MemTable<StorageT>::put(StorageWriterContext& storage_writer_context,
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-template <typename StorageT>
-Status MemTable<StorageT>::prepare_edit(i64 packed_edit_size)
+template <typename StorageT, typename AllocationTrackerT>
+Status BasicMemTable<StorageT, AllocationTrackerT>::prepare_edit(i64 packed_edit_size)
 {
   // Update the maximum item size.  We track this so that we can make a conservative estimate of how
   // much space might be wasted per batch, once the MemTable is finalized/compacted.
@@ -133,7 +134,7 @@ Status MemTable<StorageT>::prepare_edit(i64 packed_edit_size)
 
   // If the new value of prepared_bytes_total_ is under the limit, then the edit can be accepted. If
   // the MemTable has been finalized, then `prior_value` with have the 2nd-most-significant bit set
-  // (see MemTable::kFinalizedMask), so this check will certainly fail.
+  // (see kFinalizedMask), so this check will certainly fail.
   //
   if (prior_value + packed_edit_size <= this->max_byte_size_.load()) {
     return OkStatus();
@@ -147,7 +148,7 @@ Status MemTable<StorageT>::prepare_edit(i64 packed_edit_size)
   // If we observe the finalized bit to be set, then wake any threads waiting inside
   // MemTable::finalize().
   //
-  if ((observed_value & MemTable::kFinalizedMask) != 0) {
+  if ((observed_value & Self::kFinalizedMask) != 0) {
     this->committed_bytes_total_.notify_all();
   }
 
@@ -156,19 +157,19 @@ Status MemTable<StorageT>::prepare_edit(i64 packed_edit_size)
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-template <typename StorageT>
-void MemTable<StorageT>::commit_edit(i64 packed_edit_size)
+template <typename StorageT, typename AllocationTrackerT>
+void BasicMemTable<StorageT, AllocationTrackerT>::commit_edit(i64 packed_edit_size)
 {
   const i64 prior_value = this->committed_bytes_total_.fetch_add(packed_edit_size);
-  if ((prior_value & MemTable::kFinalizedMask) != 0) {
+  if ((prior_value & Self::kFinalizedMask) != 0) {
     this->committed_bytes_total_.notify_all();
   }
 }
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-template <typename StorageT>
-Optional<ValueView> MemTable<StorageT>::get(const KeyView& key) noexcept
+template <typename StorageT, typename AllocationTrackerT>
+Optional<ValueView> BasicMemTable<StorageT, AllocationTrackerT>::get(const KeyView& key) noexcept
 {
   Optional<MemTableValueEntry> entry = this->art_index_.find(key);
   if (!entry) {
@@ -180,8 +181,9 @@ Optional<ValueView> MemTable<StorageT>::get(const KeyView& key) noexcept
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-template <typename StorageT>
-Optional<ValueView> MemTable<StorageT>::finalized_get(const KeyView& key) noexcept
+template <typename StorageT, typename AllocationTrackerT>
+Optional<ValueView> BasicMemTable<StorageT, AllocationTrackerT>::finalized_get(
+    const KeyView& key) noexcept
 {
   const MemTableValueEntry* entry = this->art_index_.unsynchronized_find(key);
   if (!entry) {
@@ -192,13 +194,13 @@ Optional<ValueView> MemTable<StorageT>::finalized_get(const KeyView& key) noexce
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-template <typename StorageT>
-bool MemTable<StorageT>::finalize() noexcept
+template <typename StorageT, typename AllocationTrackerT>
+bool BasicMemTable<StorageT, AllocationTrackerT>::finalize() noexcept
 {
-  const i64 prior_committed = this->committed_bytes_total_.fetch_or(MemTable::kFinalizedMask);
-  const i64 prior_prepared = this->prepared_bytes_total_.fetch_or(MemTable::kFinalizedMask);
+  const i64 prior_committed = this->committed_bytes_total_.fetch_or(Self::kFinalizedMask);
+  const i64 prior_prepared = this->prepared_bytes_total_.fetch_or(Self::kFinalizedMask);
 
-  const bool newly_finalized = (prior_committed & MemTable::kFinalizedMask) == 0;
+  const bool newly_finalized = (prior_committed & Self::kFinalizedMask) == 0;
 
   i64 observed_prepared = prior_prepared;
   i64 observed_committed = prior_committed;
@@ -233,8 +235,8 @@ bool MemTable<StorageT>::finalize() noexcept
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-template <typename StorageT>
-void MemTable<StorageT>::await_finalize() noexcept
+template <typename StorageT, typename AllocationTrackerT>
+void BasicMemTable<StorageT, AllocationTrackerT>::await_finalize() noexcept
 {
   for (;;) {
     const EditOffset observed_upper_bound{this->edit_offset_upper_bound_.load()};
@@ -247,20 +249,21 @@ void MemTable<StorageT>::await_finalize() noexcept
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-template <typename StorageT>
-bool MemTable<StorageT>::is_finalized() const
+template <typename StorageT, typename AllocationTrackerT>
+bool BasicMemTable<StorageT, AllocationTrackerT>::is_finalized() const
 {
-  return (this->committed_bytes_total_.load() & MemTable::kFinalizedMask) != 0 &&
+  return (this->committed_bytes_total_.load() & Self::kFinalizedMask) != 0 &&
          this->edit_offset_lower_bound_ <= EditOffset{this->edit_offset_upper_bound_.load()};
 }
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-template <typename StorageT>
-Status MemTable<StorageT>::put_recovered_slot(StorageBlockBuffer* block_buffer,
-                                              EditOffset edit_offset,
-                                              const KeyView& key,
-                                              const ValueView& value)
+template <typename StorageT, typename AllocationTrackerT>
+Status BasicMemTable<StorageT, AllocationTrackerT>::put_recovered_slot(
+    StorageBlockBuffer* block_buffer,
+    EditOffset edit_offset,
+    const KeyView& key,
+    const ValueView& value)
 {
   this->attach_block_buffer(block_buffer);
 
@@ -277,12 +280,13 @@ Status MemTable<StorageT>::put_recovered_slot(StorageBlockBuffer* block_buffer,
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-template <typename StorageT>
-void MemTable<StorageT>::attach_block_buffer(StorageBlockBuffer* block_buffer)
+template <typename StorageT, typename AllocationTrackerT>
+void BasicMemTable<StorageT, AllocationTrackerT>::attach_block_buffer(
+    StorageBlockBuffer* block_buffer)
 {
   if (block_buffer->ref_count() == 1) {
     block_buffer->add_ref(1);
-    this->metrics_.mem_table_log_bytes_allocated.add(block_buffer->block_size());
+    this->metrics_.log_bytes_allocated.add(block_buffer->block_size());
     i64 cache_alloc_delta = 0;
     {
       absl::MutexLock lock{&this->block_list_mutex_};
@@ -298,8 +302,8 @@ void MemTable<StorageT>::attach_block_buffer(StorageBlockBuffer* block_buffer)
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-template <typename StorageT>
-i64 MemTable<StorageT>::update_external_cache_alloc()
+template <typename StorageT, typename AllocationTrackerT>
+i64 BasicMemTable<StorageT, AllocationTrackerT>::update_external_cache_alloc()
 {
   // The number of bytes to claim (if positive) or release (negative) as external allocation
   // from the PageCache; the return value of this function.
@@ -310,7 +314,7 @@ i64 MemTable<StorageT>::update_external_cache_alloc()
 
   if (!this->cache_alloc_in_progress_ &&
       this->since_last_cache_alloc_update_ >=
-          MemTable<StorageT>::kBlocksPerExternalCacheAllocUpdate) {
+          BasicMemTable<StorageT, AllocationTrackerT>::kBlocksPerExternalCacheAllocUpdate) {
     this->cache_alloc_in_progress_ = true;
     this->since_last_cache_alloc_update_ = 0;
 
@@ -338,8 +342,8 @@ i64 MemTable<StorageT>::update_external_cache_alloc()
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-template <typename StorageT>
-void MemTable<StorageT>::handle_external_cache_alloc(i64 cache_alloc_delta)
+template <typename StorageT, typename AllocationTrackerT>
+void BasicMemTable<StorageT, AllocationTrackerT>::handle_external_cache_alloc(i64 cache_alloc_delta)
 {
   if (cache_alloc_delta > 0) {
     const i64 observed_current_size = this->prepared_bytes_total_.load();
@@ -347,8 +351,8 @@ void MemTable<StorageT>::handle_external_cache_alloc(i64 cache_alloc_delta)
     llfs::PageCacheOvercommit overcommit;
     overcommit.allow(true);
 
-    llfs::PageCache::ExternalAllocation alloc =
-        this->page_cache_.allocate_external(cache_alloc_delta, overcommit);
+    typename AllocationTracker::ExternalAllocation alloc =
+        this->allocation_tracker_.allocate_external(cache_alloc_delta, overcommit);
 
     {
       absl::MutexLock lock{&this->block_list_mutex_};
@@ -364,18 +368,15 @@ void MemTable<StorageT>::handle_external_cache_alloc(i64 cache_alloc_delta)
       atomic_clamp_max(this->prepared_bytes_total_,
                        std::max<i64>(observed_current_size, this->max_bytes_per_batch_ / 2));
 
-      on_page_cache_overcommit(
-          [this, observed_current_size](std::ostream& out) {
-            out << "Truncating MemTable size due to cache overcommit;"
-                << BATT_INSPECT(this->prepared_bytes_total_)
-                << BATT_INSPECT(this->max_bytes_per_batch_) << BATT_INSPECT(observed_current_size);
-          },
-          this->page_cache_,
-          this->metrics_.overcommit);
+      this->allocation_tracker_.on_overcommit([this, observed_current_size](std::ostream& out) {
+        out << "Truncating MemTable size due to cache overcommit;"
+            << BATT_INSPECT(this->prepared_bytes_total_) << BATT_INSPECT(this->max_bytes_per_batch_)
+            << BATT_INSPECT(observed_current_size);
+      });
     }
 
   } else if (cache_alloc_delta < 0) {
-    StatusOr<llfs::PageCache::ExternalAllocation> alloc_to_release;
+    StatusOr<typename AllocationTracker::ExternalAllocation> alloc_to_release;
     {
       absl::MutexLock lock{&this->block_list_mutex_};
       BATT_CHECK(this->cache_alloc_in_progress_);
@@ -389,8 +390,8 @@ void MemTable<StorageT>::handle_external_cache_alloc(i64 cache_alloc_delta)
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-template <typename StorageT>
-i64 MemTable<StorageT>::calculate_max_byte_size() const
+template <typename StorageT, typename AllocationTrackerT>
+i64 BasicMemTable<StorageT, AllocationTrackerT>::calculate_max_byte_size() const
 {
   const i64 max_wasted_per_batch = this->max_item_size_.load() - 1;
   const i64 min_full_batch_size = this->max_bytes_per_batch_ - max_wasted_per_batch;
@@ -398,13 +399,14 @@ i64 MemTable<StorageT>::calculate_max_byte_size() const
 }
 
 //=#=#==#==#===============+=+=+=+=++=++++++++++++++-++-+--+-+----+---------------
-// class MemTable<StorageT>::BatchCompactor
+// class BasicMemTable<StorageT, AllocationTrackerT>::BatchCompactor
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-template <typename StorageT>
-/*explicit*/ MemTable<StorageT>::BatchCompactor::BatchCompactor(MemTable& mem_table,
-                                                                usize byte_size_limit) noexcept
+template <typename StorageT, typename AllocationTrackerT>
+/*explicit*/ BasicMemTable<StorageT, AllocationTrackerT>::BatchCompactor::BatchCompactor(
+    BasicMemTable& mem_table,
+    usize byte_size_limit) noexcept
     : mem_table_{mem_table}
     , byte_size_limit_{byte_size_limit}
     , batch_count_{0}
@@ -416,17 +418,17 @@ template <typename StorageT>
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-template <typename StorageT>
-bool MemTable<StorageT>::BatchCompactor::has_next() const
+template <typename StorageT, typename AllocationTrackerT>
+bool BasicMemTable<StorageT, AllocationTrackerT>::BatchCompactor::has_next() const
 {
   return !this->scanner_.is_done();
 }
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-template <typename StorageT>
+template <typename StorageT, typename AllocationTrackerT>
 MergeCompactor::ResultSet</*decay_to_items=*/false>
-MemTable<StorageT>::BatchCompactor::consume_next() noexcept
+BasicMemTable<StorageT, AllocationTrackerT>::BatchCompactor::consume_next() noexcept
 {
   MergeCompactor::ResultSet</*decay_to_items=*/false> compacted_edits;
 

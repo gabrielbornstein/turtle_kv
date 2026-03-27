@@ -103,6 +103,51 @@ TEST(ArtTest, ByteInt)
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
+TEST(ArtTest, OverlappingKeyPrefix)
+{
+  const std::string key1 = "app";
+  const std::string key2 = "apple";
+  const std::string key3 = "application";
+  const std::string key4 = "applesauce";
+
+  turtle_kv::ART<i32> art;
+
+  EXPECT_FALSE(art.contains(key1));
+  EXPECT_FALSE(art.contains(key2));
+  EXPECT_FALSE(art.contains(key3));
+  EXPECT_FALSE(art.contains(key4));
+
+  BATT_CHECK_OK(art.insert(key1, turtle_kv::detail::DefaultCopyInserter<i32>{1}));
+
+  EXPECT_TRUE(art.contains(key1));
+  EXPECT_FALSE(art.contains(key2));
+  EXPECT_FALSE(art.contains(key3));
+  EXPECT_FALSE(art.contains(key4));
+
+  BATT_CHECK_OK(art.insert(key2, turtle_kv::detail::DefaultCopyInserter<i32>{2}));
+
+  EXPECT_TRUE(art.contains(key1));
+  EXPECT_TRUE(art.contains(key2));
+  EXPECT_FALSE(art.contains(key3));
+  EXPECT_FALSE(art.contains(key4));
+
+  BATT_CHECK_OK(art.insert(key3, turtle_kv::detail::DefaultCopyInserter<i32>{3}));
+
+  EXPECT_TRUE(art.contains(key1));
+  EXPECT_TRUE(art.contains(key2));
+  EXPECT_TRUE(art.contains(key3));
+  EXPECT_FALSE(art.contains(key4));
+
+  BATT_CHECK_OK(art.insert(key4, turtle_kv::detail::DefaultCopyInserter<i32>{4}));
+
+  EXPECT_TRUE(art.contains(key1));
+  EXPECT_TRUE(art.contains(key2));
+  EXPECT_TRUE(art.contains(key3));
+  EXPECT_TRUE(art.contains(key4));
+}
+
+//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
+//
 template <typename KeyGeneratorT>
 void run_put_contains_test()
 {

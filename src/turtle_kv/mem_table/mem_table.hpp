@@ -9,13 +9,14 @@
 #pragma once
 #define TURTLE_KV_MEM_TABLE_HPP
 
+#include <turtle_kv/mem_table/mem_table_allocation_tracker_impl.hpp>
+#include <turtle_kv/mem_table/mem_table_entry.hpp>
 #include <turtle_kv/mem_table/mem_table_index.hpp>
+#include <turtle_kv/mem_table/mem_table_metrics.hpp>
 #include <turtle_kv/mem_table/mem_table_storage_impl.hpp>
 
-#include <turtle_kv/concurrent_hash_index.hpp>
 #include <turtle_kv/delta_batch_id.hpp>
 #include <turtle_kv/kv_store_metrics.hpp>
-#include <turtle_kv/mem_table_entry.hpp>
 #include <turtle_kv/scan_metrics.hpp>
 
 #include <turtle_kv/change_log/change_log_writer.hpp>
@@ -77,11 +78,13 @@ class MemTableBase : public batt::RefCounted<MemTableBase>
 //
 /** \brief An in-memory index for recent key/value updates.
  */
-template <typename StorageT /*, typename IndexT*/>
-class MemTable : public MemTableBase
+template <MemTableStorage StorageT, MemTableAllocationTracker AllocationTrackerT>
+class BasicMemTable : public MemTableBase
 {
  public:
-  using Self = MemTable;
+  using Self = BasicMemTable;
+
+  using AllocationTracker = AllocationTrackerT;
 
   using Storage = StorageT;
   using StorageWriter = typename Storage::Writer;
@@ -101,6 +104,10 @@ class MemTable : public MemTableBase
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
 
+  /** \brief The default assumed maximum item size in bytes.
+   */
+  static constexpr usize kDefaultItemSize = 32;
+
   /** \brief The number of change log block slots to pre-allocate in this object.
    */
   static constexpr usize kBlockListPreAllocSize = 4096;
@@ -113,10 +120,10 @@ class MemTable : public MemTableBase
    */
   static constexpr u64 kDeadMagicNum = 0xc910d14e24d0a51aull;
 
-  /** \brief The number of new CacheLogBlock objects to allocate between updates to the PageCache
-   * external allocation.  This config option trades overhead for accuracy; lower values favor
-   * tighter (more accurate) tracking of cache space to the actual memory footprint of the MemTable,
-   * whereas higher values favor lower overhead per MemTable update.
+  /** \brief The number of new CacheLogBlock objects to allocate between updates to the
+   * AllocationTracker external allocation.  This config option trades overhead for accuracy; lower
+   * values favor tighter (more accurate) tracking of cache space to the actual memory footprint of
+   * the MemTable, whereas higher values favor lower overhead per MemTable update.
    */
   static constexpr usize kBlocksPerExternalCacheAllocUpdate = 128;
 
@@ -128,25 +135,25 @@ class MemTable : public MemTableBase
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
 
-  explicit MemTable(llfs::PageCache& page_cache,
-                    const StorageWriter& storage_writer,
-                    KVStoreMetrics& metrics,
-                    EditOffset edit_offset_lower_bound,
-                    usize max_bytes_per_batch,
-                    usize max_batch_count) noexcept;
+  explicit BasicMemTable(AllocationTracker& allocation_tracker,
+                         const StorageWriter& storage_writer,
+                         MemTableMetrics& metrics,
+                         EditOffset edit_offset_lower_bound,
+                         usize max_bytes_per_batch,
+                         usize max_batch_count) noexcept;
 
-  /** \brief MemTable is not copyable.
+  /** \brief BasicMemTable is not copyable.
    */
-  MemTable(const MemTable&) = delete;
+  BasicMemTable(const BasicMemTable&) = delete;
 
-  /** \brief MemTable is not copyable.
+  /** \brief BasicMemTable is not copyable.
    */
-  MemTable& operator=(const MemTable&) = delete;
+  BasicMemTable& operator=(const BasicMemTable&) = delete;
 
-  /** \brief Destroys the MemTable, releasing all PageCache allocations and ChangeLogBlock
-   * references.
+  /** \brief Destroys the BasicMemTable, releasing all AllocationTracker allocations and
+   * ChangeLogBlock references.
    */
-  ~MemTable() noexcept;
+  ~BasicMemTable() noexcept;
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
 
@@ -249,15 +256,15 @@ class MemTable : public MemTableBase
   void attach_block_buffer(StorageBlockBuffer* block_buffer);
 
   /** \brief Returns the number of bytes to claim (if positive) or release (negative)
-   * as external allocation from the PageCache.
+   * as external allocation from the AllocationTracker.
    *
    * This function only calculates a non-zero value every `kBlocksPerExternalCacheAllocUpdate` new
    * ChangeLogBlocks added to the MemTable.
    */
   i64 update_external_cache_alloc();
 
-  /** \brief Increases or decreases the PageCache external alloc by the specified number of bytes
-   * `cache_alloc_delta`.
+  /** \brief Increases or decreases the AllocationTracker external alloc by the specified number of
+   * bytes `cache_alloc_delta`.
    */
   void handle_external_cache_alloc(i64 cache_alloc_delta);
 
@@ -265,11 +272,11 @@ class MemTable : public MemTableBase
 
   std::atomic<u64> magic_num_{Self::kAliveMagicNum};
 
-  llfs::PageCache& page_cache_;
+  AllocationTracker& allocation_tracker_;
 
   const StorageWriter& storage_writer_;
 
-  KVStoreMetrics& metrics_;
+  MemTableMetrics& metrics_;
 
   // Passed in at construction time.
   //
@@ -287,7 +294,7 @@ class MemTable : public MemTableBase
 
   ART<MemTableValueEntry> art_index_;
 
-  std::atomic<i64> max_item_size_{32};
+  std::atomic<i64> max_item_size_{Self::kDefaultItemSize};
 
   std::atomic<i64> max_byte_size_;
 
@@ -299,23 +306,24 @@ class MemTable : public MemTableBase
 
   absl::Mutex block_list_mutex_;
 
-  batt::SmallVec<StorageBlockBuffer*, MemTable::kBlockListPreAllocSize> block_buffers_;
+  batt::SmallVec<StorageBlockBuffer*, Self::kBlockListPreAllocSize> block_buffers_;
 
   // The total size (in bytes) of all change log block buffers owned by this MemTable.
   //
   usize block_size_total_ = 0;
 
-  // The total size (in bytes) of all PageCache external allocations to account for the ART index.
+  // The total size (in bytes) of all AllocationTracker external allocations to account for the ART
+  // index.
   //
   i64 art_reserved_size_ = 0;
 
-  // The number of calls to update_external_cache_alloc() since we actually updated the PageCache
-  // external allocation.
+  // The number of calls to update_external_cache_alloc() since we actually updated the
+  // AllocationTracker external allocation.
   //
   usize since_last_cache_alloc_update_ = 0;
 
-  // The total size (in bytes) of change log block buffers added to this since the last PageCache
-  // external allocation.
+  // The total size (in bytes) of change log block buffers added to this since the last
+  // AllocationTracker external allocation.
   //
   usize block_size_last_update_ = 0;
 
@@ -324,10 +332,10 @@ class MemTable : public MemTableBase
   //
   bool cache_alloc_in_progress_ = false;
 
-  // Space in the PageCache that is allocated to cover the footprint of this MemTable, in order to
-  // bound the overall memory footprint of a KVStore.
+  // Space in the AllocationTracker that is allocated to cover the footprint of this MemTable, in
+  // order to bound the overall memory footprint of a KVStore.
   //
-  llfs::PageCache::ExternalAllocation total_cache_alloc_;
+  typename AllocationTracker::ExternalAllocation total_cache_alloc_;
 };
 
 // #=##=##=#==#=#==#===#+==#+==========+==+=+=+=+=+=++=+++=+++++=-++++=-+++++++++++
@@ -335,11 +343,11 @@ class MemTable : public MemTableBase
 /** \brief A temporary object that captures the per-thread storage context needed to perform a
  * `put` operation.
  */
-template <typename StorageT>
-class MemTable<StorageT>::PerOpStorageContext
+template <typename StorageT, typename AllocationTrackerT>
+class BasicMemTable<StorageT, AllocationTrackerT>::PerOpStorageContext
 {
  public:
-  explicit PerOpStorageContext(MemTable& mem_table,
+  explicit PerOpStorageContext(BasicMemTable& mem_table,
                                StorageWriterContext& storage_writer_context) noexcept
       : mem_table_{mem_table}
       , storage_writer_context_{storage_writer_context}
@@ -360,14 +368,15 @@ class MemTable<StorageT>::PerOpStorageContext
   }
 
  private:
-  MemTable& mem_table_;
+  BasicMemTable& mem_table_;
   StorageWriterContext& storage_writer_context_;
 };
 
 /** \brief Returns the greatest ordered DeltaBatchId included in the passed MemTable.
  */
-template <typename StorageT>
-inline EditOffset get_edit_offset_upper_bound(const MemTable<StorageT>& mem_table)
+template <typename StorageT, typename AllocationTrackerT>
+inline EditOffset get_edit_offset_upper_bound(
+    const BasicMemTable<StorageT, AllocationTrackerT>& mem_table)
 {
   return mem_table.edit_offset_upper_bound();
 }
@@ -378,8 +387,8 @@ inline EditOffset get_edit_offset_upper_bound(const MemTable<StorageT>& mem_tabl
 /** \brief Produces a series of compacted key/value runs, each of which is limited to a maximum
  * size, and can be applied to a checkpoint tree using batch update.
  */
-template <typename StorageT>
-class MemTable<StorageT>::BatchCompactor
+template <typename StorageT, typename AllocationTrackerT>
+class BasicMemTable<StorageT, AllocationTrackerT>::BatchCompactor
 {
  public:
   using Self = BatchCompactor;
@@ -389,7 +398,7 @@ class MemTable<StorageT>::BatchCompactor
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
 
-  explicit BatchCompactor(MemTable& mem_table, usize byte_size_limit) noexcept;
+  explicit BatchCompactor(BasicMemTable& mem_table, usize byte_size_limit) noexcept;
 
   BatchCompactor(const BatchCompactor&) = delete;
   BatchCompactor& operator=(const BatchCompactor&) = delete;
@@ -406,7 +415,7 @@ class MemTable<StorageT>::BatchCompactor
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
  private:
-  MemTable& mem_table_;
+  BasicMemTable& mem_table_;
 
   const usize byte_size_limit_;
 
@@ -415,6 +424,6 @@ class MemTable<StorageT>::BatchCompactor
   ARTScanner scanner_;
 };
 
-using MemTableImpl = MemTable<MemTableChangeLogStorage>;
+using MemTable = BasicMemTable<MemTableChangeLogStorage, MemTablePageCacheAllocationTracker>;
 
 }  // namespace turtle_kv

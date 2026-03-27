@@ -1,7 +1,16 @@
+//=##=##=#==#=#==#===#+==#+==========+==+=+=+=+=+=++=+++=+++++=-++++=-+++++++++++
+//
+// Part of the TurtleKV Project, under Apache License v2.0.
+// See https://www.apache.org/licenses/LICENSE-2.0 for license information.
+// SPDX short identifier: Apache-2.0
+//
+//+++++++++++-+-+--+----- --- -- -  -  -   -
+
 #pragma once
 
 #include <turtle_kv/api_types.hpp>
-#include <turtle_kv/mem_table.hpp>
+
+#include <turtle_kv/mem_table/mem_table.hpp>
 
 #include <turtle_kv/change_log/change_log_read_lock.hpp>
 
@@ -39,7 +48,7 @@ class DeltaBatch
   /** \brief Constructs a new DeltaBatch.
    */
   explicit DeltaBatch(DeltaBatchId batch_id,
-                      boost::intrusive_ptr<MemTableImpl>&& mem_table,
+                      boost::intrusive_ptr<MemTable>&& mem_table,
                       ResultSet&& result_set) noexcept;
 
   /** \brief DeltaBatch objects are not copy-/move-constructible.
@@ -103,7 +112,7 @@ class DeltaBatch
  private:
   const DeltaBatchId batch_id_;
 
-  boost::intrusive_ptr<MemTableImpl> mem_table_;
+  boost::intrusive_ptr<MemTable> mem_table_;
 
   /** \brief The merged/compacted edits from the log.
    */

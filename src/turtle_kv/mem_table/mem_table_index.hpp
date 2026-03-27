@@ -9,7 +9,7 @@
 #pragma once
 #define TURTLE_KV_MEM_TABLE_INDEX_HPP
 
-#include <turtle_kv/mem_table_entry.hpp>
+#include <turtle_kv/mem_table/mem_table_entry.hpp>
 
 #include <turtle_kv/core/key_view.hpp>
 

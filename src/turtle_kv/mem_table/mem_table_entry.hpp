@@ -88,10 +88,14 @@ class MemTableValueEntry
 
   void update_value(ValueView new_value, EditOffset edit_offset)
   {
+    // TODO [tastolfi 2026-03-27] should we update key_data_ and key_size_ here, for better locality
+    // of reference?
+
     new_value = combine(new_value, this->value_view());
 
     this->op_code_ = static_cast<u8>(new_value.op());
     this->value_size_ = static_cast<u32>(new_value.size());
+    this->value_data_ = new_value.data();
     this->edit_offset_ = edit_offset;
   }
 
@@ -135,6 +139,11 @@ struct MemTableValueEntryInserter {
   const ValueView value;
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
+  // Outputs
+
+  MemTableValueEntry* entry_out = nullptr;
+
+  //+++++++++++-+-+--+----- --- -- -  -  -   -
 
   Status insert_new(void* entry_memory)
   {
@@ -147,7 +156,7 @@ struct MemTableValueEntryInserter {
           const std::pair<KeyView, ValueView> packed_pair =
               pack_key_value_slot(this->key, this->value, buffer);
 
-          new (entry_memory) MemTableValueEntry{packed_pair, edit_offset};
+          this->entry_out = new (entry_memory) MemTableValueEntry{packed_pair, edit_offset};
         }));
 
     return OkStatus();
@@ -164,6 +173,8 @@ struct MemTableValueEntryInserter {
               pack_key_value_slot(this->key, this->value, buffer);
 
           p_entry->update_value(packed_pair.second, edit_offset);
+
+          this->entry_out = p_entry;
         }));
 
     return OkStatus();
@@ -195,10 +206,15 @@ struct MemTableRecoveryInserter {
   ValueView value_;
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
+  // Outputs
+
+  MemTableValueEntry* entry_out = nullptr;
+
+  //+++++++++++-+-+--+----- --- -- -  -  -   -
 
   Status insert_new(void* entry_memory)
   {
-    new (entry_memory) MemTableValueEntry{
+    this->entry_out = new (entry_memory) MemTableValueEntry{
         std::make_pair(this->key_, this->value_),
         this->edit_offset_,
     };
@@ -208,6 +224,7 @@ struct MemTableRecoveryInserter {
 
   Status update_existing(MemTableValueEntry* p_entry)
   {
+    this->entry_out = p_entry;
     p_entry->update_value(this->value_, this->edit_offset_);
 
     return OkStatus();

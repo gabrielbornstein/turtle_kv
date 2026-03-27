@@ -258,7 +258,7 @@ class SegmentedLevelScannerTest : public ::testing::Test
 
     //+++++++++++-+-+--+----- --- -- -  -  -   -
 
-    Optional<llfs::StableStringStore> string_store;
+    Optional<batt::StableStringStore> string_store;
     Optional<std::default_random_engine> rng{std::random_device{}()};
     RandomLeafGenerator leaf_generator;
 
@@ -422,8 +422,7 @@ void SegmentedLevelScannerTest::Scenario::run_with_pivot_count(usize pivot_count
 
       if (debug_output) {
         std::cout << std::setw(3) << segment_i
-                  << ": active=" << segment.get_active_pivots().printable()
-                  << std::endl;
+                  << ": active=" << segment.get_active_pivots().printable() << std::endl;
       }
     }
     if (debug_output) {

@@ -83,8 +83,8 @@ class ARTBase
     FastCountMetric<u64> byte_free_count;
 
     /** \brief Resets all metrics to initial values.
-	 */
-	void reset()
+     */
+    void reset()
     {
       this->construct_count.reset();
       this->destruct_count.reset();
@@ -111,7 +111,7 @@ class ARTBase
     }
 
     /** \brief Returns an estimate of the number of active instances (ART objects).
-	 */
+     */
     u64 instance_count() const
     {
       // Must be in this order!
@@ -123,7 +123,7 @@ class ARTBase
     }
 
     /** \brief Returns an estimate of the current number of bytes in use.
-	 */
+     */
     u64 bytes_in_use() const
     {
       // Must be in this order!
@@ -198,13 +198,14 @@ class ARTBase
   //----- --- -- -  -  -   -
 
   template <typename FromNodeT, typename ToNodeT>
-  static void* construct_value_copy(FromNodeT*, ToNodeT*, batt::StaticType<void>)
+  static void* construct_value_copy_node(FromNodeT*, ToNodeT* to_node, batt::StaticType<void>)
   {
+    to_node->set_terminal();
     return nullptr;
   }
 
   template <typename FromNodeT>
-  static void* construct_value_copy(FromNodeT*, void*, batt::StaticType<void>)
+  static void* construct_value_copy_addr(FromNodeT*, void*, batt::StaticType<void>)
   {
     return nullptr;
   }
@@ -212,19 +213,20 @@ class ARTBase
   //----- --- -- -  -  -   -
 
   template <typename FromNodeT, typename ToNodeT, typename ValueT>
-  static ValueT* construct_value_copy(FromNodeT* from_node,
-                                      ToNodeT* to_node,
-                                      batt::StaticType<ValueT> type_of_value)
+  static ValueT* construct_value_copy_node(FromNodeT* from_node,
+                                           ToNodeT* to_node,
+                                           batt::StaticType<ValueT> type_of_value)
   {
-    return ARTBase::construct_value_copy(from_node,
-                                         ARTBase::uninitialized_value(to_node),
-                                         type_of_value);
+    to_node->set_terminal();
+    return ARTBase::construct_value_copy_addr(from_node,
+                                              ARTBase::uninitialized_value(to_node),
+                                              type_of_value);
   }
 
   template <typename FromNodeT, typename ValueT>
-  static ValueT* construct_value_copy(FromNodeT* from_node,
-                                      void* to_address,
-                                      batt::StaticType<ValueT> type_of_value)
+  static ValueT* construct_value_copy_addr(FromNodeT* from_node,
+                                           void* to_address,
+                                           batt::StaticType<ValueT> type_of_value)
   {
     return new (to_address) ValueT{*ARTBase::const_value(from_node, type_of_value)};
   }
@@ -1247,7 +1249,7 @@ NodeT& scanner_view_of(usize node_prefix_len,
     SeqMutex<u32>::ReadLock read_lock{node->mutex_};
     node_view.assign_from(*node, /*prefix_offset=*/node_prefix_len);
     if (node->is_terminal()) {
-      ARTBase::construct_value_copy(node, value_storage_addr, type_of_value);
+      ARTBase::construct_value_copy_addr(node, value_storage_addr, type_of_value);
     }
     if (!read_lock.changed()) {
       break;
@@ -1432,8 +1434,8 @@ class ItemStorageBase<ValueT, kSynchronized, /*kValuesOnly=*/true>
 
 //=#=#==#==#===============+=+=+=+=++=++++++++++++++-++-+--+-+----+---------------
 //
-/** \brief Scanner for an ART.  
- *  
+/** \brief Scanner for an ART.
+ *
  *  \tparam ValueT The value type stored in the scanned ART
  *  \tparam kSynchronized (true, false, dynmamic) The concurrency control for this scanner
  *  \tparam kValuesOnly When true, the scanner does not build/store key (path) information as it is

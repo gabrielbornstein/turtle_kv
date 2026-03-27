@@ -76,9 +76,8 @@ using turtle_kv::TreeSerializeContext;
 using turtle_kv::ValueView;
 using turtle_kv::testing::RandomResultSetGenerator;
 
-using llfs::StableStringStore;
-
 using batt::getenv_as;
+using batt::StableStringStore;
 
 constexpr usize kMinScanSize = 1;
 constexpr usize kMaxScanSize = 100;

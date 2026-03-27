@@ -98,6 +98,10 @@ class ChangeLogWriter
   class Context
   {
    public:
+    using BlockBuffer = ChangeLogBlock;
+
+    //+++++++++++-+-+--+----- --- -- -  -  -   -
+
     /** \brief Constructs a Context and adds it to the given Writer; this means the writer will
      * periodically poll the Context (lock-free) to try to "steal" stacks of buffers to append
      * to the Volume root log.
@@ -140,9 +144,10 @@ class ChangeLogWriter
      * this Context. \return the sequence number (index) of the newly formatted slot.
      */
     template <typename SerializeFn>
-    requires std::invocable<const SerializeFn&, BlockBuffer*, MutableBuffer, EditOffset> Status
-    append_slot(EditOffset min_edit_offset_lower_bound, usize byte_size, const SerializeFn& fn)
-    noexcept;
+      requires std::invocable<const SerializeFn&, BlockBuffer*, MutableBuffer, EditOffset>
+    Status append_slot(EditOffset min_edit_offset_lower_bound,
+                       usize byte_size,
+                       const SerializeFn& fn) noexcept;
 
     //+++++++++++-+-+--+----- --- -- -  -  -   -
    private:
@@ -316,7 +321,7 @@ class ChangeLogWriter
 // #=##=##=#==#=#==#===#+==#+==========+==+=+=+=+=+=++=+++=+++++=-++++=-+++++++++++
 
 template <typename SerializeFn>
-requires std::invocable<const SerializeFn&, ChangeLogBlock*, MutableBuffer, EditOffset>
+  requires std::invocable<const SerializeFn&, ChangeLogBlock*, MutableBuffer, EditOffset>
 inline Status ChangeLogWriter::Context::append_slot(EditOffset min_edit_offset_lower_bound,
                                                     usize byte_size,
                                                     const SerializeFn& serialize_fn) noexcept

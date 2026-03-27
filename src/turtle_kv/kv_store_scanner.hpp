@@ -1,8 +1,17 @@
+//=##=##=#==#=#==#===#+==#+==========+==+=+=+=+=+=++=+++=+++++=-++++=-+++++++++++
+//
+// Part of the TurtleKV Project, under Apache License v2.0.
+// See https://www.apache.org/licenses/LICENSE-2.0 for license information.
+// SPDX short identifier: Apache-2.0
+//
+//+++++++++++-+-+--+----- --- -- -  -  -   -
+
 #pragma once
 
 #include <turtle_kv/kv_store.hpp>
-#include <turtle_kv/mem_table.hpp>
 #include <turtle_kv/scan_metrics.hpp>
+
+#include <turtle_kv/mem_table/mem_table.hpp>
 
 #include <turtle_kv/import/env.hpp>
 #include <turtle_kv/import/int_types.hpp>
@@ -95,7 +104,7 @@ class KVStoreScanner
   //
   template <ARTBase::Synchronized kSync>
   struct MemTableScanState {
-    MemTableImpl* mem_table_;
+    MemTable* mem_table_;
     ART<void>::Scanner<kSync>* art_scanner_;
   };
 

@@ -6,13 +6,13 @@
 //
 //+++++++++++-+-+--+----- --- -- -  -  -   -
 
-#include <turtle_kv/mem_table.hpp>
+#include <turtle_kv/mem_table/mem_table.hpp>
 //
 
-#include <turtle_kv/mem_table.ipp>
+#include <turtle_kv/mem_table/mem_table.ipp>
 
 namespace turtle_kv {
 
-template class MemTable<MemTableChangeLogStorage>;
+template class BasicMemTable<MemTableChangeLogStorage, MemTablePageCacheAllocationTracker>;
 
 }  // namespace turtle_kv
