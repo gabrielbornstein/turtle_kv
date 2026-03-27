@@ -17,6 +17,7 @@
 #include <llfs/volume.hpp>
 
 #include <batteries/async/cancel_token.hpp>
+#include <batteries/case_of.hpp>
 
 #include <boost/intrusive_ptr.hpp>
 
@@ -36,7 +37,7 @@ class Checkpoint
                                       llfs::SlotParse& slot,
                                       const PackedCheckpoint& checkpoint) noexcept;
 
-  static Checkpoint empty_at_batch(DeltaBatchId batch_id) noexcept;
+  static Checkpoint make_empty() noexcept;
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
 
@@ -57,7 +58,7 @@ class Checkpoint
 
       // The upper-bound of the deltas covered by this checkpoint.
       //
-      DeltaBatchId batch_upper_bound,
+      std::variant<NoneType, EditOffset, DeltaBatchId> checkpoint_upper_bound,
 
       // WAL lock covering the slot range of the checkpoint.
       //
@@ -77,13 +78,6 @@ class Checkpoint
     return this->root_id_;
   }
 
-  /** \brief Serializes all pages in the Checkpoint to prepare to write it.
-   */
-  StatusOr<Checkpoint> serialize(const TreeOptions& tree_options,
-                                 llfs::PageCacheJob& job,
-                                 llfs::PageCacheOvercommit& overcommit,
-                                 batt::WorkerPool& worker_pool) const noexcept;
-
   /** \brief Returns the in-memory view of the checkpoint tree.
    */
   const std::shared_ptr<Subtree>& tree() const
@@ -98,13 +92,29 @@ class Checkpoint
     return this->tree_height_;
   }
 
+  /** \brief Returns true iff this is an empty Checkpoint.
+   */
+  bool is_empty() const noexcept
+  {
+    return batt::is_case<NoneType>(this->checkpoint_upper_bound_);
+  }
+
   /** \brief The slot upper bound (one past the last byte) of deltas that are included in this
    * Checkpoint.
    */
-
-  DeltaBatchId batch_upper_bound() const noexcept
+  Optional<EditOffset> edit_offset_upper_bound() const noexcept
   {
-    return this->batch_upper_bound_;
+    return batt::case_of(
+        this->checkpoint_upper_bound_,
+        [](NoneType) -> Optional<EditOffset> {
+          return None;
+        },
+        [](const EditOffset& edit_offset) -> Optional<EditOffset> {
+          return edit_offset;
+        },
+        [](const DeltaBatchId& batch_id) -> Optional<EditOffset> {
+          return batch_id.edit_offset_upper_bound();
+        });
   }
 
   /** \brief The slot offset range at which this Checkpoint was committed in the Checkpoint Log.
@@ -132,15 +142,30 @@ class Checkpoint
    */
   bool is_durable() const noexcept;
 
+  /** \brief Performs various sanity checks to make sure batches are in-order and gapless.
+   */
+  Status validate_next_batch_id(const DeltaBatchId& batch_id) const noexcept;
+
   /** \brief Applies a batch update to this Checkpoint's tree to produce a new Checkpoint.
    */
-  StatusOr<Checkpoint> flush_batch(batt::WorkerPool& worker_pool,
+  StatusOr<Checkpoint> apply_batch(batt::WorkerPool& worker_pool,
                                    llfs::PageCacheJob& job,
                                    const TreeOptions& tree_options,
                                    BatchUpdateMetrics& metrics,
                                    llfs::PageCacheOvercommit& overcommit,
                                    std::unique_ptr<DeltaBatch>&& batch,
                                    const batt::CancelToken& cancel_token) noexcept;
+
+  /** \brief Performs sanity checks to validate that it is OK to call serialize.
+   */
+  Status validate_ready_to_serialize() const noexcept;
+
+  /** \brief Serializes all pages in the Checkpoint to prepare to write it.
+   */
+  StatusOr<Checkpoint> serialize(const TreeOptions& tree_options,
+                                 llfs::PageCacheJob& job,
+                                 llfs::PageCacheOvercommit& overcommit,
+                                 batt::WorkerPool& worker_pool) const noexcept;
 
   /** \brief Returns a copy of this Checkpoint's CheckpointLock.
    */
@@ -157,10 +182,24 @@ class Checkpoint
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
  private:
+  //+++++++++++-+-+--+----- --- -- -  -  -   -
+
+  // The id of the root page for the starting point tree.
+  //
   Optional<llfs::PageId> root_id_;
+
+  // The current cached/mutable tree.
+  //
   std::shared_ptr<Subtree> tree_;
+
+  // 0 means empty; 1 means only a leaf; etc.
+  //
   i32 tree_height_;
-  DeltaBatchId batch_upper_bound_;
+
+  // When the Checkpoint is "clean" (no batches applied after the last serialize), holds the edit
+  // offset upper bound for the checkpoint; otherwise, holds the most recent delta batch id applied.
+  //
+  std::variant<NoneType, EditOffset, DeltaBatchId> checkpoint_upper_bound_;
 
   // Read lock that keeps this Checkpoint from being recycled by the llfs::Volume; the locked slot
   // range is from the start of the PrepareJob slot where the checkpoint tree root was introduced,

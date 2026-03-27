@@ -374,7 +374,7 @@ u64 query_page_loader_reset_every_n()
 
       // TODO [tastolfi 2026-03-24] - for recovery, starting at EditOffset{0} is wrong.
       state->mem_table_ = this->create_mem_table(EditOffset{0});
-      state->base_checkpoint_ = Checkpoint::empty_at_batch(DeltaBatchId::min_value());
+      state->base_checkpoint_ = Checkpoint::make_empty();
       state->base_checkpoint_.tree()->lock();
 
       BATT_CHECK_EQ(state->use_count(), 0);
@@ -980,7 +980,7 @@ using CheckpointEvent = llfs::PackedVariant<turtle_kv::PackedCheckpoint>;
   BATT_REQUIRE_OK(reader);
 
   std::pair<llfs::SlotParse, turtle_kv::PackedCheckpoint> prev_checkpoint;
-  prev_checkpoint.second.batch_upper_bound = 0;
+  prev_checkpoint.second.edit_offset_upper_bound = 0;
 
   for (;;) {
     llfs::StatusOr<usize> n_slots_visited = reader->visit_typed_next(
@@ -989,8 +989,8 @@ using CheckpointEvent = llfs::PackedVariant<turtle_kv::PackedCheckpoint>;
                            const turtle_kv::PackedCheckpoint& packed_checkpoint) {
           // Validate that the checkpoints are in ascending order based on batch_upper_bound
           //
-          BATT_CHECK_GE(packed_checkpoint.batch_upper_bound,
-                        prev_checkpoint.second.batch_upper_bound);
+          BATT_CHECK_GE(EditOffset{packed_checkpoint.edit_offset_upper_bound},
+                        EditOffset{prev_checkpoint.second.edit_offset_upper_bound});
           prev_checkpoint =
               std::pair<llfs::SlotParse, turtle_kv::PackedCheckpoint>{slot, packed_checkpoint};
           return llfs::OkStatus();
@@ -1005,8 +1005,8 @@ using CheckpointEvent = llfs::PackedVariant<turtle_kv::PackedCheckpoint>;
 
   // Return empty checkpoint if no checkpoints are found
   //
-  if (prev_checkpoint.second.batch_upper_bound == 0) {
-    return Checkpoint::empty_at_batch(DeltaBatchId::min_value());
+  if (prev_checkpoint.second.edit_offset_upper_bound == 0) {
+    return Checkpoint::make_empty();
   }
 
   return turtle_kv::Checkpoint::recover(checkpoint_log_volume,
@@ -1019,10 +1019,10 @@ using CheckpointEvent = llfs::PackedVariant<turtle_kv::PackedCheckpoint>;
 // TODO: [Gabe Bornstein 3/25/26] Add a KVStore::recover function that recovers checkpoint,
 // mem_table, and updates KVStore.state_ to reflect the newly recovered checkpoint and mem_table.
 //
-batt::StatusOr<boost::intrusive_ptr<turtle_kv::MemTable>> KVStore::recover_latest_mem_table(
+batt::StatusOr<boost::intrusive_ptr<turtle_kv::MemTableImpl>> KVStore::recover_latest_mem_table(
     turtle_kv::ChangeLogFile& log)
 {
-  boost::intrusive_ptr<MemTable> mem_table = nullptr;
+  boost::intrusive_ptr<MemTableImpl> mem_table = nullptr;
 
   bool first_slot = true;
 
@@ -1104,13 +1104,23 @@ Status KVStore::scan_mem_table_to_build_batches(boost::intrusive_ptr<MemTableImp
   MemTableImpl::BatchCompactor batch_compactor{
       *mem_table,
       /*byte_size_limit=*/this->tree_options_.flush_size()};
-  u64 batch_index = 0;
+
+  EditOffset edit_offset_upper_bound = mem_table->edit_offset_upper_bound();
+  usize batch_index = 0;
   bool has_next = batch_compactor.has_next();
+
+  const auto make_batch_id = [&] {
+    return DeltaBatchId{
+        edit_offset_upper_bound,
+        IndexInGroup{batch_index},
+        IsLastInGroup{!has_next},
+    };
+  };
 
   // Handle empty MemTable case specially.
   //
   if (!has_next) {
-    auto empty_batch = std::make_unique<DeltaBatch>(DeltaBatchId{0, 0},
+    auto empty_batch = std::make_unique<DeltaBatch>(make_batch_id(),
                                                     batt::make_copy(mem_table),
                                                     DeltaBatch::ResultSet{});
 
@@ -1118,22 +1128,20 @@ Status KVStore::scan_mem_table_to_build_batches(boost::intrusive_ptr<MemTableImp
   }
 
   while (has_next) {
-    auto delta_batch = TURTLE_KV_COLLECT_LATENCY(
-        this->metrics_.compact_batch_latency,
-        std::make_unique<DeltaBatch>(
-            DeltaBatchId{(u64)mem_table->edit_offset_upper_bound().value(), batch_index},
-            batt::make_copy(mem_table),
-            batch_compactor.consume_next()));
+    MergeCompactor::ResultSet</*decay_to_items=*/false> next_result_set =
+        batch_compactor.consume_next();
+
+    has_next = batch_compactor.has_next();
+
+    auto delta_batch =
+        TURTLE_KV_COLLECT_LATENCY(this->metrics_.compact_batch_latency,
+                                  std::make_unique<DeltaBatch>(make_batch_id(),
+                                                               batt::make_copy(mem_table),
+                                                               std::move(next_result_set)));
     ++batch_index;
 
     this->metrics_.batch_count.add(1);
     this->metrics_.batch_edits_count.add(delta_batch->result_set_size());
-
-    has_next = batch_compactor.has_next();
-
-    // Set the `checkpoint_after` field based on whether this is the last batch.
-    //
-    delta_batch->set_checkpoint_after(!has_next);
 
     BATT_REQUIRE_OK(consume_fn(std::move(delta_batch)));
   }
@@ -1179,7 +1187,8 @@ StatusOr<std::unique_ptr<CheckpointJob>> KVStore::apply_batch_to_checkpoint(
                             : Optional<DeltaBatchId>{None};
 
   const BoolStatus checkpoint_after =
-      delta_batch ? delta_batch->checkpoint_after() : BoolStatus::kUnknown;
+      delta_batch ? batt::bool_status_from(delta_batch->batch_id().is_last_in_group())
+                  : BoolStatus::kUnknown;
 
   // Allow the page cache to be temporarily overcommitted so we don't deadlock; but if overcommit is
   // triggered, we immediately truncate the checkpoint to try to unpin pages ASAP.
@@ -1248,10 +1257,6 @@ StatusOr<std::unique_ptr<CheckpointJob>> KVStore::apply_batch_to_checkpoint(
   BATT_CHECK((*checkpoint_job)->append_job_grant);
   BATT_CHECK((*checkpoint_job)->appendable_job);
   BATT_CHECK((*checkpoint_job)->prepare_slot_sequencer);
-
-  if (batch_id) {
-    BATT_CHECK_GT((*checkpoint_job)->batch_id_upper_bound, *batch_id);
-  }
 
   // Number of batches in the current checkpoint resets to zero.
   //

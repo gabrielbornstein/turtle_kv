@@ -217,7 +217,7 @@ bool MemTable<StorageT>::finalize() noexcept
   // If this is the first thread to call finalize, then we must set the upper bound.
   //
   if (newly_finalized) {
-    const EditOffset finalized_upper_bound = this->log_writer_.next_edit_offset();
+    const EditOffset finalized_upper_bound = this->storage_writer_.next_edit_offset();
     BATT_CHECK_GE(finalized_upper_bound, this->edit_offset_lower_bound_);
     this->edit_offset_upper_bound_.store(finalized_upper_bound.value());
     this->edit_offset_upper_bound_.notify_all();

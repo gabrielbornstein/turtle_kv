@@ -140,15 +140,15 @@ struct MemTableValueEntryInserter {
   {
     const usize insert_size = packed_key_value_slot_size(this->key, this->value);
 
-    this->storage.store_data(  //
-        insert_size,           //
-        [this, entry_memory]   //
+    BATT_REQUIRE_OK(this->storage.store_data(  //
+        insert_size,                           //
+        [this, entry_memory]                   //
         (const MutableBuffer& buffer, EditOffset edit_offset) {
           const std::pair<KeyView, ValueView> packed_pair =
               pack_key_value_slot(this->key, this->value, buffer);
 
           new (entry_memory) MemTableValueEntry{packed_pair, edit_offset};
-        });
+        }));
 
     return OkStatus();
   }
@@ -157,14 +157,14 @@ struct MemTableValueEntryInserter {
   {
     const usize update_size = packed_key_value_slot_size(this->key, this->value);
 
-    this->storage.store_data(  //
-        update_size,           //
+    BATT_REQUIRE_OK(this->storage.store_data(  //
+        update_size,                           //
         [this, p_entry](const MutableBuffer& buffer, EditOffset edit_offset) {
           const std::pair<KeyView, ValueView> packed_pair =
               pack_key_value_slot(this->key, this->value, buffer);
 
           p_entry->update_value(packed_pair.second, edit_offset);
-        });
+        }));
 
     return OkStatus();
   }

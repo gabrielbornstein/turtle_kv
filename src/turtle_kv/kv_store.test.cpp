@@ -498,7 +498,7 @@ TEST_P(CheckpointTest, CheckpointRecovery)
 
   // There is no checkpoint
   //
-  if (checkpoint->batch_upper_bound() == turtle_kv::DeltaBatchId::min_value()) {
+  if (checkpoint->is_empty()) {
     LOG(INFO) << "No checkpoint data found. Exiting the test before checking keys.";
     EXPECT_TRUE(this->num_checkpoints_to_create == 0 || this->num_puts == 0)
         << "Expected checkpoint data but found none.";

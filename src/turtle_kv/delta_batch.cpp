@@ -6,19 +6,12 @@ namespace turtle_kv {
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
 /*explicit*/ DeltaBatch::DeltaBatch(DeltaBatchId batch_id,
-                                    boost::intrusive_ptr<MemTableBase>&& mem_table,
+                                    boost::intrusive_ptr<MemTableImpl>&& mem_table,
                                     ResultSet&& result_set) noexcept
     : batch_id_{batch_id}
     , mem_table_{std::move(mem_table)}
     , result_set_{std::move(result_set)}
 {
-}
-
-//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
-//
-DeltaBatchId DeltaBatch::batch_id() const noexcept
-{
-  return this->batch_id_;
 }
 
 }  // namespace turtle_kv

@@ -1,9 +1,9 @@
 #pragma once
 
 #include <turtle_kv/api_types.hpp>
-#include <turtle_kv/change_log/change_log_read_lock.hpp>
-#include <turtle_kv/delta_batch_id.hpp>
 #include <turtle_kv/mem_table.hpp>
+
+#include <turtle_kv/change_log/change_log_read_lock.hpp>
 
 #include <turtle_kv/core/edit_view.hpp>
 #include <turtle_kv/core/merge_compactor.hpp>
@@ -39,7 +39,7 @@ class DeltaBatch
   /** \brief Constructs a new DeltaBatch.
    */
   explicit DeltaBatch(DeltaBatchId batch_id,
-                      boost::intrusive_ptr<MemTableBase>&& mem_table,
+                      boost::intrusive_ptr<MemTableImpl>&& mem_table,
                       ResultSet&& result_set) noexcept;
 
   /** \brief DeltaBatch objects are not copy-/move-constructible.
@@ -49,27 +49,6 @@ class DeltaBatch
   /** \brief DeltaBatch objects are not copy-/move-assignable.
    */
   DeltaBatch& operator=(const DeltaBatch&) = delete;
-
-  /** \brief Sets whether a checkpoint should be taken after this batch is applied.
-   */
-  void set_checkpoint_after(BoolStatus b)
-  {
-    this->checkpoint_after_ = b;
-  }
-
-  /** \brief Convenience.
-   */
-  void set_checkpoint_after(bool b)
-  {
-    this->checkpoint_after_ = bool_status_from(b);
-  }
-
-  /** \brief Returns whethera checkpoint should be taken after this batch is applied.
-   */
-  BoolStatus checkpoint_after() const
-  {
-    return this->checkpoint_after_;
-  }
 
   /** \brief Returns the number of compacted edits in the result set.  this->merge_compact_edits()
    * must be called before this function, or we panic.
@@ -91,9 +70,13 @@ class DeltaBatch
     return std::move(*this->result_set_);
   }
 
-  /** \brief
+  /** \brief Identifies the order of this batch relative to others in its group and other groups
+   * (with different edit offset upper bounds).
    */
-  DeltaBatchId batch_id() const noexcept;
+  const DeltaBatchId& batch_id() const noexcept
+  {
+    return this->batch_id_;
+  }
 
   /** \brief
    */
@@ -120,13 +103,11 @@ class DeltaBatch
  private:
   const DeltaBatchId batch_id_;
 
-  boost::intrusive_ptr<MemTableBase> mem_table_;
+  boost::intrusive_ptr<MemTableImpl> mem_table_;
 
   /** \brief The merged/compacted edits from the log.
    */
   Optional<ResultSet> result_set_;
-
-  BoolStatus checkpoint_after_ = BoolStatus::kUnknown;
 };
 
 }  // namespace turtle_kv

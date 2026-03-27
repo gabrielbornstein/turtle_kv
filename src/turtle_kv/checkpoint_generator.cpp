@@ -66,23 +66,28 @@ void CheckpointGenerator::join() noexcept
 StatusOr<usize> CheckpointGenerator::apply_batch(std::unique_ptr<DeltaBatch>&& batch,
                                                  llfs::PageCacheOvercommit& overcommit) noexcept
 {
-  LOG(INFO) << "Applying batch with batch.batch_id(): { upper_bound = "
-            << batch->batch_id().edit_offset() << ", index = " << batch->batch_id().index() << "}";
   VLOG(1) << "CheckpointGenerator::apply_batch()" << BATT_INSPECT(batch->debug_info());
 
-  if (batch->batch_id() >= this->batch_id_upper_bound_) {
-    this->batch_id_upper_bound_ = batch->batch_id().next();
-    BATT_CHECK_LT(batch->batch_id(), this->batch_id_upper_bound_);
+  // Verify that the batches are coming in order with no gaps.
+  //
+  if (!this->prev_batch_id_) {
+    if (this->prev_group_edit_offset_upper_bound_) {
+      BATT_CHECK_GT(batch->batch_id().edit_offset_upper_bound(),
+                    *this->prev_group_edit_offset_upper_bound_);
+    }
+  } else {
+    BATT_CHECK_EQ(this->prev_batch_id_->edit_offset_upper_bound(),
+                  batch->batch_id().edit_offset_upper_bound())
+        << "All batches in a group must have the same edit offset upper bound!";
+
+    BATT_CHECK_EQ(this->prev_batch_id_->index_in_group() + 1, batch->batch_id().index_in_group())
+        << "Batches must be applied in-order with no gaps!";
+
+    BATT_CHECK(!this->prev_batch_id_->is_last_in_group())
+        << "No batches may come after the last in a group!";
   }
 
-  // Skip unless base_checkpoint.rollup_slot_upper_bound() <= batch->slot_range.lower_bound. In the
-  // case of our very first batch (no checkpoint, batch_is is min_value()), continue.
-  //
-  if (batch->batch_id() <= this->base_checkpoint_.batch_upper_bound() &&
-      this->base_checkpoint_.batch_upper_bound() != DeltaBatchId::min_value()) {
-    LOG(INFO) << " -- Old batch; ignoring...";
-    return {0u};
-  }
+  this->prev_batch_id_ = batch->batch_id();
 
   // Make sure we have an active job.
   //
@@ -107,7 +112,7 @@ StatusOr<usize> CheckpointGenerator::apply_batch(std::unique_ptr<DeltaBatch>&& b
   });
 
   StatusOr<Checkpoint> new_checkpoint =
-      this->base_checkpoint_.flush_batch(this->worker_pool_,
+      this->base_checkpoint_.apply_batch(this->worker_pool_,
                                          *this->job_,
                                          this->tree_options_,
                                          this->metrics_.batch_update,
@@ -204,10 +209,15 @@ StatusOr<std::unique_ptr<CheckpointJob>> CheckpointGenerator::finalize_checkpoin
   BATT_CHECK_NOT_NULLPTR(this->job_)
       << "At least one batch must be pushed to the generator to finalize a new checkpoint!";
 
+  BATT_CHECK(this->prev_batch_id_);
+
+  const EditOffset edit_offset_upper_bound = this->prev_batch_id_->edit_offset_upper_bound();
   const usize batch_count = this->current_batch_count_;
 
   BATT_REQUIRE_OK(this->serialize_checkpoint(overcommit));
 
+  this->prev_group_edit_offset_upper_bound_ = edit_offset_upper_bound;
+  this->prev_batch_id_ = None;
   this->current_batch_count_ = 0;
 
   this->clear_old_roots();
@@ -220,7 +230,7 @@ StatusOr<std::unique_ptr<CheckpointJob>> CheckpointGenerator::finalize_checkpoin
   checkpoint_job->token.emplace(std::move(token));
   checkpoint_job->checkpoint_log = std::addressof(this->checkpoint_volume_);
   checkpoint_job->checkpoint = this->base_checkpoint_.clone();
-  checkpoint_job->batch_id_upper_bound = this->batch_id_upper_bound_;
+  checkpoint_job->edit_offset_upper_bound = edit_offset_upper_bound;
   checkpoint_job->batch_count = batch_count;
 
   checkpoint_job->packed_checkpoint.emplace(
@@ -229,8 +239,11 @@ StatusOr<std::unique_ptr<CheckpointJob>> CheckpointGenerator::finalize_checkpoin
               // TODO: [Gabe Bornstein 3/4/26] Consider, we aren't including batch index in the
               // serialization right now. Just upper_bound. Is that ok, or do we also need to
               // serialize index?
+              // @tastolfi: it is OK, because at this point, we should have applied batches that
+              // cover all the slots up to the edit_offset_upper_bound of the batch group.
               //
-              .batch_upper_bound = this->base_checkpoint_.batch_upper_bound().edit_offset(),
+              .edit_offset_upper_bound =
+                  this->base_checkpoint_.edit_offset_upper_bound().value_or_panic().value(),
               .new_tree_root = llfs::PackedPageId::from(this->base_checkpoint_.root_id()),
           },
       });
