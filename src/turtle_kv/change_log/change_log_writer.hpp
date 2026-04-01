@@ -342,7 +342,7 @@ inline Status ChangeLogWriter::Context::append_slot(EditOffset min_edit_offset_l
       buffer = nullptr;
     }
 
-    const bool no_buffer = (buffer != nullptr);
+    const bool no_buffer = (buffer == nullptr);
 
     // No buffer, no retry; there is no point attempting again if we had a fresh, empty buffer
     // to begin with.
