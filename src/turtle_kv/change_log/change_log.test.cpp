@@ -202,7 +202,7 @@ TEST_F(ChangeLogTest, ConcurrentWritesMultipleContexts)
   //
   {
     StatusOr<std::unique_ptr<ChangeLogWriter>> writer =
-        ChangeLogWriter::open_or_create(test_file_,
+        ChangeLogWriter::open_or_create(this->test_file_,
                                         config,
                                         ChangeLogWriter::Options::with_default_values(),
                                         RemoveExisting{true});
@@ -228,7 +228,7 @@ TEST_F(ChangeLogTest, ConcurrentWritesMultipleContexts)
                           << block->edit_offset_lower_bound() << ", on slot: " << offset;
                 // TODO: [Gabe Bornstein 4/1/26] Consider using pack_key_value_slot here
                 //
-                offsets.insert(offset.value());
+                offsets.insert(offset.value());  // data race!
                 std::memcpy(buffer.data(), data.data(), data.size());
               });
 
