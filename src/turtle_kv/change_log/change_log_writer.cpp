@@ -21,18 +21,10 @@ namespace turtle_kv {
 //
 ChangeLogWriter::Context::~Context() noexcept
 {
-  // TODO [tastolfi 2026-03-23] BUG - BlockBuffers with data that needs to be flushed are being
-  // discarded here; instead we should do something similar to the `consume_buffers()` code path.
-  //
   this->writer_.remove_context(*this);
-  for (;;) {
-    BlockBuffer* observed_head = nullptr;
-    BlockBuffer* buffer = this->pop_buffer(observed_head);
-    if (!buffer) {
-      break;
-    }
-    buffer->remove_ref(1);
-  }
+
+  BATT_CHECK_EQ(this->head_.load(), nullptr)
+      << "ChangeLogWriter::remove_context should have consumed all buffers!";
 }
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
@@ -164,12 +156,12 @@ void ChangeLogWriter::add_context(Context& context) noexcept
 //
 void ChangeLogWriter::remove_context(Context& context) noexcept
 {
-  // TODO [tastolfi 2026-03-23] maybe while we hold the lock on State, we should consume the buffer
-  // stack (if there is one) from context and stick it onto a temporary vector for the next time
-  // `poll_updates()` is called..?
   {
     batt::ScopedLock<State> locked_state{this->state_};
 
+    //----- --- -- -  -  -   -
+    // Remove `context` from the State.
+    //
     auto iter = std::find(locked_state->contexts_.begin(),
                           locked_state->contexts_.end(),
                           std::addressof(context));
@@ -180,6 +172,15 @@ void ChangeLogWriter::remove_context(Context& context) noexcept
 
     std::swap(*iter, locked_state->contexts_.back());
     locked_state->contexts_.pop_back();
+
+    //----- --- -- -  -  -   -
+    // Claim ownership over any (unwritten) buffers this Context may be holding, so we can flush
+    // them the next time the write task wakes up.
+    //
+    BlockBuffer* stack = context.consume_buffers();
+    if (stack != nullptr) {
+      locked_state->ready_to_write_.push_back(stack);
+    }
   }
 }
 
@@ -205,15 +206,23 @@ auto ChangeLogWriter::poll_updates() noexcept -> batt::SmallVec<BlockBuffer*, 8>
   {
     batt::ScopedLock<State> locked_state{this->state_};
 
+    // First collect the stacks from Contexts which have gone out-of-scope, since they are more
+    // likely to have produced older (EditOffset) data.
+    //
+    for (BlockBuffer* stack : locked_state->ready_to_write_) {
+      BATT_CHECK_NOT_NULLPTR(stack);
+      buffer_stacks.push_back(stack);
+    }
+    locked_state->ready_to_write_.clear();
+
+    // Now collect stacks from all active Contexts.
+    //
     for (Context* context : locked_state->contexts_) {
       BlockBuffer* stack = context->consume_buffers();
       if (stack) {
-        buffer_stacks.emplace_back(stack);
+        buffer_stacks.push_back(stack);
       }
     }
-
-    // TODO [tastolfi 2026-03-23] - see Context::~Context() - maybe we should stash a Context's
-    // buffer stack in a vector scoped to ChangeLogWriter, and collect stacks from that vector here?
   }
 
   for (BlockBuffer* head : buffer_stacks) {

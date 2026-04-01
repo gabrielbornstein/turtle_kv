@@ -276,8 +276,8 @@ batt::Status ChangeLogFile::read_blocks(SerializeFn process_block)
 
     if (!read_status.ok()) {
       LOG(INFO) << "1";
-      LOG(INFO) << "Recovered " << blocks_read << " blocks. Stopped reading with status:"
-                << BATT_INSPECT(batt::StatusCode::kOutOfRange);
+      LOG(INFO) << "Recovered " << blocks_read
+                << " blocks. Stopped reading with status:" << BATT_INSPECT(read_status);
       return batt::OkStatus();
     }
 
@@ -293,7 +293,8 @@ batt::Status ChangeLogFile::read_blocks(SerializeFn process_block)
         block.status() == batt::StatusCode::kDataLoss) {
       LOG(INFO) << "1";
       LOG(INFO) << "Recovered " << blocks_read
-                << " blocks. Stopped reading with status:" << BATT_INSPECT(block.status());
+                << " blocks. Stopped reading with status:" << BATT_INSPECT(block.status())
+                << BATT_INSPECT(curr_block_offset) << BATT_INSPECT(curr_file_offset);
       return batt::OkStatus();
     }
 
