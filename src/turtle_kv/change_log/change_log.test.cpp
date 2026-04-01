@@ -225,7 +225,8 @@ TEST_F(ChangeLogTest, ConcurrentWritesMultipleContexts)
               data.size(),
               [&data, &offsets](ChangeLogBlock* block, MutableBuffer buffer, EditOffset offset) {
                 LOG(INFO) << "Appending block with lower_bound: "
-                          << block->edit_offset_lower_bound() << ", on slot: " << offset;
+                          << block->edit_offset_lower_bound() << ", on slot: " << offset
+                          << BATT_INSPECT(data.size());
                 // TODO: [Gabe Bornstein 4/1/26] Consider using pack_key_value_slot here
                 //
                 offsets.insert(offset.value());  // data race!
