@@ -1035,6 +1035,14 @@ batt::StatusOr<boost::intrusive_ptr<turtle_kv::MemTable>> KVStore::recover_lates
                                                                            unpacked_slot->second);
         BATT_REQUIRE_OK(recovered_slot_status);
 
+        // TODO: [Gabe Bornstein 3/31/26] Need to start reading from where the last checkpoint was
+        // taken. Skip all slots that are already captured by the most recent checkpoint.
+        //
+
+        // TODO: [Gabe Bornstein 3/31/26]  Check if recovered_slot_status is ResourceExhausted,
+        // stash the current mem_table, create a new mem_table, keep going.
+        //
+
         return batt::OkStatus();
       });
 
@@ -1087,9 +1095,9 @@ void KVStore::mem_table_batch_scanner_thread_main()
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
 template <typename Fn>
-  requires std::invocable<Fn, std::unique_ptr<DeltaBatch>>
-Status KVStore::scan_mem_table_to_build_batches(boost::intrusive_ptr<MemTable>&& mem_table,
-                                                Fn&& consume_fn)
+requires std::invocable<Fn, std::unique_ptr<DeltaBatch>> Status
+KVStore::scan_mem_table_to_build_batches(boost::intrusive_ptr<MemTable>&& mem_table,
+                                         Fn&& consume_fn)
 {
   MemTable::BatchCompactor batch_compactor{*mem_table,
                                            /*byte_size_limit=*/this->tree_options_.flush_size()};
