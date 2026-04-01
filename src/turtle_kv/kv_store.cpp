@@ -368,22 +368,7 @@ u64 query_page_loader_reset_every_n()
     , log_writer_{std::move(change_log_writer)}
     , checkpoint_distance_{this->runtime_options_.initial_checkpoint_distance}
     , checkpoint_log_{std::move(checkpoint_log)}
-    , current_epoch_{0}
-    , state_{[&] {
-      State* state = new State{};
-
-      // TODO [tastolfi 2026-03-24] - for recovery, starting at EditOffset{0} is wrong.
-      state->mem_table_ = this->create_mem_table(EditOffset{0});
-      state->base_checkpoint_ = Checkpoint::make_empty();
-      state->base_checkpoint_.tree()->lock();
-
-      BATT_CHECK_EQ(state->use_count(), 0);
-      intrusive_ptr_add_ref(state);
-      BATT_CHECK_EQ(state->use_count(), 1);
-
-      return state;
-    }()}
-
+    , state_{}
     , deltas_size_{0}
 
     , checkpoint_token_pool_{std::make_shared<batt::Grant::Issuer>(
@@ -403,6 +388,17 @@ u64 query_page_loader_reset_every_n()
 
     , checkpoint_batch_count_{0}
 {
+  {
+    batt::Toggle<State>::Writer writer{this->state_};
+
+    State& init_state = writer.new_value();
+
+    // TODO [tastolfi 2026-03-24] - for recovery, starting at EditOffset{0} is wrong.
+    //
+    init_state.mem_table_ = this->create_mem_table(EditOffset{0});
+    init_state.base_checkpoint_.emplace(Checkpoint::make_empty);
+  }
+
   BATT_CHECK_EQ(this->state_.load()->use_count(), 1);
 
   this->tree_options_.set_trie_index_reserve_size(this->tree_options_.trie_index_reserve_size());
@@ -437,9 +433,6 @@ u64 query_page_loader_reset_every_n()
       this->checkpoint_flush_thread_main();
     });
   }
-  this->epoch_thread_.emplace([this] {
-    this->epoch_thread_main();
-  });
 }
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
@@ -511,10 +504,6 @@ void KVStore::join()
   if (this->checkpoint_flush_thread_) {
     this->checkpoint_flush_thread_->join();
     this->checkpoint_flush_thread_ = None;
-  }
-  if (this->epoch_thread_) {
-    this->epoch_thread_->join();
-    this->epoch_thread_ = None;
   }
   this->info_task_.join();
 }
@@ -1314,13 +1303,12 @@ Status KVStore::commit_checkpoint(std::unique_ptr<CheckpointJob>&& checkpoint_jo
   //
   Optional<llfs::slot_offset_type> prev_checkpoint_slot;
   {
-    State* const new_state = new State{};
+    batt::Toggle<State>::Writer writer{this->state_};
 
-    BATT_CHECK_EQ(new_state->use_count(), 0);
-    intrusive_ptr_add_ref(new_state);
-    BATT_CHECK_EQ(new_state->use_count(), 1);
+    State& new_state = writer.new_value();
+    const State& old_state = writer.old_value();
 
-    new_state->base_checkpoint_ = std::move(*checkpoint_job->checkpoint);
+    new_state.base_checkpoint_ = std::move(*checkpoint_job->checkpoint);
     new_state->base_checkpoint_.notify_durable(std::move(*slot_read_lock));
     new_state->base_checkpoint_.tree()->lock();
 
@@ -1386,64 +1374,6 @@ Status KVStore::commit_checkpoint(std::unique_ptr<CheckpointJob>&& checkpoint_jo
   }
 
   return OkStatus();
-}
-
-//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
-//
-void KVStore::add_obsolete_state(const State* old_state)
-{
-  const i64 expires_at_epoch = this->current_epoch_.load() + 10;  // 3;
-
-  BATT_CHECK(!old_state->last_epoch_);
-  //----- --- -- -  -  -   -
-  old_state->last_epoch_ = expires_at_epoch;
-  //----- --- -- -  -  -   -
-  BATT_CHECK(old_state->last_epoch_);
-  BATT_CHECK_EQ(*old_state->last_epoch_, expires_at_epoch);
-  {
-    absl::MutexLock lock{&this->obsolete_states_mutex_};
-    this->obsolete_states_.emplace_back(old_state);
-    BATT_CHECK_GT(old_state->use_count(), 1);
-  }
-  intrusive_ptr_release(old_state);
-}
-
-//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
-//
-void KVStore::epoch_thread_main()
-{
-  constexpr i64 kMinEpochUsec = 125000;
-  constexpr i64 kMaxEpochUsec = 250000;
-
-  std::default_random_engine rng{std::random_device{}()};
-  std::uniform_int_distribution<i64> pick_delay_usec{kMinEpochUsec, kMaxEpochUsec};
-
-  while (!this->halt_.get_value()) {
-    std::this_thread::sleep_for(std::chrono::microseconds{pick_delay_usec(rng)});
-    this->current_epoch_.fetch_add(1);
-
-    std::vector<boost::intrusive_ptr<const State>> to_delete;
-    {
-      absl::MutexLock lock{&this->obsolete_states_mutex_};
-
-      this->metrics().obsolete_state_count_stats.update(this->obsolete_states_.size());
-
-      for (usize i = 0; i < this->obsolete_states_.size();) {
-        BATT_CHECK(this->obsolete_states_[i]->last_epoch_);
-        if (*this->obsolete_states_[i]->last_epoch_ - this->current_epoch_ < 0) {
-          to_delete.emplace_back(std::move(this->obsolete_states_[i]));
-          this->obsolete_states_[i] = std::move(this->obsolete_states_.back());
-          this->obsolete_states_.pop_back();
-        } else {
-          ++i;
-        }
-      }
-    }
-
-    // (done explicitly for emphasis)
-    //
-    to_delete.clear();
-  }
 }
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -

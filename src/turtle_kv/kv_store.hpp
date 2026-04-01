@@ -7,6 +7,7 @@
 //+++++++++++-+-+--+----- --- -- -  -  -   -
 
 #pragma once
+#define TURTLE_KV_KV_STORE_HPP
 
 #include <turtle_kv/change_log/change_log_writer.hpp>
 #include <turtle_kv/checkpoint.hpp>
@@ -30,6 +31,7 @@
 #include <llfs/storage_context.hpp>
 #include <llfs/volume.hpp>
 
+#include <batteries/async/toggle.hpp>
 #include <batteries/async/watch.hpp>
 #include <batteries/hint.hpp>
 #include <batteries/small_vec.hpp>
@@ -187,11 +189,10 @@ class KVStore : public Table
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
  private:
-  struct State : batt::RefCounted<State> {
-    mutable Optional<i64> last_epoch_;
+  struct State {
     boost::intrusive_ptr<MemTable> mem_table_;
     std::vector<boost::intrusive_ptr<MemTable>> deltas_;
-    Checkpoint base_checkpoint_;
+    Optional<Checkpoint> base_checkpoint_;
   };
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
@@ -264,10 +265,6 @@ class KVStore : public Table
 
   void checkpoint_flush_thread_main();
 
-  void add_obsolete_state(const State* old_state);
-
-  void epoch_thread_main();
-
   //+++++++++++-+-+--+----- --- -- -  -  -   -
 
   KVStoreMetrics metrics_;
@@ -300,17 +297,10 @@ class KVStore : public Table
 
   ObjectThreadStorage<KVStore::ThreadContext>::ScopedSlot per_thread_;
 
-  std::atomic<i64> current_epoch_;
+  batt::Toggle<State> state_;
 
-  // The total number of bytes that have been written to the database so far. Used to identify the
-  // upper bound of the most recent edit, and the lower bound the of next edit. Uniquely identifies
-  // the location of each edit.
-  //
-  std::atomic<u64> next_offset_;
-
-  std::atomic<const State*> state_;
-
-  batt::CpuCacheLineIsolated<batt::Watch<usize>> deltas_size_;
+  batt::CpuCacheLineIsolated<batt::Watch<usize>>
+      deltas_size_;  // TODO [tastolfi 2026-04-01] still needed?
 
   std::shared_ptr<batt::Grant::Issuer> checkpoint_token_pool_;
 
@@ -360,8 +350,6 @@ class KVStore : public Table
   Optional<std::thread> checkpoint_update_thread_;
 
   Optional<std::thread> checkpoint_flush_thread_;
-
-  Optional<std::thread> epoch_thread_;
 };
 
 }  // namespace turtle_kv
