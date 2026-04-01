@@ -270,9 +270,12 @@ batt::Status ChangeLogFile::read_blocks(SerializeFn process_block)
     ChangeLogBlock::ScopedMemory block_memory =
         ChangeLogBlock::allocate_aligned(this->config_.block_size);
 
+    LOG(INFO) << "Reading ChangeLogFile at curr_file_offset: " << curr_file_offset;
+
     batt::Status read_status = this->file_.read_all(curr_file_offset, block_memory.buffer());
 
     if (!read_status.ok()) {
+      LOG(INFO) << "1";
       LOG(INFO) << "Recovered " << blocks_read << " blocks. Stopped reading with status:"
                 << BATT_INSPECT(batt::StatusCode::kOutOfRange);
       return batt::OkStatus();
@@ -282,10 +285,13 @@ batt::Status ChangeLogFile::read_blocks(SerializeFn process_block)
         ChangeLogBlock::recover(std::move(block_memory), std::move(*buffer_grant));
 
     // TODO: [Gabe Bornstein 3/9/26] Handle case where we reach a corrupt block, but need to keep
-    // reading and reach correct blocks that come after it.
+    // reading and reach correct blocks that come after it. We should keep reading while we get
+    // kDataLoss. Forget all blocks that have an EditOffset higher than blocks with kDataLoss.
+    // Remember valid blocks with lower EditOffsets.
     //
     if (block.status() == batt::StatusCode::kOutOfRange ||
         block.status() == batt::StatusCode::kDataLoss) {
+      LOG(INFO) << "1";
       LOG(INFO) << "Recovered " << blocks_read
                 << " blocks. Stopped reading with status:" << BATT_INSPECT(block.status());
       return batt::OkStatus();

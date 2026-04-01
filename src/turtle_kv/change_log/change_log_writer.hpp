@@ -144,10 +144,9 @@ class ChangeLogWriter
      * this Context. \return the sequence number (index) of the newly formatted slot.
      */
     template <typename SerializeFn>
-      requires std::invocable<const SerializeFn&, BlockBuffer*, MutableBuffer, EditOffset>
-    Status append_slot(EditOffset min_edit_offset_lower_bound,
-                       usize byte_size,
-                       const SerializeFn& fn) noexcept;
+    requires std::invocable<const SerializeFn&, BlockBuffer*, MutableBuffer, EditOffset> Status
+    append_slot(EditOffset min_edit_offset_lower_bound, usize byte_size, const SerializeFn& fn)
+    noexcept;
 
     //+++++++++++-+-+--+----- --- -- -  -  -   -
    private:
@@ -321,7 +320,7 @@ class ChangeLogWriter
 // #=##=##=#==#=#==#===#+==#+==========+==+=+=+=+=+=++=+++=+++++=-++++=-+++++++++++
 
 template <typename SerializeFn>
-  requires std::invocable<const SerializeFn&, ChangeLogBlock*, MutableBuffer, EditOffset>
+requires std::invocable<const SerializeFn&, ChangeLogBlock*, MutableBuffer, EditOffset>
 inline Status ChangeLogWriter::Context::append_slot(EditOffset min_edit_offset_lower_bound,
                                                     usize byte_size,
                                                     const SerializeFn& serialize_fn) noexcept
@@ -342,7 +341,7 @@ inline Status ChangeLogWriter::Context::append_slot(EditOffset min_edit_offset_l
       buffer = nullptr;
     }
 
-    const bool no_buffer = (buffer != nullptr);
+    const bool no_buffer = (buffer == nullptr);
 
     // No buffer, no retry; there is no point attempting again if we had a fresh, empty buffer
     // to begin with.
