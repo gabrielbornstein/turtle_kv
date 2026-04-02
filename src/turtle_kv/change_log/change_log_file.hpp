@@ -262,11 +262,6 @@ batt::Status ChangeLogFile::read_blocks(SerializeFn process_block)
     //
     i64 curr_file_offset = this->config_.block0_offset + curr_block_offset;
 
-    batt::StatusOr<batt::Grant> buffer_grant =
-        this->reserve_blocks(BlockCount{1}, batt::WaitForResource::kFalse);
-
-    BATT_REQUIRE_OK(buffer_grant);
-
     ChangeLogBlock::ScopedMemory block_memory =
         ChangeLogBlock::allocate_aligned(this->config_.block_size);
 
@@ -277,6 +272,11 @@ batt::Status ChangeLogFile::read_blocks(SerializeFn process_block)
                 << " blocks. Stopped reading with status:" << BATT_INSPECT(read_status);
       return batt::OkStatus();
     }
+
+    batt::StatusOr<batt::Grant> buffer_grant =
+        this->reserve_blocks(BlockCount{1}, batt::WaitForResource::kFalse);
+
+    BATT_REQUIRE_OK(buffer_grant);
 
     StatusOr<boost::intrusive_ptr<ChangeLogBlock>> block =
         ChangeLogBlock::recover(std::move(block_memory), std::move(*buffer_grant));

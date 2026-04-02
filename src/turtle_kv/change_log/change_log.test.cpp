@@ -474,4 +474,10 @@ TEST_F(ChangeLogTest, ExceedCapacityWrapAround)
     EXPECT_EQ(offsets.size(), 0);
   }
 }
+
+// TODO: [Gabe Bornstein 4/2/26] Write a test case that has a "Corrupt Block" in the middle of the
+// ChangeLog, but valid blocks on either side of it. Try to write a block with an invalid magic
+// number in the header.
+//
+
 }  // namespace turtle_kv
