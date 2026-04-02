@@ -203,11 +203,6 @@ class KVStore : public Table
     boost::intrusive_ptr<MemTable> mem_table_;
     std::vector<boost::intrusive_ptr<MemTable>> deltas_;
     Optional<Checkpoint> base_checkpoint_;
-
-    ~State() noexcept
-    {
-      LOG(INFO) << "KVStore::~State()";
-    }
   };
 
   static_assert(std::default_initializable<State>);
