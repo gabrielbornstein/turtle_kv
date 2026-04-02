@@ -78,6 +78,10 @@ class KVStore : public Table
     {
     }
 
+    // TODO [tastolfi 2026-04-02] - this should no longer be needed, now that MemTable should manage
+    // the min edit offset lower bound passed to Context::append_slot.  REMOTE (instead, create a
+    // single Context that persists for the scope of the kv store/thread).
+    //
     ChangeLogWriter::Context& log_writer_context(EditOffset mem_table_edit_offset_lower_bound)
     {
       if (BATT_HINT_FALSE(mem_table_edit_offset_lower_bound !=
@@ -119,6 +123,11 @@ class KVStore : public Table
       const std::filesystem::path& dir_path,
       const TreeOptions& tree_options,
       Optional<RuntimeOptions> runtime_options = None) noexcept;
+
+  // TODO [tastolfi 2026-04-02] Should probably be private.
+  //
+  static batt::StatusOr<turtle_kv::Checkpoint> recover_latest_checkpoint(
+      llfs::Volume& checkpoint_log_volume);
 
   static Status global_init();
 
@@ -162,9 +171,6 @@ class KVStore : public Table
 
   void set_checkpoint_distance(usize chi) noexcept;
 
-  static batt::StatusOr<turtle_kv::Checkpoint> recover_latest_checkpoint(
-      llfs::Volume& checkpoint_log_volume);
-
   batt::StatusOr<boost::intrusive_ptr<MemTable>> recover_latest_mem_table(
       const std::filesystem::path& path);
 
@@ -182,7 +188,7 @@ class KVStore : public Table
 
   llfs::PageCache& page_cache() noexcept
   {
-    return this->checkpoint_log_->cache();
+    return this->page_cache_;
   }
 
   void reset_thread_context() noexcept;
@@ -194,6 +200,8 @@ class KVStore : public Table
     std::vector<boost::intrusive_ptr<MemTable>> deltas_;
     Optional<Checkpoint> base_checkpoint_;
   };
+
+  static_assert(std::default_initializable<State>);
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
 
@@ -217,7 +225,7 @@ class KVStore : public Table
    * waiting for another thread to do so), and finally handing off the old MemTable to the
    * checkpoint update pipeline.
    */
-  Status finalize_mem_table(const State* observed_state);
+  Status finalize_mem_table(boost::intrusive_ptr<MemTable>&& mem_table);
 
   /** \brief Waits for the passed MemTable to be the next one that should be pushed to
    * `this->finalized_mem_table_channel_`, and then pushes it to the channel.
@@ -226,10 +234,8 @@ class KVStore : public Table
 
   /** \brief Creates a new MemTable (with the passed EditOffset as its lower bound) and swaps it in
    * to the active state.
-   *
-   * `*observed_state` is updated as a side-effect of this function.
    */
-  Status reset_active_mem_table(EditOffset current_edit_offset, const State** observed_state);
+  Status reset_active_mem_table(EditOffset current_edit_offset);
 
   /** \brief Passes the given MemTable to the checkpoint update pipeline.
    *
@@ -277,6 +283,8 @@ class KVStore : public Table
 
   boost::intrusive_ptr<llfs::StorageContext> storage_context_;
 
+  llfs::PageCache& page_cache_;
+
   TreeOptions tree_options_;
 
   RuntimeOptions runtime_options_;
@@ -299,8 +307,7 @@ class KVStore : public Table
 
   batt::Toggle<State> state_;
 
-  batt::CpuCacheLineIsolated<batt::Watch<usize>>
-      deltas_size_;  // TODO [tastolfi 2026-04-01] still needed?
+  batt::CpuCacheLineIsolated<batt::Watch<usize>> deltas_size_;
 
   std::shared_ptr<batt::Grant::Issuer> checkpoint_token_pool_;
 
@@ -310,8 +317,7 @@ class KVStore : public Table
 
   // The EditOffset lower bound of the next finalized MemTable to be pushed to the channel.
   //
-  std::atomic<i64> next_mem_table_edit_offset_{
-      this->state_.load()->mem_table_->edit_offset_lower_bound().value()};
+  std::atomic<i64> next_mem_table_edit_offset_;
 
   PipelineChannel<boost::intrusive_ptr<MemTable>> finalized_mem_table_channel_;
 
@@ -326,14 +332,6 @@ class KVStore : public Table
   CheckpointGenerator checkpoint_generator_;
 
   usize checkpoint_batch_count_;
-
-  //----- --- -- -  -  -   -
-  // Obsolete states.
-  //----- --- -- -  -  -   -
-
-  absl::Mutex obsolete_states_mutex_;
-
-  std::vector<boost::intrusive_ptr<const State>> obsolete_states_;
 
   //----- --- -- -  -  -   -
   // Checkpoint Flush State.
