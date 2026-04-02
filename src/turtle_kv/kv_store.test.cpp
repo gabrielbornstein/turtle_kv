@@ -225,7 +225,8 @@ TEST_F(KVStoreTest, CreateAndOpen)
                                                    kv_store_config,     //
                                                    RemoveExisting{true});
 
-            ASSERT_TRUE(create_status.ok()) << BATT_INSPECT(create_status);
+            ASSERT_TRUE(create_status.ok())
+                << BATT_INSPECT(create_status) << BATT_INSPECT(test_kv_store_dir);
           }
 
           auto p_storage_context =

@@ -146,6 +146,10 @@ class ChangeLogReader
       // TODO: [Gabe Bornstein 4/2/26] Is it better to pass the edit_offset of the slot here, or the
       // EditOffsetDelta of the slot from the block?
       //
+      // @tastolfi: Good question; I think the (absolute) EditOffset is better; the callback/visitor
+      // fn can always get the delta from the block buffer and edit offset if it wants.  My hunch is
+      // that the block-relative delta is an implementation detail most visitors won't care about.
+      //
       Status visit_status = visitor(current->block.get(), edit_offset, payload);
       BATT_REQUIRE_OK(visit_status);
 

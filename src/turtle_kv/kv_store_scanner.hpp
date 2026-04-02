@@ -334,7 +334,7 @@ class KVStoreScanner
                          alignof(ART<MemTableValueEntry>::Scanner<ARTBase::Synchronized::kFalse,
                                                                   /*kValuesOnly=*/true>))>;
 
-  boost::intrusive_ptr<const KVStore::State> pinned_state_;
+  batt::Toggle<KVStore::State>::Reader state_reader_;
   llfs::PageLoader& page_loader_;
   PageSliceStorage* slice_storage_;
   llfs::PageIdSlot root_;
