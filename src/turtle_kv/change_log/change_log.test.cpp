@@ -26,8 +26,8 @@ class ChangeLogTest : public ::testing::Test
     batt::StatusOr<std::filesystem::path> root = turtle_kv::data_root();
     ASSERT_TRUE(root.ok());
 
-    std::filesystem::path test_kv_store_dir = *root / "turtle_kv_Test" / "change_log_test";
-    test_file_ = test_dir_ / "test_change_log.log";
+    this->test_dir_ = *root / "turtle_kv_Test";
+    this->test_file_ = this->test_dir_ / "test_change_log.log";
   }
 
   void TearDown() override
@@ -44,9 +44,9 @@ class ChangeLogTest : public ::testing::Test
 TEST_F(ChangeLogTest, CreateAndOpenFile)
 {
   ChangeLogFile::Config config = ChangeLogFile::Config::with_default_values();
-  ASSERT_TRUE(ChangeLogFile::create(test_file_, config, RemoveExisting{true}).ok());
+  ASSERT_TRUE(ChangeLogFile::create(this->test_file_, config, RemoveExisting{true}).ok());
 
-  StatusOr<std::unique_ptr<ChangeLogFile>> log_file = ChangeLogFile::open(test_file_);
+  StatusOr<std::unique_ptr<ChangeLogFile>> log_file = ChangeLogFile::open(this->test_file_);
   ASSERT_TRUE(log_file.ok());
   ASSERT_NE(log_file->get(), nullptr);
 
@@ -63,7 +63,7 @@ TEST_F(ChangeLogTest, WriterBasicOperations)
   ChangeLogWriter::Options options = ChangeLogWriter::Options::with_default_values();
 
   StatusOr<std::unique_ptr<ChangeLogWriter>> writer =
-      ChangeLogWriter::open_or_create(test_file_, config, options, RemoveExisting{true});
+      ChangeLogWriter::open_or_create(this->test_file_, config, options, RemoveExisting{true});
   ASSERT_TRUE(writer.ok());
 
   (*writer)->start(batt::Runtime::instance().default_scheduler().schedule_task());
@@ -77,10 +77,8 @@ TEST_F(ChangeLogTest, WriterBasicOperations)
       EditOffset{0},
       test_data.size(),
       [&test_data](ChangeLogBlock* block, MutableBuffer buffer, EditOffset offset) {
-        LOG(INFO) << "Appending block with lower_bound: " << block->edit_offset_lower_bound()
-                  << ", on slot: " << offset;
-        // TODO: [Gabe Bornstein 4/1/26] Consider using pack_key_value_slot here
-        //
+        VLOG(1) << "Appending block with lower_bound: " << block->edit_offset_lower_bound()
+                << ", on slot: " << offset;
         std::memcpy(buffer.data(), test_data.data(), test_data.size());
       });
   ASSERT_TRUE(write_status.ok());
@@ -112,7 +110,7 @@ TEST_F(ChangeLogTest, WriteAndReadMultipleSlots)
   //
   {
     StatusOr<std::unique_ptr<ChangeLogWriter>> writer =
-        ChangeLogWriter::open_or_create(test_file_,
+        ChangeLogWriter::open_or_create(this->test_file_,
                                         config,
                                         ChangeLogWriter::Options::with_default_values(),
                                         RemoveExisting{true});
@@ -129,10 +127,8 @@ TEST_F(ChangeLogTest, WriteAndReadMultipleSlots)
           EditOffset{0},
           test_data[i].size(),
           [&data = test_data[i]](ChangeLogBlock* block, MutableBuffer buffer, EditOffset offset) {
-            LOG(INFO) << "Appending block with lower_bound: " << block->edit_offset_lower_bound()
-                      << ", on slot: " << offset;
-            // TODO: [Gabe Bornstein 4/1/26] Consider using pack_key_value_slot here
-            //
+            VLOG(1) << "Appending block with lower_bound: " << block->edit_offset_lower_bound()
+                    << ", on slot: " << offset;
             std::memcpy(buffer.data(), data.data(), data.size());
           });
       ASSERT_TRUE(write_status.ok()) << "Failed to write slot " << i;
@@ -149,7 +145,7 @@ TEST_F(ChangeLogTest, WriteAndReadMultipleSlots)
   // Read phase
   //
   {
-    StatusOr<std::unique_ptr<ChangeLogReader>> reader = ChangeLogReader::open(test_file_);
+    StatusOr<std::unique_ptr<ChangeLogReader>> reader = ChangeLogReader::open(this->test_file_);
     ASSERT_TRUE(reader.ok());
 
     std::vector<std::string> read_data;
@@ -157,10 +153,8 @@ TEST_F(ChangeLogTest, WriteAndReadMultipleSlots)
 
     auto visitor_fn =
         [&](ChangeLogBlock* block, EditOffset edit_offset, ConstBuffer payload) -> Status {
-      LOG(INFO) << "Reading block with lower_bound: " << block->edit_offset_lower_bound()
-                << ", on slot: " << edit_offset;
-      // TODO: [Gabe Bornstein 4/1/26] Consider using unpack_key_value_slot here
-      //
+      VLOG(1) << "Reading block with lower_bound: " << block->edit_offset_lower_bound()
+              << ", on slot: " << edit_offset;
       std::string data(reinterpret_cast<const char*>(payload.data()), payload.size());
       read_data.push_back(data);
       edit_offsets.push_back(edit_offset);
@@ -196,13 +190,13 @@ TEST_F(ChangeLogTest, ConcurrentWritesMultipleContexts)
   config.block_count = BlockCount{20};
   const int num_threads = 4;
   const int slots_per_thread = 10;
-  std::unordered_set<i64> offsets;
+  batt::Mutex<std::unordered_set<i64>> offsets;
 
   // Write Phase
   //
   {
     StatusOr<std::unique_ptr<ChangeLogWriter>> writer =
-        ChangeLogWriter::open_or_create(test_file_,
+        ChangeLogWriter::open_or_create(this->test_file_,
                                         config,
                                         ChangeLogWriter::Options::with_default_values(),
                                         RemoveExisting{true});
@@ -224,12 +218,10 @@ TEST_F(ChangeLogTest, ConcurrentWritesMultipleContexts)
               EditOffset{0},
               data.size(),
               [&data, &offsets](ChangeLogBlock* block, MutableBuffer buffer, EditOffset offset) {
-                LOG(INFO) << "Appending block with lower_bound: "
-                          << block->edit_offset_lower_bound() << ", on slot: " << offset
-                          << BATT_INSPECT(data.size());
-                // TODO: [Gabe Bornstein 4/1/26] Consider using pack_key_value_slot here
-                //
-                offsets.insert(offset.value());
+                VLOG(1) << "Appending block with lower_bound: " << block->edit_offset_lower_bound()
+                        << ", on slot: " << offset << BATT_INSPECT(data.size());
+                batt::ScopedLock<std::unordered_set<i64>> locked_offsets{offsets};
+                locked_offsets->insert(offset.value());
                 std::memcpy(buffer.data(), data.data(), data.size());
               });
 
@@ -257,21 +249,23 @@ TEST_F(ChangeLogTest, ConcurrentWritesMultipleContexts)
   // Read Phase
   //
   {
-    StatusOr<std::unique_ptr<ChangeLogReader>> reader = ChangeLogReader::open(test_file_);
+    StatusOr<std::unique_ptr<ChangeLogReader>> reader = ChangeLogReader::open(this->test_file_);
     ASSERT_TRUE(reader.ok());
 
     int slots_read = 0;
     auto visitor_fn =
         [&](ChangeLogBlock* block, EditOffset edit_offset, ConstBuffer payload) -> Status {
-      LOG(INFO) << "Reading block with lower_bound: " << block->edit_offset_lower_bound()
-                << ", on slot: " << edit_offset << ", payload size: " << payload.size();
+      VLOG(1) << "Reading block with lower_bound: " << block->edit_offset_lower_bound()
+              << ", on slot: " << edit_offset << ", payload size: " << payload.size();
 
-      // TODO: [Gabe Bornstein 4/1/26] Consider using unpack_key_value_slot here
-      //
       slots_read++;
 
-      BATT_REQUIRE_NE(offsets.find(edit_offset.value()), offsets.end());
-      offsets.erase(edit_offset.value());
+      batt::ScopedLock<std::unordered_set<i64>> locked_offsets{offsets};
+
+      // Check that edit_offset was in the set of offsets we wrote
+      //
+      BATT_REQUIRE_NE(locked_offsets->find(edit_offset.value()), locked_offsets->end());
+      locked_offsets->erase(edit_offset.value());
       return OkStatus();
     };
 
@@ -282,7 +276,8 @@ TEST_F(ChangeLogTest, ConcurrentWritesMultipleContexts)
 
     // Verify that we read all the offsets we wrote.
     //
-    EXPECT_EQ(offsets.size(), 0);
+    batt::ScopedLock<std::unordered_set<i64>> locked_offsets{offsets};
+    EXPECT_EQ(locked_offsets->size(), 0);
   }
 }
 
@@ -296,7 +291,7 @@ TEST_F(ChangeLogTest, BlockBoundaryConditions)
   int num_appends = 6;
 
   StatusOr<std::unique_ptr<ChangeLogWriter>> writer =
-      ChangeLogWriter::open_or_create(test_file_,
+      ChangeLogWriter::open_or_create(this->test_file_,
                                       config,
                                       ChangeLogWriter::Options::with_default_values(),
                                       RemoveExisting{true});
@@ -314,10 +309,8 @@ TEST_F(ChangeLogTest, BlockBoundaryConditions)
         EditOffset{0},
         large_data.size(),
         [&large_data, i](ChangeLogBlock* block, MutableBuffer buffer, EditOffset offset) {
-          LOG(INFO) << "Appending block with lower_bound: " << block->edit_offset_lower_bound()
-                    << ", on slot: " << offset;
-          // TODO: [Gabe Bornstein 4/1/26] Consider using pack_key_value_slot here
-          //
+          VLOG(1) << "Appending block with lower_bound: " << block->edit_offset_lower_bound()
+                  << ", on slot: " << offset;
           std::memcpy(buffer.data(), large_data.data(), large_data.size());
         });
 
@@ -344,7 +337,7 @@ TEST_F(ChangeLogTest, ReadEmptyLog)
   ChangeLogFile::Config config = ChangeLogFile::Config::with_default_values();
 
   StatusOr<std::unique_ptr<ChangeLogWriter>> writer =
-      ChangeLogWriter::open_or_create(test_file_,
+      ChangeLogWriter::open_or_create(this->test_file_,
                                       config,
                                       ChangeLogWriter::Options::with_default_values(),
                                       RemoveExisting{true});
@@ -356,14 +349,14 @@ TEST_F(ChangeLogTest, ReadEmptyLog)
 
   // Try to read
   //
-  StatusOr<std::unique_ptr<ChangeLogReader>> reader = ChangeLogReader::open(test_file_);
+  StatusOr<std::unique_ptr<ChangeLogReader>> reader = ChangeLogReader::open(this->test_file_);
   ASSERT_TRUE(reader.ok());
 
   int slots_read = 0;
   auto visitor_fn =
       [&](ChangeLogBlock* block, EditOffset edit_offset, ConstBuffer payload) -> Status {
-    LOG(INFO) << "Reading block with lower_bound: " << block->edit_offset_lower_bound()
-              << ", on slot: " << edit_offset << ", payload size: " << payload.size();
+    VLOG(1) << "Reading block with lower_bound: " << block->edit_offset_lower_bound()
+            << ", on slot: " << edit_offset << ", payload size: " << payload.size();
     slots_read++;
     return OkStatus();
   };
@@ -398,7 +391,7 @@ TEST_F(ChangeLogTest, ExceedCapacityWrapAround)
   //
   {
     StatusOr<std::unique_ptr<ChangeLogWriter>> writer =
-        ChangeLogWriter::open_or_create(test_file_,
+        ChangeLogWriter::open_or_create(this->test_file_,
                                         config,
                                         ChangeLogWriter::Options::with_default_values(),
                                         RemoveExisting{true});
@@ -418,8 +411,8 @@ TEST_F(ChangeLogTest, ExceedCapacityWrapAround)
           EditOffset{0},
           slot_data.size(),
           [&slot_data, &offsets](ChangeLogBlock* block, MutableBuffer buffer, EditOffset offset) {
-            LOG(INFO) << "Appending block with lower_bound: " << block->edit_offset_lower_bound()
-                      << ", on slot: " << offset;
+            VLOG(1) << "Appending block with lower_bound: " << block->edit_offset_lower_bound()
+                    << ", on slot: " << offset;
             offsets.insert(offset.value());
             std::memcpy(buffer.data(), slot_data.data(), slot_data.size());
           });
@@ -456,17 +449,15 @@ TEST_F(ChangeLogTest, ExceedCapacityWrapAround)
   // Read Phase
   //
   {
-    StatusOr<std::unique_ptr<ChangeLogReader>> reader = ChangeLogReader::open(test_file_);
+    StatusOr<std::unique_ptr<ChangeLogReader>> reader = ChangeLogReader::open(this->test_file_);
     ASSERT_TRUE(reader.ok());
 
     int slots_read = 0;
     auto visitor_fn =
         [&](ChangeLogBlock* block, EditOffset edit_offset, ConstBuffer payload) -> Status {
-      LOG(INFO) << "Reading block with lower_bound: " << block->edit_offset_lower_bound()
-                << ", on slot: " << edit_offset << ", payload size: " << payload.size();
+      VLOG(1) << "Reading block with lower_bound: " << block->edit_offset_lower_bound()
+              << ", on slot: " << edit_offset << ", payload size: " << payload.size();
 
-      // TODO: [Gabe Bornstein 4/1/26] Consider using unpack_key_value_slot here
-      //
       slots_read++;
 
       BATT_REQUIRE_NE(offsets.find(edit_offset.value()), offsets.end());
