@@ -45,11 +45,14 @@ class ChangeLogBlock
 
   /** \brief Internal structure used to delineate chunks of formatted slot data within the buffer.
    */
-  struct SlotInfo {
+  struct alignas(2) SlotInfo {
     /** \brief The offset (from `this`, the start of the block buffer) of the start of this slot.
      */
-    u16 offset;
+    little_u16 offset;
   };
+
+  static_assert(sizeof(SlotInfo) == 2);
+  static_assert(alignof(SlotInfo) == 2);
 
   class ScopedMemory
   {
@@ -202,16 +205,23 @@ class ChangeLogBlock
     return this->space_;
   }
 
-  /** \brief Returns the part of the buffer that is available for formatting slot data.
+  /** \brief Returns the next available `n_bytes` bytes.
    */
-  MutableBuffer output_buffer() noexcept
+  MutableBuffer output_buffer(usize n_bytes) noexcept
   {
     BATT_CHECK_EQ(this->xxh3_seed_, 0);
 
     return MutableBuffer{
         (void*)advance_pointer((void*)this, this->slots_rend()->offset),
-        this->space(),
+        n_bytes,
     };
+  }
+
+  /** \brief Returns the part of the buffer that is available for formatting slot data.
+   */
+  MutableBuffer output_buffer() noexcept
+  {
+    return this->output_buffer(this->space());
   }
 
   /** \brief Finalize the buffer and return a ConstBuffer that can be written to storage.
@@ -319,6 +329,16 @@ class ChangeLogBlock
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
 
+  usize get_slot_offset(usize slot_i) const
+  {
+    return (this->slots_rbegin() - slot_i)->offset;
+  }
+
+  const void* get_slot_begin(usize slot_i) const
+  {
+    return advance_pointer((const void*)this, this->get_slot_offset(slot_i));
+  }
+
   SlotInfo* slots_rbegin() noexcept
   {
     return (SlotInfo*)(advance_pointer((void*)this, this->block_size_)) - 1;
@@ -326,7 +346,7 @@ class ChangeLogBlock
 
   const SlotInfo* slots_rbegin() const noexcept
   {
-    return (SlotInfo*)(advance_pointer((void*)this, this->block_size_)) - 1;
+    return (const SlotInfo*)(advance_pointer((void*)this, this->block_size_)) - 1;
   }
 
   SlotInfo* slots_rend() noexcept

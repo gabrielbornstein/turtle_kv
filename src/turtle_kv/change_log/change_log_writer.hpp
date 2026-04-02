@@ -406,7 +406,7 @@ inline Status ChangeLogWriter::Context::append_slot(EditOffset min_edit_offset_l
     if (space_needed <= space_available) {
       // Serialize the slot's edit offset delta at the beginning.
       //
-      MutableBuffer slot_buffer = buffer->output_buffer();
+      MutableBuffer slot_buffer = buffer->output_buffer(space_needed);
 
       *static_cast<PackedOffsetDelta*>(slot_buffer.data()) =
           (slot_edit_offset - buffer->edit_offset_lower_bound()).to_slot_delta().value();

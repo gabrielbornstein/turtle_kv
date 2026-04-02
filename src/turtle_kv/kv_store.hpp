@@ -9,6 +9,9 @@
 #pragma once
 #define TURTLE_KV_KV_STORE_HPP
 
+#include <turtle_kv/config.hpp>
+//
+
 #include <turtle_kv/change_log/change_log_writer.hpp>
 #include <turtle_kv/checkpoint.hpp>
 #include <turtle_kv/checkpoint_generator.hpp>
@@ -17,6 +20,7 @@
 
 #include <turtle_kv/mem_table/mem_table.hpp>
 
+#include <turtle_kv/tree/filter_page_write_state.hpp>
 #include <turtle_kv/tree/pinning_page_loader.hpp>
 #include <turtle_kv/tree/tree_options.hpp>
 
@@ -307,6 +311,8 @@ class KVStore : public Table
   absl::Mutex base_checkpoint_mutex_;
 
   std::unique_ptr<llfs::Volume> checkpoint_log_;
+
+  boost::intrusive_ptr<FilterPageWriteState> filter_page_write_state_;
 
   ObjectThreadStorage<KVStore::ThreadContext>::ScopedSlot per_thread_;
 
