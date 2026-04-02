@@ -270,12 +270,9 @@ batt::Status ChangeLogFile::read_blocks(SerializeFn process_block)
     ChangeLogBlock::ScopedMemory block_memory =
         ChangeLogBlock::allocate_aligned(this->config_.block_size);
 
-    LOG(INFO) << "Reading ChangeLogFile at curr_file_offset: " << curr_file_offset;
-
     batt::Status read_status = this->file_.read_all(curr_file_offset, block_memory.buffer());
 
     if (!read_status.ok()) {
-      LOG(INFO) << "1";
       LOG(INFO) << "Recovered " << blocks_read
                 << " blocks. Stopped reading with status:" << BATT_INSPECT(read_status);
       return batt::OkStatus();
@@ -291,7 +288,6 @@ batt::Status ChangeLogFile::read_blocks(SerializeFn process_block)
     //
     if (block.status() == batt::StatusCode::kOutOfRange ||
         block.status() == batt::StatusCode::kDataLoss) {
-      LOG(INFO) << "1";
       LOG(INFO) << "Recovered " << blocks_read
                 << " blocks. Stopped reading with status:" << BATT_INSPECT(block.status())
                 << BATT_INSPECT(curr_block_offset) << BATT_INSPECT(curr_file_offset);

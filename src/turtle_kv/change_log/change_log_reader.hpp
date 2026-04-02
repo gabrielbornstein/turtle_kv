@@ -73,7 +73,13 @@ class ChangeLogReader
         //
         BATT_CHECK(this->has_more());
         ConstBuffer slot_buffer = this->block->get_slot(this->next_slot_i);
-        return EditOffset{*((little_i32*)slot_buffer.data())};
+
+        // Calculate the current slot's edit_offset by reading the slot's offset delta from the slot
+        // buffer and adding it to the block's lower bound.
+        //
+        SlotEditOffsetDelta offset_delta = SlotEditOffsetDelta{*((little_i32*)slot_buffer.data())};
+        EditOffset edit_offset = this->block->edit_offset_lower_bound() + offset_delta;
+        return edit_offset;
       }
 
       // Check if there are more slots to process.
@@ -137,6 +143,13 @@ class ChangeLogReader
       EditOffset edit_offset = current->current_edit_offset();
       ConstBuffer payload = slot_buffer + kPerSlotEditOffsetDeltaOverhead;
 
+      // TODO: [Gabe Bornstein 4/2/26] Is it better to pass the edit_offset of the slot here, or the
+      // EditOffsetDelta of the slot from the block?
+      //
+      // @tastolfi: Good question; I think the (absolute) EditOffset is better; the callback/visitor
+      // fn can always get the delta from the block buffer and edit offset if it wants.  My hunch is
+      // that the block-relative delta is an implementation detail most visitors won't care about.
+      //
       Status visit_status = visitor(current->block.get(), edit_offset, payload);
       BATT_REQUIRE_OK(visit_status);
 
