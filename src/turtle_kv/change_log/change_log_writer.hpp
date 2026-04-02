@@ -16,6 +16,7 @@
 #include <turtle_kv/import/int_types.hpp>
 #include <turtle_kv/import/interval.hpp>
 #include <turtle_kv/import/metrics.hpp>
+#include <turtle_kv/import/slice.hpp>
 
 #include <batteries/async/future.hpp>
 #include <batteries/async/grant.hpp>
@@ -23,6 +24,9 @@
 #include <batteries/async/task.hpp>
 #include <batteries/async/task_scheduler.hpp>
 #include <batteries/interval.hpp>
+
+#include <concepts>
+#include <ranges>
 
 namespace turtle_kv {
 
@@ -144,9 +148,10 @@ class ChangeLogWriter
      * this Context. \return the sequence number (index) of the newly formatted slot.
      */
     template <typename SerializeFn>
-    requires std::invocable<const SerializeFn&, BlockBuffer*, MutableBuffer, EditOffset> Status
-    append_slot(EditOffset min_edit_offset_lower_bound, usize byte_size, const SerializeFn& fn)
-    noexcept;
+      requires std::invocable<const SerializeFn&, BlockBuffer*, MutableBuffer, EditOffset>
+    Status append_slot(EditOffset min_edit_offset_lower_bound,
+                       usize byte_size,
+                       const SerializeFn& fn) noexcept;
 
     //+++++++++++-+-+--+----- --- -- -  -  -   -
    private:
@@ -254,13 +259,37 @@ class ChangeLogWriter
     std::vector<Context*> contexts_;
     std::vector<BlockBuffer*> ready_to_write_;
 
-    ~State() noexcept
+    //----- --- -- -  -  -   -
+
+    void check_ready_to_shut_down() noexcept
     {
       BATT_CHECK(this->contexts_.empty()) << "All Context objects associated with a "
                                              "ChangeLogWriter MUST be destroyed before the "
                                              "ChangeLogWriter goes out of scope!";
+
+      BATT_CHECK_EQ(this->ready_to_write_.size(), 0) << "BlockBuffer stacks must be released!";
+    }
+
+    ~State() noexcept
+    {
+      this->check_ready_to_shut_down();
     }
   };
+
+  //+++++++++++-+-+--+----- --- -- -  -  -   -
+
+  /** \brief Removes the same count of references (`delta`) from each of the BlockBuffers in the
+   * passed range (`range`).
+   */
+  template <typename BufferRange>
+    requires std::ranges::range<BufferRange> &&
+             std::assignable_from<BlockBuffer*&, std::ranges::range_value_t<BufferRange>>
+  static void remove_buffer_refs(const BufferRange& range, i32 delta = 1) noexcept
+  {
+    for (BlockBuffer* buffer : range) {
+      buffer->remove_ref(delta);
+    }
+  }
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
 
@@ -287,6 +316,10 @@ class ChangeLogWriter
    * might contain committed slot data.
    */
   batt::SmallVec<BlockBuffer*, 8> poll_updates() noexcept;
+
+  /** \brief Writes all passed BlockBuffers to the log.
+   */
+  Status write_buffers(const batt::SmallVecBase<BlockBuffer*>& update_buffers) noexcept;
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
 
@@ -321,7 +354,7 @@ class ChangeLogWriter
 // #=##=##=#==#=#==#===#+==#+==========+==+=+=+=+=+=++=+++=+++++=-++++=-+++++++++++
 
 template <typename SerializeFn>
-requires std::invocable<const SerializeFn&, ChangeLogBlock*, MutableBuffer, EditOffset>
+  requires std::invocable<const SerializeFn&, ChangeLogBlock*, MutableBuffer, EditOffset>
 inline Status ChangeLogWriter::Context::append_slot(EditOffset min_edit_offset_lower_bound,
                                                     usize byte_size,
                                                     const SerializeFn& serialize_fn) noexcept
@@ -363,9 +396,9 @@ inline Status ChangeLogWriter::Context::append_slot(EditOffset min_edit_offset_l
 
     // Serialize the payload.
     //
-    constexpr usize kPerSlotEditOffsetDeltaOverhead = sizeof(little_i32);
+    using PackedOffsetDelta = little_i32;
     const usize space_available = buffer->space();
-    const usize space_needed = byte_size + kPerSlotEditOffsetDeltaOverhead;
+    const usize space_needed = byte_size + sizeof(PackedOffsetDelta);
 
     Status status;
     usize bytes_to_commit = 0;
@@ -375,10 +408,10 @@ inline Status ChangeLogWriter::Context::append_slot(EditOffset min_edit_offset_l
       //
       MutableBuffer slot_buffer = buffer->output_buffer();
 
-      *((little_i32*)slot_buffer.data()) =
+      *static_cast<PackedOffsetDelta*>(slot_buffer.data()) =
           (slot_edit_offset - buffer->edit_offset_lower_bound()).to_slot_delta().value();
 
-      serialize_fn(buffer, slot_buffer + kPerSlotEditOffsetDeltaOverhead, slot_edit_offset);
+      serialize_fn(buffer, slot_buffer + sizeof(PackedOffsetDelta), slot_edit_offset);
 
       bytes_to_commit = space_needed;
       status = OkStatus();

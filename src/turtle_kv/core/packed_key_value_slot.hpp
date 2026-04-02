@@ -40,24 +40,36 @@ inline std::pair<KeyView, ValueView> pack_key_value_slot(const KeyView& key,
 {
   BATT_CHECK_GE(dst.size(), packed_key_value_slot_size(key, value));
 
-  little_u16* key_len_dst = place_first<little_u16>(dst.data());
-  char* key_data_dst = place_next<char>(key_len_dst, 1);
-  u8* op_code_dst = place_next<u8>(key_data_dst, key.size());
-  char* value_data_dst = place_next<char>(op_code_dst, 1);
+  // Serialize key size.
+  //
+  *static_cast<little_u16*>(dst.data()) = BATT_CHECKED_CAST(u16, key.size());
+  dst += sizeof(little_u16);
 
-  *key_len_dst = BATT_CHECKED_CAST(u16, key.size());
-  *op_code_dst = static_cast<u8>(value.op());
-  std::memcpy(key_data_dst, key.data(), key.size());
-  std::memcpy(value_data_dst, value.data(), value.size());
+  // Serialize key data.
+  //
+  auto packed_key_data = static_cast<char*>(dst.data());
+  std::memcpy(packed_key_data, key.data(), key.size());
+  dst += key.size();
+
+  // Serialize value op code.
+  //
+  *static_cast<u8*>(dst.data()) = static_cast<u8>(value.op());
+  dst += sizeof(u8);
+
+  // Serialize value data.
+  //
+  BATT_CHECK_EQ(dst.size(), value.size());
+  auto packed_value_data = static_cast<char*>(dst.data());
+  std::memcpy(packed_value_data, value.data(), value.size());
 
   return std::make_pair(
       KeyView{
-          key_data_dst,
+          packed_key_data,
           key.size(),
       },
       ValueView::from_packed(value.op(),
                              std::string_view{
-                                 value_data_dst,
+                                 packed_value_data,
                                  value.size(),
                              }));
 }

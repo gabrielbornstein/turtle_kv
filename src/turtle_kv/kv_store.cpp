@@ -468,6 +468,11 @@ KVStore::~KVStore() noexcept
   this->join();
 
   this->reset_thread_context();
+
+  {
+    auto& mem_table = this->metrics_.mem_table;
+    LOG(INFO) << BATT_INSPECT(mem_table.alloc_count) << BATT_INSPECT(mem_table.free_count);
+  }
 }
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
