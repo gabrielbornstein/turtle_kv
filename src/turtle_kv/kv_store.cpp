@@ -280,16 +280,31 @@ u64 query_page_loader_reset_every_n()
     runtime_options = RuntimeOptions::with_default_values();
   }
 
-  return {
-      std::unique_ptr<KVStore>{new KVStore{task_scheduler,
-                                           worker_pool,
-                                           std::move(scoped_io_ring),
-                                           storage_context.shared_from_this(),
-                                           tree_options,
-                                           *runtime_options,
-                                           std::move(change_log_writer),
-                                           std::move(checkpoint_log_volume)}},
-  };
+  // TODO [tastolfi 2026-04-03]:
+  // BATT_ASSIGN_OK_RESULT(Checkpoint latest_checkpoint, KVStore::recover_latest_checkpoint(...));
+
+  std::unique_ptr<KVStore> kv_store{new KVStore{
+      task_scheduler,
+      worker_pool,
+      std::move(scoped_io_ring),
+      storage_context.shared_from_this(),
+      tree_options,
+      *runtime_options,
+      std::move(change_log_writer),
+      std::move(checkpoint_log_volume),
+      // TODO [tastolfi 2026-04-03]:
+      // std::move(latest_checkpoint),
+  }};
+
+  // TODO [tastolfi 2026-04-03]:
+  //
+  // In class KVStore: (private?)
+  //  Status run_recovery();
+
+  // TODO [tastolfi 2026-04-03]:
+  // BATT_REQUIRE_OK(kv_store->run_recovery());
+
+  return {std::move(kv_store)};
 }
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -

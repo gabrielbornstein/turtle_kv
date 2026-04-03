@@ -35,6 +35,8 @@ namespace turtle_kv {
 
 inline u64 get_key_hash_val(const std::string_view& key)
 {
+  // TODO [tastolfi 2026-04-03] why do we mask on the lsb? ─────────────────────┐
+  //                                                                            ▼
   return absl::container_internal::hash_default_hash<std::string_view>{}(key) | 1;
 }
 
@@ -60,9 +62,9 @@ class MemTableValueEntry
   explicit MemTableValueEntry(const std::pair<KeyView, ValueView>& packed_pair,
                               EditOffset edit_offset) noexcept
       : key_data_{packed_pair.first.data()}
-      , value_data_union_{packed_pair.second.get_data_union()}
       , value_tag_{packed_pair.second.tag()}
       , key_size_{static_cast<u32>(packed_pair.first.size())}
+      , value_data_union_{packed_pair.second.get_data_union()}
       , edit_offset_{edit_offset}
   {
   }
@@ -84,14 +86,15 @@ class MemTableValueEntry
     return this->edit_offset_;
   }
 
-  void update_value(ValueView new_value, EditOffset edit_offset)
+  void update_value(const std::pair<KeyView, ValueView>& packed_pair, EditOffset edit_offset)
   {
-    // TODO [tastolfi 2026-03-27] should we update key_data_ and key_size_ here, for better locality
-    // of reference?
+    ValueView new_value = combine(packed_pair.second, this->value_view());
 
-    new_value = combine(new_value, this->value_view());
-
+    this->key_data_ = packed_pair.first.data();
     this->value_tag_ = new_value.tag();
+    //
+    // (this->key_size_ unchanged)
+    //
     this->value_data_union_ = new_value.get_data_union();
     this->edit_offset_ = edit_offset;
   }
@@ -99,9 +102,9 @@ class MemTableValueEntry
   //+++++++++++-+-+--+----- --- -- -  -  -   -
  private:
   const char* key_data_;
-  ValueView::DataUnion value_data_union_;
   ValueView::TagInt32 value_tag_;
   u32 key_size_;
+  ValueView::DataUnion value_data_union_;
   EditOffset edit_offset_{0};
 };
 
@@ -167,7 +170,7 @@ struct MemTableValueEntryInserter {
           const std::pair<KeyView, ValueView> packed_pair =
               pack_key_value_slot(this->key, this->value, buffer);
 
-          p_entry->update_value(packed_pair.second, edit_offset);
+          p_entry->update_value(packed_pair, edit_offset);
 
           this->entry_out = p_entry;
         }));
@@ -220,7 +223,7 @@ struct MemTableRecoveryInserter {
   Status update_existing(MemTableValueEntry* p_entry)
   {
     this->entry_out = p_entry;
-    p_entry->update_value(this->value_, this->edit_offset_);
+    p_entry->update_value(std::make_pair(this->key_, this->value_), this->edit_offset_);
 
     return OkStatus();
   }
