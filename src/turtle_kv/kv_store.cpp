@@ -369,7 +369,7 @@ u64 query_page_loader_reset_every_n()
     , log_writer_{std::move(change_log_writer)}
     , checkpoint_distance_{this->runtime_options_.initial_checkpoint_distance}
     , checkpoint_log_{std::move(checkpoint_log)}
-
+    , filter_page_write_state_{FilterPageWriteState::make_new()}
     , state_{}
     , deltas_size_{[this] {
       batt::Toggle<State>::Writer writer{this->state_};
@@ -399,6 +399,7 @@ u64 query_page_loader_reset_every_n()
     , checkpoint_generator_{this->worker_pool_,
                             this->tree_options_,
                             this->page_cache(),
+                            batt::make_copy(this->filter_page_write_state_),
                             batt::Toggle<State>::Reader{this->state_}->base_checkpoint_->clone(),
                             *this->checkpoint_log_}
 
@@ -468,6 +469,11 @@ KVStore::~KVStore() noexcept
   this->join();
 
   this->reset_thread_context();
+
+  {
+    auto& mem_table = this->metrics_.mem_table;
+    LOG(INFO) << BATT_INSPECT(mem_table.alloc_count) << BATT_INSPECT(mem_table.free_count);
+  }
 }
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
@@ -479,12 +485,14 @@ void KVStore::halt()
   this->finalized_mem_table_channel_.close();
   this->checkpoint_update_channel_.close();
   this->checkpoint_flush_channel_.close();
+  this->filter_page_write_state_->halt();
 }
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
 void KVStore::join()
 {
+  this->filter_page_write_state_->join();
   this->log_writer_->join();
   if (this->mem_table_batch_scanner_thread_) {
     this->mem_table_batch_scanner_thread_->join();

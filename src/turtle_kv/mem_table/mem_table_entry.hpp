@@ -60,10 +60,9 @@ class MemTableValueEntry
   explicit MemTableValueEntry(const std::pair<KeyView, ValueView>& packed_pair,
                               EditOffset edit_offset) noexcept
       : key_data_{packed_pair.first.data()}
-      , value_data_{packed_pair.second.data()}
-      , key_size_{static_cast<u16>(packed_pair.first.size())}
-      , op_code_{static_cast<u8>(packed_pair.second.op())}
-      , value_size_{static_cast<u32>(packed_pair.second.size())}
+      , value_data_union_{packed_pair.second.get_data_union()}
+      , value_tag_{packed_pair.second.tag()}
+      , key_size_{static_cast<u32>(packed_pair.first.size())}
       , edit_offset_{edit_offset}
   {
   }
@@ -77,8 +76,7 @@ class MemTableValueEntry
 
   ValueView value_view() const
   {
-    return ValueView::from_packed((ValueView::OpCode)this->op_code_,
-                                  std::string_view{this->value_data_, this->value_size_});
+    return ValueView::from_tag_and_data_union(this->value_tag_, this->value_data_union_);
   }
 
   EditOffset edit_offset() const
@@ -93,20 +91,17 @@ class MemTableValueEntry
 
     new_value = combine(new_value, this->value_view());
 
-    this->op_code_ = static_cast<u8>(new_value.op());
-    this->value_size_ = static_cast<u32>(new_value.size());
-    this->value_data_ = new_value.data();
+    this->value_tag_ = new_value.tag();
+    this->value_data_union_ = new_value.get_data_union();
     this->edit_offset_ = edit_offset;
   }
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
  private:
   const char* key_data_;
-  const char* value_data_;
-  u16 key_size_;
-  u8 pad_;
-  u8 op_code_;
-  u32 value_size_;
+  ValueView::DataUnion value_data_union_;
+  ValueView::TagInt32 value_tag_;
+  u32 key_size_;
   EditOffset edit_offset_{0};
 };
 

@@ -90,7 +90,7 @@ namespace turtle_kv {
     , block_size_{BATT_CHECKED_CAST(u16, block_size)}
     , slot_count_{0}
     , space_{BATT_CHECKED_CAST(u16,
-                               this->block_size_ - (sizeof(ChangeLogBlock) + sizeof(SlotInfo)))}
+                               this->block_size_ - (sizeof(ChangeLogBlock) + sizeof(SlotInfo) * 2))}
     , ref_count_{1}
     , next_{nullptr}
     , xxh3_checksum_{0}
@@ -101,8 +101,6 @@ namespace turtle_kv {
   this->slots_rbegin()->offset = sizeof(ChangeLogBlock);
 
   this->check_buffer_invariant();
-
-  // llfs::PageCacheSlot::Pool::Metrics::instance().admit_byte_count.add(this->block_size_);
 }
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
@@ -111,8 +109,6 @@ ChangeLogBlock::~ChangeLogBlock() noexcept
 {
   this->magic_ = ChangeLogBlock::kExpired;
   this->ephemeral_state_ptr().~EphemeralStatePtr();
-
-  // llfs::PageCacheSlot::Pool::Metrics::instance().evict_byte_count.add(this->block_size_);
 }
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
@@ -188,6 +184,9 @@ ConstBuffer ChangeLogBlock::prepare_to_flush() noexcept
   } while (this->xxh3_seed_ == 0);
 
   this->xxh3_checksum_ = XXH3_64bits(this + 1, this->block_size() - sizeof(ChangeLogBlock));
+
+  BATT_CHECK_LE(this->get_slot_begin(this->slot_count()), (const void*)this->slots_rend())
+      << "The last slot must end before the start of the SlotInfo array!";
 
   return ConstBuffer{(const void*)this, this->block_size()};
 }

@@ -114,6 +114,14 @@ void ChangeLogWriter::Context::push_buffer(BlockBuffer*& buffer,
 //
 ChangeLogWriter::~ChangeLogWriter() noexcept
 {
+  this->halt();
+  this->join();
+
+  this->state_.with_lock([](State& state) {
+    state.check_ready_to_shut_down();
+  });
+
+  ChangeLogWriter::remove_buffer_refs(this->poll_updates());
 }
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
@@ -255,9 +263,9 @@ void ChangeLogWriter::writer_task_main() noexcept
     std::uniform_int_distribution<i64> pick_delay_usec{this->options_.min_delay_usec,
                                                        this->options_.max_delay_usec};
 
-    batt::Grant grant = BATT_OK_RESULT_OR_PANIC(
-        this->change_log_->reserve_blocks(BlockCount{0}, batt::WaitForResource::kFalse));
-
+    // The number of consecutive times `poll_updates()` has been called without returning any data
+    // to write.
+    //
     usize inactive_count = 0;
 
     for (;;) {
@@ -284,68 +292,85 @@ void ChangeLogWriter::writer_task_main() noexcept
         //
         continue;
       }
-      VLOG(2) << "writer_task awakes!" << BATT_INSPECT(inactive_count);
 
+      VLOG(2) << "writer_task awakes!" << BATT_INSPECT(inactive_count);
       inactive_count = 0;
 
-      // Don't release any buffers until we have appended as much data as we can.
-      //
-      auto on_scope_exit = batt::finally([&] {
-        // After `direct_append` (below); now it is OK to free buffers.
-        //
-        for (BlockBuffer* buffer : update_buffers) {
-          buffer->remove_ref(1);
-        }
-      });
-
-      // Add all to the grant.
-      //
-      u64 total_bytes = 0;
-      u64 total_buffer_size = 0;
-
-      batt::SmallVec<ConstBuffer, 32> to_append;
-      for (BlockBuffer* buffer : update_buffers) {
-        BATT_CHECK_NOT_NULLPTR(buffer);
-        BATT_REQUIRE_OK(buffer->verify());
-
-        total_bytes += buffer->slots_total_size();
-        total_buffer_size += buffer->block_size();
-
-        grant.subsume(buffer->consume_grant());
-        to_append.emplace_back(buffer->prepare_to_flush());
-      }
-
-      this->metrics_.received_block_byte_count.add(total_buffer_size);
-      this->metrics_.received_user_byte_count.add(total_bytes);
-
-      VLOG(2) << "have " << to_append.size() << " buffers to write;" << BATT_INSPECT(total_bytes)
-              << BATT_INSPECT(total_buffer_size)
-              << BATT_INSPECT((double)total_bytes / (double)total_buffer_size);
-
-      // If we have some data to append to the WAL Volume, do it now.
-      //
-      if (!to_append.empty()) {
-        BATT_CHECK_EQ(grant.size(), to_append.size());
-
-        StatusOr<ChangeLogFile::ReadLock> read_lock = this->change_log_->append(grant, to_append);
-        BATT_REQUIRE_OK(read_lock);
-
-        this->metrics_.write_count.add(1);
-        this->metrics_.written_block_byte_count.add(total_buffer_size);
-        this->metrics_.written_user_byte_count.add(total_bytes);
-
-        usize i = 0;
-        for (BlockBuffer* buffer : update_buffers) {
-          buffer->set_read_lock(read_lock->lock_subrange(i, 1));
-          ++i;
-        }
-      }
+      BATT_REQUIRE_OK(this->write_buffers(update_buffers));
 
       VLOG(2) << "done writing!  polling for more";
     }
   }();
 
+  // If we are exiting cleanly, poll one more time and flush any buffers we find.
+  //
+  if (status.ok()) {
+    status = this->write_buffers(this->poll_updates());
+  }
+
   VLOG(1) << "ChangeLogWriter::writer_task exiting with status=" << status;
+}
+
+//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
+//
+Status ChangeLogWriter::write_buffers(
+    const batt::SmallVecBase<BlockBuffer*>& update_buffers) noexcept
+{
+  batt::Grant grant = BATT_OK_RESULT_OR_PANIC(
+      this->change_log_->reserve_blocks(BlockCount{0}, batt::WaitForResource::kFalse));
+
+  // Don't release any buffers until we have appended as much data as we can.
+  //
+  auto on_scope_exit = batt::finally([&] {
+    // After `direct_append` (below); now it is OK to free buffers.
+    //
+    ChangeLogWriter::remove_buffer_refs(update_buffers);
+  });
+
+  // Add all to the grant.
+  //
+  u64 total_bytes = 0;
+  u64 total_buffer_size = 0;
+
+  batt::SmallVec<ConstBuffer, 32> to_append;
+  for (BlockBuffer* buffer : update_buffers) {
+    BATT_CHECK_NOT_NULLPTR(buffer);
+    BATT_REQUIRE_OK(buffer->verify());
+
+    total_bytes += buffer->slots_total_size();
+    total_buffer_size += buffer->block_size();
+
+    grant.subsume(buffer->consume_grant());
+    to_append.emplace_back(buffer->prepare_to_flush());
+  }
+
+  this->metrics_.received_block_byte_count.add(total_buffer_size);
+  this->metrics_.received_user_byte_count.add(total_bytes);
+
+  VLOG(2) << "have " << to_append.size() << " buffers to write;" << BATT_INSPECT(total_bytes)
+          << BATT_INSPECT(total_buffer_size)
+          << BATT_INSPECT((double)total_bytes / (double)total_buffer_size);
+
+  // If we have some data to append to the WAL Volume, do it now.
+  //
+  if (!to_append.empty()) {
+    BATT_CHECK_EQ(grant.size(), to_append.size());
+
+    StatusOr<ChangeLogFile::ReadLock> read_lock = this->change_log_->append(grant, to_append);
+    BATT_REQUIRE_OK(read_lock);
+
+    this->metrics_.write_count.add(1);
+    this->metrics_.written_block_byte_count.add(total_buffer_size);
+    this->metrics_.written_user_byte_count.add(total_bytes);
+
+    usize i = 0;
+    for (BlockBuffer* buffer : update_buffers) {
+      buffer->set_read_lock(read_lock->lock_subrange(i, 1));
+      ++i;
+    }
+  }
+
+  return OkStatus();
 }
 
 }  // namespace turtle_kv
