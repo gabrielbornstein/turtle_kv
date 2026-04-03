@@ -159,6 +159,29 @@ class ChangeLogBlock
     return EditOffset{(i64)this->edit_offset_lower_bound_};
   }
 
+  EditOffset edit_offset_upper_bound() const noexcept
+  {
+    usize slot_count = this->slot_count();
+    if (slot_count == 0) {
+      return this->edit_offset_lower_bound();
+    }
+    return this->slot_edit_offset(this->slot_count() - 1);
+  }
+
+  /** \brief returns the EditOffset of the slot at the specified index `i`.
+   */
+  EditOffset slot_edit_offset(usize i) const noexcept
+  {
+    ConstBuffer slot_buffer = this->get_slot(i);
+
+    // Calculate the current slot's edit_offset by reading the slot's offset delta from the slot
+    // buffer and adding it to the block's lower bound.
+    //
+    SlotEditOffsetDelta offset_delta = SlotEditOffsetDelta{*((little_i32*)slot_buffer.data())};
+    EditOffset edit_offset = this->edit_offset_lower_bound() + offset_delta;
+    return edit_offset;
+  }
+
   /** \brief Adds `count` references to this buffer.
    */
   void add_ref(i32 count) noexcept;

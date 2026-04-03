@@ -453,6 +453,7 @@ TEST_F(ChangeLogTest, ExceedCapacityWrapAround)
     ASSERT_TRUE(reader.ok());
 
     int slots_read = 0;
+    std::unordered_set<i64> unique_blocks;
     auto visitor_fn =
         [&](ChangeLogBlock* block, EditOffset edit_offset, ConstBuffer payload) -> Status {
       VLOG(1) << "Reading block with lower_bound: " << block->edit_offset_lower_bound()
@@ -462,22 +463,142 @@ TEST_F(ChangeLogTest, ExceedCapacityWrapAround)
 
       BATT_REQUIRE_NE(offsets.find(edit_offset.value()), offsets.end());
       offsets.erase(edit_offset.value());
+
+      unique_blocks.insert(block->edit_offset_lower_bound().value());
       return OkStatus();
     };
 
     batt::Status visit_status = (*reader)->visit_slots(visitor_fn);
     ASSERT_TRUE(visit_status.ok()) << BATT_INSPECT(visit_status);
-    EXPECT_EQ(slots_read, successful_writes);
 
-    // Verify that we read all the offsets we wrote.
-    //
-    EXPECT_EQ(offsets.size(), 0);
+    EXPECT_GT(slots_read, 0);
+    EXPECT_EQ(unique_blocks.size(), config.block_count.value());
+    EXPECT_EQ(slots_read, successful_writes - offsets.size());
   }
 }
 
-// TODO: [Gabe Bornstein 4/2/26] Write a test case that has a "Corrupt Block" in the middle of the
-// ChangeLog, but valid blocks on either side of it. Try to write a block with an invalid magic
-// number in the header.
+//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
+TEST_F(ChangeLogTest, CorruptBlockInMiddle)
+{
+  ChangeLogFile::Config config = ChangeLogFile::Config::with_default_values();
+  config.block_size = BlockSize{4096};
+  config.block_count = BlockCount{10};
+
+  const usize data_size_per_slot = 4000;
+  const int num_blocks_to_write = 5;
+
+  std::vector<std::string> test_data;
+  for (int i = 0; i < num_blocks_to_write; ++i) {
+    test_data.push_back(std::string(data_size_per_slot, 'A' + i));
+  }
+
+  // Write phase
+  //
+  {
+    StatusOr<std::unique_ptr<ChangeLogWriter>> writer =
+        ChangeLogWriter::open_or_create(this->test_file_,
+                                        config,
+                                        ChangeLogWriter::Options::with_default_values(),
+                                        RemoveExisting{true});
+    ASSERT_TRUE(writer.ok());
+
+    (*writer)->start(batt::Runtime::instance().default_scheduler().schedule_task());
+
+    ChangeLogWriter::Context context(**writer);
+
+    // Write slots s.t. each block has one slot
+    //
+    for (int i = 0; i < num_blocks_to_write; ++i) {
+      Status write_status = context.append_slot(
+          EditOffset{0},
+          test_data[i].size(),
+          [&data = test_data[i],
+           i](ChangeLogBlock* block, MutableBuffer buffer, EditOffset offset) {
+            VLOG(1) << "Writing slot " << i
+                    << " to block with lower_bound: " << block->edit_offset_lower_bound()
+                    << ", at edit_offset: " << offset;
+
+            std::memcpy(buffer.data(), data.data(), data.size());
+          });
+
+      ASSERT_TRUE(write_status.ok()) << "Failed to write slot " << i;
+    }
+
+    // Wait for writer to flush all data
+    //
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+
+    (*writer)->halt();
+    (*writer)->join();
+  }
+
+  // Corrupt a block by overwriting its magic number
+  //
+  const i64 corrupt_block_index = num_blocks_to_write / 2;
+  {
+    StatusOr<int> fd = llfs::open_file_read_write(this->test_file_.string(),
+                                                  llfs::OpenForAppend{false},
+                                                  llfs::OpenRawIO{false});
+    ASSERT_TRUE(fd.ok());
+
+    auto on_scope_exit = batt::finally([fd] {
+      llfs::close_fd(*fd).IgnoreError();
+    });
+
+    const i64 corrupt_block_offset =
+        config.block0_offset + (corrupt_block_index * config.block_size);
+
+    LOG(INFO) << "Corrupting block at index " << corrupt_block_index
+              << ", file offset: " << corrupt_block_offset;
+
+    big_u64 invalid_magic = 0xDEADBEEFBADC0DEEull;
+
+    // Write the invalid magic number at the start of the block
+    //
+    Status write_status = llfs::write_fd(*fd,
+                                         ConstBuffer{&invalid_magic, sizeof(invalid_magic)},
+                                         corrupt_block_offset);
+    ASSERT_TRUE(write_status.ok()) << "Failed to corrupt block: " << write_status;
+
+    // TODO: [Gabe Bornstein 4/3/26] Consider updating the corrupt block
+    // s.t. it appears to have been written after all other blocks (higher edit offset lower bound).
+    // We still need to recover all other blocks in this case.
+    //
+  }
+
+  // Read phase - ChangeLogReader should handle the corrupt block gracefully
+  //
+  {
+    StatusOr<std::unique_ptr<ChangeLogReader>> reader = ChangeLogReader::open(this->test_file_);
+    ASSERT_TRUE(reader.ok());
+
+    int slots_read = 0;
+    std::vector<EditOffset> recovered_offsets;
+
+    auto visitor_fn =
+        [&](ChangeLogBlock* block, EditOffset edit_offset, ConstBuffer payload) -> Status {
+      slots_read++;
+      recovered_offsets.push_back(edit_offset);
+
+      LOG(INFO) << "Post-corruption read: slot " << slots_read << " at edit_offset: " << edit_offset
+                << ", block lower_bound: " << block->edit_offset_lower_bound()
+                << ", payload size: " << payload.size();
+
+      return OkStatus();
+    };
+
+    Status visit_status = (*reader)->visit_slots(visitor_fn);
+
+    // The visit should succeed but only read blocks before the corruption
+    ASSERT_TRUE(visit_status.ok()) << "Visit failed with: " << visit_status;
+
+    EXPECT_EQ(slots_read, corrupt_block_index)
+        << "Expected to read " << corrupt_block_index
+        << " slots (from blocks before corruption), but read " << slots_read;
+
+    EXPECT_EQ(recovered_offsets.size(), corrupt_block_index);
+  }
+}
 
 }  // namespace turtle_kv

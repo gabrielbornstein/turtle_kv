@@ -72,14 +72,7 @@ class ChangeLogReader
         // TODO: [Gabe Bornstein 3/27/26] Is it too extreme to do a BATT_CHECK here?
         //
         BATT_CHECK(this->has_more());
-        ConstBuffer slot_buffer = this->block->get_slot(this->next_slot_i);
-
-        // Calculate the current slot's edit_offset by reading the slot's offset delta from the slot
-        // buffer and adding it to the block's lower bound.
-        //
-        SlotEditOffsetDelta offset_delta = SlotEditOffsetDelta{*((little_i32*)slot_buffer.data())};
-        EditOffset edit_offset = this->block->edit_offset_lower_bound() + offset_delta;
-        return edit_offset;
+        return this->block->slot_edit_offset(this->next_slot_i);
       }
 
       // Check if there are more slots to process.
