@@ -175,4 +175,8 @@ struct OrderByEditOffsetUpperBound {
   }
 };
 
+/** \brief Packed type for SlotEditOffsetDelta.
+ */
+using PackedEditOffsetDelta = little_i32;
+
 }  // namespace turtle_kv

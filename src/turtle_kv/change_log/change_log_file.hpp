@@ -42,6 +42,7 @@
 #include <atomic>
 #include <filesystem>
 #include <memory>
+#include <unordered_set>
 
 namespace turtle_kv {
 
@@ -253,6 +254,7 @@ batt::Status ChangeLogFile::read_blocks(SerializeFn process_block)
 {
   i64 blocks_read = 0;
   batt::Status status = batt::OkStatus();
+  std::unordered_set<i64> corrupted_block_offsets;
   while (status.ok()) {
     // The offset of where we are writing to our buffer.
     //
@@ -261,11 +263,6 @@ batt::Status ChangeLogFile::read_blocks(SerializeFn process_block)
     // The offset of where we are reading from the Change Log File.
     //
     i64 curr_file_offset = this->config_.block0_offset + curr_block_offset;
-
-    batt::StatusOr<batt::Grant> buffer_grant =
-        this->reserve_blocks(BlockCount{1}, batt::WaitForResource::kFalse);
-
-    BATT_REQUIRE_OK(buffer_grant);
 
     ChangeLogBlock::ScopedMemory block_memory =
         ChangeLogBlock::allocate_aligned(this->config_.block_size);
@@ -278,20 +275,60 @@ batt::Status ChangeLogFile::read_blocks(SerializeFn process_block)
       return batt::OkStatus();
     }
 
+    batt::StatusOr<batt::Grant> buffer_grant =
+        this->reserve_blocks(BlockCount{1}, batt::WaitForResource::kFalse);
+
+    BATT_REQUIRE_OK(buffer_grant);
+
     StatusOr<boost::intrusive_ptr<ChangeLogBlock>> block =
         ChangeLogBlock::recover(std::move(block_memory), std::move(*buffer_grant));
 
-    // TODO: [Gabe Bornstein 3/9/26] Handle case where we reach a corrupt block, but need to keep
-    // reading and reach correct blocks that come after it. We should keep reading while we get
-    // kDataLoss. Forget all blocks that have an EditOffset higher than blocks with kDataLoss.
-    // Remember valid blocks with lower EditOffsets.
-    //
-    if (block.status() == batt::StatusCode::kOutOfRange ||
-        block.status() == batt::StatusCode::kDataLoss) {
+    if (block.status() == batt::StatusCode::kOutOfRange) {
       LOG(INFO) << "Recovered " << blocks_read
                 << " blocks. Stopped reading with status:" << BATT_INSPECT(block.status())
                 << BATT_INSPECT(curr_block_offset) << BATT_INSPECT(curr_file_offset);
+
       return batt::OkStatus();
+    } else if (block.status() == batt::StatusCode::kDataLoss) {
+      LOG(INFO) << "Data loss detected at block offset " << curr_block_offset
+                << ". Continuing to read subsequent blocks.";
+
+      // TODO: [Gabe Bornstein 4/3/26] We fail de-referencing this block if it's corrupted.
+      // How do we want to handle tracking which blocks we want to ignore if we can't rely on
+      // information in the corrupted block?
+      //
+      // corrupted_block_offsets.insert((*block)->edit_offset_lower_bound().value());
+      // ++blocks_read;
+      // continue;
+
+      // TODO: [Gabe Bornstein 4/3/26] Temporarily return here when we encounter a corrupted block.
+      // We won't read any blocks following a corrupted block detection.
+      //
+      return batt::OkStatus();
+    }
+
+    // TODO: [Gabe Bornstein 4/3/26] Optimize this case with Block Clusters (see design doc).
+    //
+    // TODO: [Gabe Bornstein 4/3/26] Currently broken. We aren't succesfully tracking which offsets
+    // have been corrupted.
+    //
+    // Handle case where we reach a corrupt block, but need to keep
+    // reading and reach correct blocks that come after it. Forget all blocks that have an
+    // EditOffset higher than blocks with kDataLoss. Remember valid blocks with lower EditOffsets.
+    //
+    if (corrupted_block_offsets.size() > 0) {
+      i64 curr_block_offset_upper_bound = (*block)->edit_offset_upper_bound().value();
+
+      for (auto offset : corrupted_block_offsets) {
+        // If these two blocks have any overlap, or if the current block came after the corrupt
+        // block, we need to discard the current block
+        //
+        if (curr_block_offset_upper_bound >= offset) {
+          LOG(INFO) << "Discarding block at offset " << curr_block_offset
+                    << " due to prior data loss at offset " << offset;
+          continue;
+        }
+      }
     }
 
     // TODO: [Gabe Bornstein 3/11/26] Eventually, call (*block)->set_read_lock and

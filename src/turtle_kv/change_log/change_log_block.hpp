@@ -154,9 +154,42 @@ class ChangeLogBlock
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
 
+  /** \brief Returns the greatest EditOffset value that is not less than the slots in this Block.
+   */
   EditOffset edit_offset_lower_bound() const noexcept
   {
     return EditOffset{(i64)this->edit_offset_lower_bound_};
+  }
+
+  /** \brief Returns the least EditOffset value that is greater than the slots in this Block.
+   */
+  EditOffset edit_offset_upper_bound() const noexcept
+  {
+    const usize slot_count = this->slot_count();
+
+    if (slot_count == 0) {
+      return this->edit_offset_lower_bound();
+    }
+
+    // Return the EditOffset where the final slot *ends*.
+    //
+    return this->slot_edit_offset(this->slot_count());
+  }
+
+  /** \brief Returns the EditOffset of the slot at the specified index `i`.
+   */
+  EditOffset slot_edit_offset(usize i) const noexcept
+  {
+    ConstBuffer slot_buffer = this->get_slot(i);
+
+    // Calculate the current slot's edit_offset by reading the slot's offset delta from the slot
+    // buffer and adding it to the block's lower bound.
+    //
+    const SlotEditOffsetDelta offset_delta{
+        static_cast<const PackedEditOffsetDelta*>(slot_buffer.data())->value(),
+    };
+    const EditOffset edit_offset = this->edit_offset_lower_bound() + offset_delta;
+    return edit_offset;
   }
 
   /** \brief Adds `count` references to this buffer.

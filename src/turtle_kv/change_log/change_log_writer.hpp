@@ -396,9 +396,8 @@ inline Status ChangeLogWriter::Context::append_slot(EditOffset min_edit_offset_l
 
     // Serialize the payload.
     //
-    using PackedOffsetDelta = little_i32;
     const usize space_available = buffer->space();
-    const usize space_needed = byte_size + sizeof(PackedOffsetDelta);
+    const usize space_needed = byte_size + sizeof(PackedEditOffsetDelta);
 
     Status status;
     usize bytes_to_commit = 0;
@@ -408,10 +407,10 @@ inline Status ChangeLogWriter::Context::append_slot(EditOffset min_edit_offset_l
       //
       MutableBuffer slot_buffer = buffer->output_buffer(space_needed);
 
-      *static_cast<PackedOffsetDelta*>(slot_buffer.data()) =
+      *static_cast<PackedEditOffsetDelta*>(slot_buffer.data()) =
           (slot_edit_offset - buffer->edit_offset_lower_bound()).to_slot_delta().value();
 
-      serialize_fn(buffer, slot_buffer + sizeof(PackedOffsetDelta), slot_edit_offset);
+      serialize_fn(buffer, slot_buffer + sizeof(PackedEditOffsetDelta), slot_edit_offset);
 
       bytes_to_commit = space_needed;
       status = OkStatus();
