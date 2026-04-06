@@ -33,6 +33,7 @@ using namespace ::turtle_kv::constants;
 
 using ::testing::DoAll;
 using ::testing::Eq;
+using ::testing::Expectation;
 using ::testing::Ge;
 using ::testing::Invoke;
 using ::testing::Return;
@@ -51,6 +52,7 @@ using ::turtle_kv::None;
 using ::turtle_kv::OkStatus;
 using ::turtle_kv::Optional;
 using ::turtle_kv::OvercommitMetrics;
+using ::turtle_kv::PackedSizeOfEdit;
 using ::turtle_kv::Status;
 using ::turtle_kv::StatusOr;
 using ::turtle_kv::ValueView;
@@ -141,26 +143,61 @@ class MemTableTest : public ::testing::Test
    * \param dst_block_buffer The block buffer to pass to append_slot's callback fn.
    */
   template <typename MinEditOffsetLowerBoundMatcher>
-  void put_into_mem_table(const KeyView& key,
-                          const ValueView& value,
-                          const MinEditOffsetLowerBoundMatcher& min_edit_offset_lower_bound,
-                          MockBlockBuffer* dst_block_buffer)
+  Status put_into_mem_table(const KeyView& key,
+                            const ValueView& value,
+                            const MinEditOffsetLowerBoundMatcher& min_edit_offset_lower_bound,
+                            MockBlockBuffer* dst_block_buffer)
   {
-    EXPECT_CALL(this->storage_writer_context,
-                append_slot(min_edit_offset_lower_bound,
-                            /*byte_count*/ Ge(key.size() + value.size()),
-                            /*callback=*/::testing::_))
-        .WillOnce(
-            Invoke([this, dst_block_buffer](EditOffset, usize byte_count, auto&& callback_fn) {
-              callback_fn(dst_block_buffer,
-                          this->stable_string_store.allocate(byte_count),
-                          EditOffset{this->next_edit_offset});
-              this->next_edit_offset += byte_count;
-              return OkStatus();
-            }));
+    const usize item_size = this->update_max_item_size(key, value);
+    const bool expect_overflow = (this->estimate_batch_count(item_size) > this->max_batch_count);
+
+    if (!expect_overflow) {
+      EXPECT_CALL(this->storage_writer_context,
+                  append_slot(min_edit_offset_lower_bound,
+                              /*byte_count*/ Ge(key.size() + value.size()),
+                              /*callback=*/::testing::_))
+          .WillOnce(
+              Invoke([this, dst_block_buffer](EditOffset, usize byte_count, auto&& callback_fn) {
+                callback_fn(dst_block_buffer,
+                            this->stable_string_store.allocate(byte_count),
+                            EditOffset{this->next_edit_offset});
+                this->next_edit_offset += byte_count;
+                return OkStatus();
+              }));
+    }
 
     Status status = this->mem_table->put(this->storage_writer_context, key, value);
-    EXPECT_TRUE(status.ok()) << BATT_INSPECT(status);
+    EXPECT_EQ((status == batt::StatusCode::kResourceExhausted), expect_overflow);
+
+    if (status.ok()) {
+      this->total_inserted_items_size += item_size;
+    }
+
+    return status;
+  }
+
+  /** \brief Returns a worst-case estimate of the number of batches which will be produced by the
+   * current MemTable.
+   */
+  usize estimate_batch_count(usize next_item_size = 0) const
+  {
+    const usize max_wasted_bytes_per_batch = std::max(next_item_size, this->max_item_size) - 1;
+    const usize worst_case_batch_size = this->max_bytes_per_batch - max_wasted_bytes_per_batch;
+    const usize worst_case_batch_count = (this->total_inserted_items_size + next_item_size +  //
+                                          worst_case_batch_size - 1)                          //
+                                         / worst_case_batch_size;
+    return worst_case_batch_count;
+  }
+
+  /** \brief Updates the maximum packed edit size; returns the item size.
+   */
+  usize update_max_item_size(const KeyView& key, const ValueView& value)
+  {
+    const usize item_size = PackedSizeOfEdit{}(key.size(), value.size());
+    if (item_size > this->max_item_size) {
+      this->max_item_size = item_size;
+    }
+    return item_size;
   }
 
   /** \brief Scans through `this->expected_items`, verifying that each key/value pair appears in
@@ -236,6 +273,14 @@ class MemTableTest : public ::testing::Test
    */
   i64 next_edit_offset = 0;
 
+  /** \brief Tracks the maximum item size (packed key + value)
+   */
+  usize max_item_size = 0;
+
+  /** \brief Tracks the total packed edits size in the current MemTable.
+   */
+  usize total_inserted_items_size = 0;
+
   /** \brief The object-under-test.
    */
   Optional<MemTableWithMocks> mem_table;
@@ -281,7 +326,9 @@ TEST_F(MemTableTest, PutGet)
     ValueView value = this->make_random_value();
 
     this->put_expected_item(key, value);
-    this->put_into_mem_table(key, value, Eq(EditOffset{0}), &this->block_buffer);
+
+    Status status = this->put_into_mem_table(key, value, Eq(EditOffset{0}), &this->block_buffer);
+    EXPECT_TRUE(status.ok()) << BATT_INSPECT(status);
 
     if ((i + 1) % kVerifyEvery == 0) {
       ASSERT_NO_FATAL_FAILURE(this->verify_items());
@@ -293,6 +340,35 @@ TEST_F(MemTableTest, PutGet)
   EXPECT_EQ(insert_count + update_count, kNumItems);
 
   ASSERT_NO_FATAL_FAILURE(this->verify_items());
+}
+
+//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
+//
+TEST_F(MemTableTest, PutUntilFull)
+{
+  usize total_key_bytes = 0;
+  usize total_value_bytes = 0;
+  usize put_count = 0;
+  EditOffset min_offset_lower_bound = this->mem_table->edit_offset_lower_bound();
+
+  for (;;) {
+    KeyView key = this->make_random_key();
+    ValueView value = this->make_random_value();
+
+    this->put_expected_item(key, value);
+
+    Status status =
+        this->put_into_mem_table(key, value, Eq(min_offset_lower_bound), &this->block_buffer);
+
+    if (!status.ok()) {
+      EXPECT_EQ(status, batt::StatusCode::kResourceExhausted);
+      break;
+    }
+
+    total_key_bytes += key.size();
+    total_value_bytes += value.size();
+    ++put_count;
+  }
 }
 
 }  // namespace

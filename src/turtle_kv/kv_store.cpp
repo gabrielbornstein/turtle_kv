@@ -565,10 +565,7 @@ Status KVStore::put(const KeyView& key, const ValueView& value) noexcept /*overr
       batt::Toggle<State>::Reader state_reader{this->state_};
 
       MemTable* const observed_mem_table = state_reader->mem_table_.get();
-      const EditOffset edit_offset_lower_bound = observed_mem_table->edit_offset_lower_bound();
       ThreadContext& thread_context = this->per_thread_.get(this);
-      ChangeLogWriter::Context& log_writer_context =
-          thread_context.log_writer_context(edit_offset_lower_bound);
 
 #if TURTLE_KV_PROFILE_UPDATES
       LatencyTimer put_mem_table_timer{Every2ToTheConst<8>{}, this->metrics_.put_memtable_latency};
@@ -577,7 +574,7 @@ Status KVStore::put(const KeyView& key, const ValueView& value) noexcept /*overr
       // Insert the key/value pair into the active MemTable; this will also append a change log
       // buffer.
       //
-      Status status = observed_mem_table->put(log_writer_context, key, value);
+      Status status = observed_mem_table->put(thread_context.log_writer_context_, key, value);
 
 #if TURTLE_KV_PROFILE_UPDATES
       put_mem_table_timer.stop();

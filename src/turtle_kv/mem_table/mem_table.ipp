@@ -25,7 +25,7 @@ namespace turtle_kv {
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-template <typename StorageT, typename AllocationTrackerT>
+template <MemTableStorage StorageT, MemTableAllocationTracker AllocationTrackerT>
 /*explicit*/ BasicMemTable<StorageT, AllocationTrackerT>::BasicMemTable(
     AllocationTrackerT& allocation_tracker,
     const StorageWriter& storage_writer,
@@ -52,7 +52,7 @@ template <typename StorageT, typename AllocationTrackerT>
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-template <typename StorageT, typename AllocationTrackerT>
+template <MemTableStorage StorageT, MemTableAllocationTracker AllocationTrackerT>
 BasicMemTable<StorageT, AllocationTrackerT>::~BasicMemTable() noexcept
 {
   // Try to detect double-deletions.
@@ -72,7 +72,7 @@ BasicMemTable<StorageT, AllocationTrackerT>::~BasicMemTable() noexcept
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-template <typename StorageT, typename AllocationTrackerT>
+template <MemTableStorage StorageT, MemTableAllocationTracker AllocationTrackerT>
 Status BasicMemTable<StorageT, AllocationTrackerT>::put(
     StorageWriterContext& storage_writer_context,
     const KeyView& key,
@@ -111,7 +111,7 @@ Status BasicMemTable<StorageT, AllocationTrackerT>::put(
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-template <typename StorageT, typename AllocationTrackerT>
+template <MemTableStorage StorageT, MemTableAllocationTracker AllocationTrackerT>
 Status BasicMemTable<StorageT, AllocationTrackerT>::prepare_edit(i64 packed_edit_size)
 {
   // Update the maximum item size.  We track this so that we can make a conservative estimate of how
@@ -157,7 +157,7 @@ Status BasicMemTable<StorageT, AllocationTrackerT>::prepare_edit(i64 packed_edit
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-template <typename StorageT, typename AllocationTrackerT>
+template <MemTableStorage StorageT, MemTableAllocationTracker AllocationTrackerT>
 void BasicMemTable<StorageT, AllocationTrackerT>::commit_edit(i64 packed_edit_size)
 {
   const i64 prior_value = this->committed_bytes_total_.fetch_add(packed_edit_size);
@@ -168,7 +168,7 @@ void BasicMemTable<StorageT, AllocationTrackerT>::commit_edit(i64 packed_edit_si
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-template <typename StorageT, typename AllocationTrackerT>
+template <MemTableStorage StorageT, MemTableAllocationTracker AllocationTrackerT>
 Optional<ValueView> BasicMemTable<StorageT, AllocationTrackerT>::get(const KeyView& key) noexcept
 {
   Optional<MemTableValueEntry> entry = this->art_index_.find(key);
@@ -181,7 +181,7 @@ Optional<ValueView> BasicMemTable<StorageT, AllocationTrackerT>::get(const KeyVi
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-template <typename StorageT, typename AllocationTrackerT>
+template <MemTableStorage StorageT, MemTableAllocationTracker AllocationTrackerT>
 Optional<ValueView> BasicMemTable<StorageT, AllocationTrackerT>::finalized_get(
     const KeyView& key) noexcept
 {
@@ -194,7 +194,7 @@ Optional<ValueView> BasicMemTable<StorageT, AllocationTrackerT>::finalized_get(
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-template <typename StorageT, typename AllocationTrackerT>
+template <MemTableStorage StorageT, MemTableAllocationTracker AllocationTrackerT>
 bool BasicMemTable<StorageT, AllocationTrackerT>::finalize() noexcept
 {
   const i64 prior_committed = this->committed_bytes_total_.fetch_or(Self::kFinalizedMask);
@@ -235,7 +235,7 @@ bool BasicMemTable<StorageT, AllocationTrackerT>::finalize() noexcept
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-template <typename StorageT, typename AllocationTrackerT>
+template <MemTableStorage StorageT, MemTableAllocationTracker AllocationTrackerT>
 void BasicMemTable<StorageT, AllocationTrackerT>::await_finalize() noexcept
 {
   for (;;) {
@@ -249,7 +249,7 @@ void BasicMemTable<StorageT, AllocationTrackerT>::await_finalize() noexcept
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-template <typename StorageT, typename AllocationTrackerT>
+template <MemTableStorage StorageT, MemTableAllocationTracker AllocationTrackerT>
 bool BasicMemTable<StorageT, AllocationTrackerT>::is_finalized() const
 {
   return (this->committed_bytes_total_.load() & Self::kFinalizedMask) != 0 &&
@@ -258,7 +258,7 @@ bool BasicMemTable<StorageT, AllocationTrackerT>::is_finalized() const
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-template <typename StorageT, typename AllocationTrackerT>
+template <MemTableStorage StorageT, MemTableAllocationTracker AllocationTrackerT>
 Status BasicMemTable<StorageT, AllocationTrackerT>::put_recovered_slot(
     StorageBlockBuffer* block_buffer,
     EditOffset edit_offset,
@@ -280,7 +280,7 @@ Status BasicMemTable<StorageT, AllocationTrackerT>::put_recovered_slot(
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-template <typename StorageT, typename AllocationTrackerT>
+template <MemTableStorage StorageT, MemTableAllocationTracker AllocationTrackerT>
 void BasicMemTable<StorageT, AllocationTrackerT>::attach_block_buffer(
     StorageBlockBuffer* block_buffer)
 {
@@ -302,7 +302,7 @@ void BasicMemTable<StorageT, AllocationTrackerT>::attach_block_buffer(
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-template <typename StorageT, typename AllocationTrackerT>
+template <MemTableStorage StorageT, MemTableAllocationTracker AllocationTrackerT>
 i64 BasicMemTable<StorageT, AllocationTrackerT>::update_external_cache_alloc()
 {
   // The number of bytes to claim (if positive) or release (negative) as external allocation
@@ -342,7 +342,7 @@ i64 BasicMemTable<StorageT, AllocationTrackerT>::update_external_cache_alloc()
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-template <typename StorageT, typename AllocationTrackerT>
+template <MemTableStorage StorageT, MemTableAllocationTracker AllocationTrackerT>
 void BasicMemTable<StorageT, AllocationTrackerT>::handle_external_cache_alloc(i64 cache_alloc_delta)
 {
   if (cache_alloc_delta > 0) {
@@ -390,7 +390,7 @@ void BasicMemTable<StorageT, AllocationTrackerT>::handle_external_cache_alloc(i6
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-template <typename StorageT, typename AllocationTrackerT>
+template <MemTableStorage StorageT, MemTableAllocationTracker AllocationTrackerT>
 i64 BasicMemTable<StorageT, AllocationTrackerT>::calculate_max_byte_size() const
 {
   const i64 max_wasted_per_batch = this->max_item_size_.load() - 1;
@@ -403,7 +403,7 @@ i64 BasicMemTable<StorageT, AllocationTrackerT>::calculate_max_byte_size() const
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-template <typename StorageT, typename AllocationTrackerT>
+template <MemTableStorage StorageT, MemTableAllocationTracker AllocationTrackerT>
 /*explicit*/ BasicMemTable<StorageT, AllocationTrackerT>::BatchCompactor::BatchCompactor(
     BasicMemTable& mem_table,
     usize byte_size_limit) noexcept
@@ -418,7 +418,7 @@ template <typename StorageT, typename AllocationTrackerT>
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-template <typename StorageT, typename AllocationTrackerT>
+template <MemTableStorage StorageT, MemTableAllocationTracker AllocationTrackerT>
 bool BasicMemTable<StorageT, AllocationTrackerT>::BatchCompactor::has_next() const
 {
   return !this->scanner_.is_done();
@@ -426,7 +426,7 @@ bool BasicMemTable<StorageT, AllocationTrackerT>::BatchCompactor::has_next() con
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-template <typename StorageT, typename AllocationTrackerT>
+template <MemTableStorage StorageT, MemTableAllocationTracker AllocationTrackerT>
 MergeCompactor::ResultSet</*decay_to_items=*/false>
 BasicMemTable<StorageT, AllocationTrackerT>::BatchCompactor::consume_next() noexcept
 {

@@ -68,8 +68,7 @@ class KVStore : public Table
     Optional<PageSliceStorage> scan_result_storage;
     u64 query_count = 0;
     ChangeLogWriter& log_writer_;
-    EditOffset current_mem_table_edit_offset_lower_bound{0};
-    Optional<ChangeLogWriter::Context> log_writer_context_;
+    ChangeLogWriter::Context log_writer_context_;
 
     //+++++++++++-+-+--+----- --- -- -  -  -   -
 
@@ -80,20 +79,6 @@ class KVStore : public Table
         , log_writer_{*kv_store->log_writer_}
         , log_writer_context_{this->log_writer_}
     {
-    }
-
-    // TODO [tastolfi 2026-04-02] - this should no longer be needed, now that MemTable should manage
-    // the min edit offset lower bound passed to Context::append_slot.  REMOTE (instead, create a
-    // single Context that persists for the scope of the kv store/thread).
-    //
-    ChangeLogWriter::Context& log_writer_context(EditOffset mem_table_edit_offset_lower_bound)
-    {
-      if (BATT_HINT_FALSE(mem_table_edit_offset_lower_bound !=
-                          this->current_mem_table_edit_offset_lower_bound)) {
-        this->log_writer_context_.emplace(this->log_writer_);
-        this->current_mem_table_edit_offset_lower_bound = mem_table_edit_offset_lower_bound;
-      }
-      return *this->log_writer_context_;
     }
 
     llfs::PageLoader& get_page_loader();
