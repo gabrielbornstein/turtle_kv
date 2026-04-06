@@ -141,6 +141,14 @@ inline EditOffset operator+(EditOffset left, SlotEditOffsetDelta right)
   return EditOffset{left.value() + right.value()};
 }
 
+template <typename T>
+  requires requires(EditOffset& l, T&& r) { l = l + r; }
+inline EditOffset& operator+=(EditOffset& left, T&& right)
+{
+  left = left + right;
+  return left;
+}
+
 //=#=#==#==#===============+=+=+=+=++=++++++++++++++-++-+--+-+----+---------------
 
 inline EditOffset get_edit_offset_upper_bound(EditOffset edit_offset)

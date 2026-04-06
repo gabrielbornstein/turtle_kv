@@ -11,6 +11,7 @@
 
 #include <batteries/async/grant.hpp>
 #include <batteries/async/latch.hpp>
+#include <batteries/require.hpp>
 
 #include <llfs/ioring_file.hpp>
 
@@ -147,6 +148,32 @@ class ChangeLogBlock
   static StatusOr<boost::intrusive_ptr<ChangeLogBlock>> recover(ScopedMemory memory,
                                                                 batt::Grant&& grant);
 
+  /** \brief Serializes the passed `delta` to the front of `dst`, advancing `dst` beyond the written
+   * value.
+   * \return OkStatus if dst has enough room
+   */
+  static Status write_slot_edit_offset_delta(MutableBuffer& dst, SlotEditOffsetDelta delta) noexcept
+  {
+    BATT_REQUIRE_GE(dst.size(), sizeof(PackedEditOffsetDelta));
+    *static_cast<PackedEditOffsetDelta*>(dst.data()) = delta.value();
+    dst += sizeof(PackedEditOffsetDelta);
+    return OkStatus();
+  }
+
+  /** \brief Parses the slot edit offset delta from the beginning of `src`, advancing `src` beyond
+   * the parsed value.
+   * \return The parsed delta value
+   */
+  template <typename ConstBufferT>
+    requires std::assignable_from<ConstBuffer&, ConstBufferT&&>
+  static StatusOr<SlotEditOffsetDelta> read_slot_edit_offset_delta(ConstBufferT&& src) noexcept
+  {
+    BATT_REQUIRE_GE(src.size(), sizeof(PackedEditOffsetDelta));
+    SlotEditOffsetDelta delta{static_cast<const PackedEditOffsetDelta*>(src.data())->value()};
+    src += sizeof(PackedEditOffsetDelta);
+    return delta;
+  }
+
   //+++++++++++-+-+--+----- --- -- -  -  -   -
 
   ChangeLogBlock(const ChangeLogBlock&) = delete;
@@ -171,25 +198,22 @@ class ChangeLogBlock
       return this->edit_offset_lower_bound();
     }
 
+    ConstBuffer last_slot = this->get_slot(slot_count - 1);
+    SlotEditOffsetDelta slot_delta =
+        BATT_OK_RESULT_OR_PANIC(Self::read_slot_edit_offset_delta(last_slot));
+
     // Return the EditOffset where the final slot *ends*.
     //
-    return this->slot_edit_offset(this->slot_count());
+    return this->edit_offset_lower_bound() + slot_delta +
+           EditOffsetDelta{static_cast<i64>(last_slot.size())};
   }
 
   /** \brief Returns the EditOffset of the slot at the specified index `i`.
    */
   EditOffset slot_edit_offset(usize i) const noexcept
   {
-    ConstBuffer slot_buffer = this->get_slot(i);
-
-    // Calculate the current slot's edit_offset by reading the slot's offset delta from the slot
-    // buffer and adding it to the block's lower bound.
-    //
-    const SlotEditOffsetDelta offset_delta{
-        static_cast<const PackedEditOffsetDelta*>(slot_buffer.data())->value(),
-    };
-    const EditOffset edit_offset = this->edit_offset_lower_bound() + offset_delta;
-    return edit_offset;
+    return this->edit_offset_lower_bound() +
+           BATT_OK_RESULT_OR_PANIC(Self::read_slot_edit_offset_delta(this->get_slot(i)));
   }
 
   /** \brief Adds `count` references to this buffer.
@@ -282,7 +306,8 @@ class ChangeLogBlock
     this->next_ = new_next;
   }
 
-  /** \brief Returns the data buffer for the i-th slot.
+  /** \brief Returns the data buffer for the i-th slot; the returned buffer starts with the
+   * automatically prepended PackedEditOffsetDelta.
    */
   ConstBuffer get_slot(usize i) const noexcept;
 
