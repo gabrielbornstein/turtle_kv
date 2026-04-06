@@ -9,6 +9,7 @@
 #pragma once
 #define TURTLE_KV_MEM_TABLE_STORAGE_HPP
 
+#include <turtle_kv/change_log/api_types.hpp>
 #include <turtle_kv/change_log/edit_offset.hpp>
 
 #include <turtle_kv/import/buffer.hpp>
@@ -28,15 +29,15 @@ concept MemTableStorageBlockBuffer =
     };
 
 template <typename T>
-concept MemTableStorageWriterContext =
-    requires(T& context,
-             EditOffset edit_offset,
-             usize byte_count,
-             void (*serialize_fn)(typename T::BlockBuffer*, MutableBuffer, EditOffset)) {
-      requires MemTableStorageBlockBuffer<typename T::BlockBuffer>;
+concept MemTableStorageWriterContext = requires(
+    T& context,
+    EditOffset edit_offset,
+    usize byte_count,
+    void (*serialize_fn)(FirstVisitToBlock, typename T::BlockBuffer*, MutableBuffer, EditOffset)) {
+  requires MemTableStorageBlockBuffer<typename T::BlockBuffer>;
 
-      { context.append_slot(edit_offset, byte_count, serialize_fn) } -> std::same_as<Status>;
-    };
+  { context.append_slot(edit_offset, byte_count, serialize_fn) } -> std::same_as<Status>;
+};
 
 template <typename T>
 concept MemTableStorageWriter = requires(T writer) {

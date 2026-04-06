@@ -7,7 +7,9 @@
 //+++++++++++-+-+--+----- --- -- -  -  -   -
 
 #pragma once
+#define TURTLE_KV_CHANGE_LOG_WRITER_HPP
 
+#include <turtle_kv/change_log/api_types.hpp>
 #include <turtle_kv/change_log/change_log_block.hpp>
 #include <turtle_kv/change_log/change_log_file.hpp>
 #include <turtle_kv/change_log/edit_offset.hpp>
@@ -148,10 +150,11 @@ class ChangeLogWriter
      * this Context. \return the sequence number (index) of the newly formatted slot.
      */
     template <typename SerializeFn>
-      requires std::invocable<const SerializeFn&, BlockBuffer*, MutableBuffer, EditOffset>
-    Status append_slot(EditOffset min_edit_offset_lower_bound,
-                       usize byte_size,
-                       const SerializeFn& fn) noexcept;
+      requires std::
+          invocable<const SerializeFn&, FirstVisitToBlock, BlockBuffer*, MutableBuffer, EditOffset>
+        Status append_slot(EditOffset min_edit_offset_lower_bound,
+                           usize byte_size,
+                           const SerializeFn& fn) noexcept;
 
     //+++++++++++-+-+--+----- --- -- -  -  -   -
    private:
@@ -354,28 +357,30 @@ class ChangeLogWriter
 // #=##=##=#==#=#==#===#+==#+==========+==+=+=+=+=+=++=+++=+++++=-++++=-+++++++++++
 
 template <typename SerializeFn>
-  requires std::invocable<const SerializeFn&, ChangeLogBlock*, MutableBuffer, EditOffset>
-inline Status ChangeLogWriter::Context::append_slot(EditOffset min_edit_offset_lower_bound,
-                                                    usize byte_size,
-                                                    const SerializeFn& serialize_fn) noexcept
+  requires std::
+      invocable<const SerializeFn&, FirstVisitToBlock, ChangeLogBlock*, MutableBuffer, EditOffset>
+    inline Status ChangeLogWriter::Context::append_slot(EditOffset min_edit_offset_lower_bound,
+                                                        usize byte_size,
+                                                        const SerializeFn& serialize_fn) noexcept
 {
   Context& context = *this;
   ChangeLogWriter& writer = this->writer_;
+  auto first_visit_to_block = FirstVisitToBlock{false};
 
   // Grab a private buffer.
   //
   BlockBuffer* observed_head = nullptr;
-  BlockBuffer* buffer = context.pop_buffer(observed_head);
+  BlockBuffer* block_buffer = context.pop_buffer(observed_head);
   for (;;) {
     // Enforce the constraint that the Block buffer we pass to serialize_fn *must* have an
     // edit_offset_lower_bound at least as large as min_edit_offset_lower_bound.
     //
-    if (buffer && buffer->edit_offset_lower_bound() < min_edit_offset_lower_bound) {
-      context.push_buffer(buffer, observed_head);
-      buffer = nullptr;
+    if (block_buffer && block_buffer->edit_offset_lower_bound() < min_edit_offset_lower_bound) {
+      context.push_buffer(block_buffer, observed_head);
+      block_buffer = nullptr;
     }
 
-    const bool no_buffer = (buffer == nullptr);
+    const bool no_buffer = (block_buffer == nullptr);
 
     // No buffer, no retry; there is no point attempting again if we had a fresh, empty buffer
     // to begin with.
@@ -389,14 +394,15 @@ inline Status ChangeLogWriter::Context::append_slot(EditOffset min_edit_offset_l
     // If no buffer, allocate one.
     //
     if (no_buffer) {
-      BATT_ASSIGN_OK_RESULT(buffer, writer.allocate_buffer(slot_edit_offset));
+      BATT_ASSIGN_OK_RESULT(block_buffer, writer.allocate_buffer(slot_edit_offset));
       writer.metrics_.block_alloc_count.add(1);
+      first_visit_to_block = FirstVisitToBlock{true};
     }
-    BATT_CHECK_NOT_NULLPTR(buffer);
+    BATT_CHECK_NOT_NULLPTR(block_buffer);
 
     // Serialize the payload.
     //
-    const usize space_available = buffer->space();
+    const usize space_available = block_buffer->space();
     const usize space_needed = byte_size + sizeof(PackedEditOffsetDelta);
 
     Status status;
@@ -405,13 +411,15 @@ inline Status ChangeLogWriter::Context::append_slot(EditOffset min_edit_offset_l
     if (space_needed <= space_available) {
       // Serialize the slot's edit offset delta at the beginning.
       //
-      MutableBuffer slot_buffer = buffer->output_buffer(space_needed);
+      MutableBuffer slot_buffer = block_buffer->output_buffer(space_needed);
 
       BATT_REQUIRE_OK(BlockBuffer::write_slot_edit_offset_delta(
           slot_buffer,
-          (slot_edit_offset - buffer->edit_offset_lower_bound()).to_slot_delta()));
+          (slot_edit_offset - block_buffer->edit_offset_lower_bound()).to_slot_delta()));
 
-      serialize_fn(buffer, slot_buffer, slot_edit_offset);
+      //----- --- -- -  -  -   -
+      serialize_fn(first_visit_to_block, block_buffer, slot_buffer, slot_edit_offset);
+      //----- --- -- -  -  -   -
 
       bytes_to_commit = space_needed;
       status = OkStatus();
@@ -425,7 +433,7 @@ inline Status ChangeLogWriter::Context::append_slot(EditOffset min_edit_offset_l
       // (possibly) appended in the background.
       //
       auto on_scope_exit = batt::finally([&] {
-        context.push_buffer(buffer, observed_head);
+        context.push_buffer(block_buffer, observed_head);
       });
 
       // If there was room in the buffer, then `format_slot` will succeed; assign this slot an
@@ -434,7 +442,7 @@ inline Status ChangeLogWriter::Context::append_slot(EditOffset min_edit_offset_l
       // Context)
       //
       if (status.ok()) {
-        buffer->commit_slot(/*n_bytes=*/bytes_to_commit);
+        block_buffer->commit_slot(/*n_bytes=*/bytes_to_commit);
         return OkStatus();
 
       } else {
@@ -451,7 +459,7 @@ inline Status ChangeLogWriter::Context::append_slot(EditOffset min_edit_offset_l
     // Volume::format_slot only fails if there wasn't enough space; reset the buffer pointer and
     // retry (we will allocate a new buffer at the top of loop).
     //
-    buffer = nullptr;
+    block_buffer = nullptr;
   }
 }
 

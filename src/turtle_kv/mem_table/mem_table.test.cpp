@@ -31,11 +31,13 @@ namespace {
 using namespace ::turtle_kv::int_types;
 using namespace ::turtle_kv::constants;
 
+using ::testing::AnyOf;
 using ::testing::DoAll;
 using ::testing::Eq;
 using ::testing::Expectation;
 using ::testing::Ge;
 using ::testing::Invoke;
+using ::testing::Mock;
 using ::testing::Return;
 using ::testing::StrEq;
 using ::testing::StrictMock;
@@ -46,6 +48,8 @@ using ::turtle_kv::testing::RandomStringGenerator;
 using MockBlockBuffer = ::turtle_kv::testing::MockMemTableStorage::BlockBuffer;
 
 using ::turtle_kv::EditOffset;
+using ::turtle_kv::EditOffsetDelta;
+using ::turtle_kv::FirstVisitToBlock;
 using ::turtle_kv::KeyView;
 using ::turtle_kv::MemTableMetrics;
 using ::turtle_kv::None;
@@ -96,6 +100,8 @@ class MemTableTest : public ::testing::Test
 
     EXPECT_CALL(this->block_buffer, ref_count())
         .WillRepeatedly(Return(this->block_buffer.fake_ref_count_));
+
+    this->min_edit_offset_lower_bound = this->mem_table->edit_offset_lower_bound();
   }
 
   /** \brief Destructs the MemTable object-under-test.
@@ -139,13 +145,10 @@ class MemTableTest : public ::testing::Test
 
   /** \brief Puts a key/value pair into the MemTable.
    *
-   * \param min_edit_offset_lower_bound Used to match calls to the mock storage writer append_slot.
    * \param dst_block_buffer The block buffer to pass to append_slot's callback fn.
    */
-  template <typename MinEditOffsetLowerBoundMatcher>
   Status put_into_mem_table(const KeyView& key,
                             const ValueView& value,
-                            const MinEditOffsetLowerBoundMatcher& min_edit_offset_lower_bound,
                             MockBlockBuffer* dst_block_buffer)
   {
     const usize item_size = this->update_max_item_size(key, value);
@@ -153,17 +156,47 @@ class MemTableTest : public ::testing::Test
 
     if (!expect_overflow) {
       EXPECT_CALL(this->storage_writer_context,
-                  append_slot(min_edit_offset_lower_bound,
+                  append_slot(/*min_edit_offset_lower_bound*/ AnyOf(
+                                  Eq(this->min_edit_offset_lower_bound),
+                                  Ge(this->min_edit_offset_lower_bound +
+                                     EditOffsetDelta{MemTableWithMocks::kStorageBlockRebaseDelta})),
                               /*byte_count*/ Ge(key.size() + value.size()),
                               /*callback=*/::testing::_))
-          .WillOnce(
-              Invoke([this, dst_block_buffer](EditOffset, usize byte_count, auto&& callback_fn) {
-                callback_fn(dst_block_buffer,
-                            this->stable_string_store.allocate(byte_count),
-                            EditOffset{this->next_edit_offset});
-                this->next_edit_offset += byte_count;
-                return OkStatus();
-              }));
+          .WillOnce(Invoke([this, dst_block_buffer](EditOffset min_edit_offset_lower_bound,
+                                                    usize byte_count,
+                                                    auto&& callback_fn) -> Status {
+            // Update the min block offset.
+            //
+            this->min_edit_offset_lower_bound = min_edit_offset_lower_bound;
+
+            // Determine whether this is the first visit, and if so, set expectations that the
+            // MemTable will add/remove a ref count.
+            //
+            auto first_visit = FirstVisitToBlock{this->next_edit_offset == 0};
+            if (first_visit) {
+              EXPECT_CALL(*dst_block_buffer, add_ref(1))  //
+                  .WillOnce(Return());
+
+              EXPECT_CALL(*dst_block_buffer, block_size())  //
+                  .WillRepeatedly(Return(0));
+
+              EXPECT_CALL(*dst_block_buffer, remove_ref(1))  //
+                  .WillOnce(Return());
+            }
+
+            // Invoke MemTable's callback.
+            //
+            callback_fn(first_visit,
+                        dst_block_buffer,
+                        this->stable_string_store.allocate(byte_count),
+                        EditOffset{this->next_edit_offset});
+
+            // Update the fake EditOffset.
+            //
+            this->next_edit_offset += byte_count;
+
+            return OkStatus();
+          }));
     }
 
     Status status = this->mem_table->put(this->storage_writer_context, key, value);
@@ -172,6 +205,8 @@ class MemTableTest : public ::testing::Test
     if (status.ok()) {
       this->total_inserted_items_size += item_size;
     }
+
+    Mock::VerifyAndClearExpectations(&this->storage_writer_context);
 
     return status;
   }
@@ -273,6 +308,10 @@ class MemTableTest : public ::testing::Test
    */
   i64 next_edit_offset = 0;
 
+  /** \brief The expected constraint for storage block lower bounds.
+   */
+  EditOffset min_edit_offset_lower_bound{0};
+
   /** \brief Tracks the maximum item size (packed key + value)
    */
   usize max_item_size = 0;
@@ -327,7 +366,7 @@ TEST_F(MemTableTest, PutGet)
 
     this->put_expected_item(key, value);
 
-    Status status = this->put_into_mem_table(key, value, Eq(EditOffset{0}), &this->block_buffer);
+    Status status = this->put_into_mem_table(key, value, &this->block_buffer);
     EXPECT_TRUE(status.ok()) << BATT_INSPECT(status);
 
     if ((i + 1) % kVerifyEvery == 0) {
@@ -349,7 +388,6 @@ TEST_F(MemTableTest, PutUntilFull)
   usize total_key_bytes = 0;
   usize total_value_bytes = 0;
   usize put_count = 0;
-  EditOffset min_offset_lower_bound = this->mem_table->edit_offset_lower_bound();
 
   for (;;) {
     KeyView key = this->make_random_key();
@@ -357,8 +395,7 @@ TEST_F(MemTableTest, PutUntilFull)
 
     this->put_expected_item(key, value);
 
-    Status status =
-        this->put_into_mem_table(key, value, Eq(min_offset_lower_bound), &this->block_buffer);
+    Status status = this->put_into_mem_table(key, value, &this->block_buffer);
 
     if (!status.ok()) {
       EXPECT_EQ(status, batt::StatusCode::kResourceExhausted);
@@ -369,6 +406,10 @@ TEST_F(MemTableTest, PutUntilFull)
     total_value_bytes += value.size();
     ++put_count;
   }
+
+  // Assert that the block offset was rebased at least once.
+  //
+  EXPECT_GT(this->min_edit_offset_lower_bound, this->mem_table->edit_offset_lower_bound());
 }
 
 }  // namespace

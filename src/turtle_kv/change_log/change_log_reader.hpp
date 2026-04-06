@@ -9,8 +9,11 @@
 #pragma once
 #define TURTLE_KV_CHANGE_LOG_READER_HPP
 
+#include <turtle_kv/change_log/api_types.hpp>
 #include <turtle_kv/change_log/change_log_block.hpp>
+#include <turtle_kv/change_log/change_log_file.hpp>
 #include <turtle_kv/change_log/edit_offset.hpp>
+
 #include <turtle_kv/util/stack_merger.hpp>
 
 #include <functional>
@@ -22,8 +25,10 @@ class ChangeLogReader
  public:
   // Function responsible for parsing one slot at a time.
   //
-  using SlotVisitorFn =
-      std::function<Status(ChangeLogBlock* block, EditOffset edit_offset, ConstBuffer payload)>;
+  using SlotVisitorFn = std::function<Status(FirstVisitToBlock first_visit,
+                                             ChangeLogBlock* block,
+                                             EditOffset edit_offset,
+                                             ConstBuffer payload)>;
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
 
@@ -143,7 +148,10 @@ class ChangeLogReader
       // fn can always get the delta from the block buffer and edit offset if it wants.  My hunch is
       // that the block-relative delta is an implementation detail most visitors won't care about.
       //
-      Status visit_status = visitor(current->block.get(), edit_offset, payload);
+      Status visit_status = visitor(FirstVisitToBlock{current->next_slot_i == 0},
+                                    current->block.get(),
+                                    edit_offset,
+                                    payload);
       BATT_REQUIRE_OK(visit_status);
 
       current->next_slot_i++;

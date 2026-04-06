@@ -30,13 +30,14 @@ struct MockMemTableStorage {
 
     MOCK_METHOD(usize, block_size, (), (const));
     MOCK_METHOD(i32, ref_count, (), (const));
-    MOCK_METHOD(i32, add_ref, (i32 delta), (const));
+    MOCK_METHOD(void, add_ref, (i32 delta), (const));
     MOCK_METHOD(void, remove_ref, (i32 count), ());
   };
 
   struct WriterContext {
     using BlockBuffer = MockMemTableStorage::BlockBuffer;
-    using SlotCallbackFn = std::function<void(BlockBuffer*, MutableBuffer, EditOffset)>;
+    using SlotCallbackFn =
+        std::function<void(FirstVisitToBlock, BlockBuffer*, MutableBuffer, EditOffset)>;
 
     MOCK_METHOD(Status, append_slot, (EditOffset, usize /*byte_count*/, SlotCallbackFn), ());
   };

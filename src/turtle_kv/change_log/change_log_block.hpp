@@ -465,13 +465,9 @@ class ChangeLogBlock
    */
   little_u16 space_;
 
-  /** \brief Whether this block has been "attached" to some higher-level object.
-   */
-  u8 is_attached_;
-
   // Pad the next field (this->ref_count_) out to (void*) this + 24 bytes;
   //
-  u8 padding0_[5];
+  u8 padding0_[6];
 
   /** \brief Atomic reference counter to manage the lifetime of the buffer.
    */
@@ -491,10 +487,14 @@ class ChangeLogBlock
    */
   little_u64 xxh3_seed_;
 
+  /** \brief Pointer to state object which only exists while this object is deserialized in memory.
+   */
   EphemeralStateStorage ephemeral_state_storage_;
 
-  // TODO [tastolfi 2025-12-16] Add a field for the _last_ GBID of the _prior_ epoch.
+  static_assert(sizeof(EphemeralStateStorage) == 8);
 };
+
+static_assert(sizeof(ChangeLogBlock) == 64);
 
 /** \brief Free function necessary for intrusive_ptr usage. Adds a reference to the ChangeLogBlock.
  */
@@ -509,12 +509,6 @@ inline void intrusive_ptr_add_ref(ChangeLogBlock* block) noexcept
 inline void intrusive_ptr_release(ChangeLogBlock* block) noexcept
 {
   block->remove_ref(1);
-}
-
-namespace {
-
-BATT_STATIC_ASSERT_EQ(sizeof(ChangeLogBlock), 64);
-
 }
 
 }  // namespace turtle_kv

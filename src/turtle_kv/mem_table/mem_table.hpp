@@ -47,6 +47,7 @@
 #include <batteries/utility.hpp>
 
 #include <algorithm>
+#include <bit>
 #include <string_view>
 #include <vector>
 
@@ -133,6 +134,16 @@ class BasicMemTable : public MemTableBase
   static constexpr i64 kFinalizedMask = i64{1} << 62;  // single bit, non-negative.
   static_assert(kFinalizedMask > 0);
 
+  /** \brief The number of bytes between minium-EditOffset-lower-bound rebasing.  Must be a power
+   * of 2.
+   */
+  static constexpr u64 kStorageBlockRebaseDelta = 1 * kMiB;
+  static_assert(std::popcount(kStorageBlockRebaseDelta) == 1);
+
+  /** \brief Mask to zero all bits less than kStorageBlockRebaseDelta.
+   */
+  static constexpr i64 kStorageBlockRebaseMask = ~(kStorageBlockRebaseDelta - 1);
+
   //+++++++++++-+-+--+----- --- -- -  -  -   -
 
   explicit BasicMemTable(AllocationTracker& allocation_tracker,
@@ -157,7 +168,8 @@ class BasicMemTable : public MemTableBase
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
 
-  Status put_recovered_slot(StorageBlockBuffer* block,
+  Status put_recovered_slot(FirstVisitToBlock first_visit,
+                            StorageBlockBuffer* block,
                             EditOffset edit_offset,
                             const KeyView& key,
                             const ValueView& value);
@@ -247,10 +259,29 @@ class BasicMemTable : public MemTableBase
  private:
   //+++++++++++-+-+--+----- --- -- -  -  -   -
 
+  /** \brief Returns the maximum size (in bytes) to which this MemTable is allowed to grow,
+   * considering its configured batch size, max batch count, and the maximum size of an edit seen so
+   * far (which bound the amount of wasted space at the end of each batch, since edits may not be
+   * split).
+   */
   i64 calculate_max_byte_size() const;
 
-  Status prepare_edit(i64 packed_edit_size);
+  /** \brief Updates the cached maximum edit size and attempts to reserve space in the MemTable to
+   * insert an edit of the specified byte count `packed_edit_size`.  If there is not enough room in
+   * the MemTable, will revert changes to `this->prepared_bytes_total_` and return
+   * batt::StatusCode::kResourceExhausted.  Otherwise, `this->prepared_bytes_total_` is increased.
+   *
+   * NOTE: any call to prepare_edit which returns an Ok status must be followed by a call to
+   * commit_edit with the same amount once the edit has been added to the index and the change log.
+   * Attempts to finalize a MemTable will block while there are pending edits (i.e., while the
+   * 'committed' byte count is less than the 'prepared' byte count).
+   *
+   * Returns the previous value of `this->prepared_bytes_total_`.
+   */
+  StatusOr<i64> prepare_edit(i64 packed_edit_size);
 
+  /** \brief Completes an edit operation initiated by `this->prepare_edit`.
+   */
   void commit_edit(i64 packed_edit_size);
 
   void attach_block_buffer(StorageBlockBuffer* block_buffer);
@@ -294,13 +325,18 @@ class BasicMemTable : public MemTableBase
 
   ART<MemTableValueEntry> art_index_;
 
-  std::atomic<i64> max_item_size_{Self::kDefaultItemSize};
+  batt::CpuCacheLineIsolated<std::atomic<i64>> max_item_size_{Self::kDefaultItemSize};
 
   std::atomic<i64> max_byte_size_;
 
-  std::atomic<i64> prepared_bytes_total_{0};
+  // Set to true if an external alloc ever tiggers overcommit; the MemTable stops accepting new
+  // edits when this happens.
+  //
+  std::atomic<bool> overcommit_triggered_{false};
 
-  std::atomic<i64> committed_bytes_total_{0};
+  batt::CpuCacheLineIsolated<std::atomic<i64>> prepared_bytes_total_{0};
+
+  batt::CpuCacheLineIsolated<std::atomic<i64>> committed_bytes_total_{0};
 
   std::atomic<i64> min_log_block_lower_bound_{this->edit_offset_lower_bound_.value()};
 
@@ -343,14 +379,16 @@ class BasicMemTable : public MemTableBase
 /** \brief A temporary object that captures the per-thread storage context needed to perform a
  * `put` operation.
  */
-template <typename StorageT, typename AllocationTrackerT>
+template <MemTableStorage StorageT, MemTableAllocationTracker AllocationTrackerT>
 class BasicMemTable<StorageT, AllocationTrackerT>::PerOpStorageContext
 {
  public:
   explicit PerOpStorageContext(BasicMemTable& mem_table,
-                               StorageWriterContext& storage_writer_context) noexcept
+                               StorageWriterContext& storage_writer_context,
+                               i64 total_size_before) noexcept
       : mem_table_{mem_table}
       , storage_writer_context_{storage_writer_context}
+      , total_size_before_{total_size_before}
   {
   }
 
@@ -359,10 +397,16 @@ class BasicMemTable<StorageT, AllocationTrackerT>::PerOpStorageContext
   Status store_data(usize n_bytes, SerializeFn&& serialize_fn) noexcept
   {
     return this->storage_writer_context_.append_slot(
-        /*min_edit_offset_lower_bound=*/this->mem_table_.edit_offset_lower_bound_,
+        /*min_edit_offset_lower_bound=*/this->mem_table_.edit_offset_lower_bound_ +
+            EditOffsetDelta{this->total_size_before_ & BasicMemTable::kStorageBlockRebaseMask},
         n_bytes,
-        [&](StorageBlockBuffer* buffer, MutableBuffer dst, EditOffset slot_edit_offset) {
-          this->mem_table_.attach_block_buffer(buffer);
+        [&](FirstVisitToBlock first_visit,
+            StorageBlockBuffer* buffer,
+            MutableBuffer dst,
+            EditOffset slot_edit_offset) {
+          if (first_visit) {
+            this->mem_table_.attach_block_buffer(buffer);
+          }
           serialize_fn(dst, slot_edit_offset);
         });
   }
@@ -370,6 +414,7 @@ class BasicMemTable<StorageT, AllocationTrackerT>::PerOpStorageContext
  private:
   BasicMemTable& mem_table_;
   StorageWriterContext& storage_writer_context_;
+  i64 total_size_before_;
 };
 
 /** \brief Returns the greatest ordered DeltaBatchId included in the passed MemTable.
@@ -387,7 +432,7 @@ inline EditOffset get_edit_offset_upper_bound(
 /** \brief Produces a series of compacted key/value runs, each of which is limited to a maximum
  * size, and can be applied to a checkpoint tree using batch update.
  */
-template <typename StorageT, typename AllocationTrackerT>
+template <MemTableStorage StorageT, MemTableAllocationTracker AllocationTrackerT>
 class BasicMemTable<StorageT, AllocationTrackerT>::BatchCompactor
 {
  public:

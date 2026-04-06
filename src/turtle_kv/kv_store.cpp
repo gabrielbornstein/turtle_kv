@@ -1008,7 +1008,8 @@ batt::StatusOr<boost::intrusive_ptr<turtle_kv::MemTable>> KVStore::recover_lates
   bool first_slot = true;
 
   batt::Status status =
-      log->visit_slots([this, &mem_table, &first_slot](ChangeLogBlock* block,
+      log->visit_slots([this, &mem_table, &first_slot](FirstVisitToBlock first_visit,
+                                                       ChangeLogBlock* block,
                                                        EditOffset edit_offset,
                                                        ConstBuffer payload) -> batt::Status {
         if (first_slot) {
@@ -1019,7 +1020,8 @@ batt::StatusOr<boost::intrusive_ptr<turtle_kv::MemTable>> KVStore::recover_lates
         StatusOr<std::pair<KeyView, ValueView>> unpacked_slot = unpack_key_value_slot(payload);
         BATT_REQUIRE_OK(unpacked_slot);
 
-        batt::Status recovered_slot_status = mem_table->put_recovered_slot(block,
+        batt::Status recovered_slot_status = mem_table->put_recovered_slot(first_visit,
+                                                                           block,
                                                                            edit_offset,
                                                                            unpacked_slot->first,
                                                                            unpacked_slot->second);

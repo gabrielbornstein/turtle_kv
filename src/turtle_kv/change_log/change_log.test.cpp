@@ -1,3 +1,14 @@
+//=##=##=#==#=#==#===#+==#+==========+==+=+=+=+=+=++=+++=+++++=-++++=-+++++++++++
+//
+// Part of the TurtleKV Project, under Apache License v2.0.
+// See https://www.apache.org/licenses/LICENSE-2.0 for license information.
+// SPDX short identifier: Apache-2.0
+//
+//+++++++++++-+-+--+----- --- -- -  -  -   -
+
+#include <gmock/gmock.h>
+#include <gtest/gtest.h>
+
 #include <turtle_kv/change_log/change_log_file.hpp>
 #include <turtle_kv/change_log/change_log_reader.hpp>
 #include <turtle_kv/change_log/change_log_writer.hpp>
@@ -5,7 +16,6 @@
 
 #include <turtle_kv/data_root.test.hpp>
 
-#include <gtest/gtest.h>
 #include <batteries/async/runtime.hpp>
 #include <batteries/async/task_scheduler.hpp>
 #include <batteries/env.hpp>
@@ -35,8 +45,28 @@ class ChangeLogTest : public ::testing::Test
     return;
   }
 
+  void on_visit_block(FirstVisitToBlock first_visit, ChangeLogBlock* block)
+  {
+    BATT_CHECK_NOT_NULLPTR(block);
+
+    EXPECT_EQ(first_visit,
+              this->visited_blocks_.count(
+                  std::make_pair(block, block->edit_offset_lower_bound().value())) == 0);
+
+    this->insert_visited_block(block);
+  }
+
+  void insert_visited_block(ChangeLogBlock* block)
+  {
+    BATT_CHECK_NOT_NULLPTR(block);
+    this->visited_blocks_.insert(std::make_pair(block, block->edit_offset_lower_bound().value()));
+  }
+
+  //+++++++++++-+-+--+----- --- -- -  -  -   -
+
   std::filesystem::path test_dir_;
   std::filesystem::path test_file_;
+  std::set<std::pair<ChangeLogBlock*, i64>> visited_blocks_;
 };
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
@@ -76,9 +106,13 @@ TEST_F(ChangeLogTest, WriterBasicOperations)
   Status write_status = context.append_slot(
       EditOffset{0},
       test_data.size(),
-      [&test_data](ChangeLogBlock* block, MutableBuffer buffer, EditOffset offset) {
+      [&test_data, this](FirstVisitToBlock first_visit,
+                         ChangeLogBlock* block,
+                         MutableBuffer buffer,
+                         EditOffset offset) {
         VLOG(1) << "Appending block with lower_bound: " << block->edit_offset_lower_bound()
                 << ", on slot: " << offset;
+        this->on_visit_block(first_visit, block);
         std::memcpy(buffer.data(), test_data.data(), test_data.size());
       });
   ASSERT_TRUE(write_status.ok());
@@ -126,9 +160,13 @@ TEST_F(ChangeLogTest, WriteAndReadMultipleSlots)
       Status write_status = context.append_slot(
           EditOffset{0},
           test_data[i].size(),
-          [&data = test_data[i]](ChangeLogBlock* block, MutableBuffer buffer, EditOffset offset) {
+          [&data = test_data[i], this](FirstVisitToBlock first_visit,
+                                       ChangeLogBlock* block,
+                                       MutableBuffer buffer,
+                                       EditOffset offset) {
             VLOG(1) << "Appending block with lower_bound: " << block->edit_offset_lower_bound()
                     << ", on slot: " << offset;
+            this->on_visit_block(first_visit, block);
             std::memcpy(buffer.data(), data.data(), data.size());
           });
       ASSERT_TRUE(write_status.ok()) << "Failed to write slot " << i;
@@ -145,16 +183,21 @@ TEST_F(ChangeLogTest, WriteAndReadMultipleSlots)
   // Read phase
   //
   {
+    this->visited_blocks_.clear();
+
     StatusOr<std::unique_ptr<ChangeLogReader>> reader = ChangeLogReader::open(this->test_file_);
     ASSERT_TRUE(reader.ok());
 
     std::vector<std::string> read_data;
     std::vector<EditOffset> edit_offsets;
 
-    auto visitor_fn =
-        [&](ChangeLogBlock* block, EditOffset edit_offset, ConstBuffer payload) -> Status {
+    auto visitor_fn = [&](FirstVisitToBlock first_visit,
+                          ChangeLogBlock* block,
+                          EditOffset edit_offset,
+                          ConstBuffer payload) -> Status {
       VLOG(1) << "Reading block with lower_bound: " << block->edit_offset_lower_bound()
               << ", on slot: " << edit_offset;
+      this->on_visit_block(first_visit, block);
       std::string data(reinterpret_cast<const char*>(payload.data()), payload.size());
       read_data.push_back(data);
       edit_offsets.push_back(edit_offset);
@@ -217,7 +260,10 @@ TEST_F(ChangeLogTest, ConcurrentWritesMultipleContexts)
           Status write_status = context.append_slot(
               EditOffset{0},
               data.size(),
-              [&data, &offsets](ChangeLogBlock* block, MutableBuffer buffer, EditOffset offset) {
+              [&data, &offsets](FirstVisitToBlock,
+                                ChangeLogBlock* block,
+                                MutableBuffer buffer,
+                                EditOffset offset) {
                 VLOG(1) << "Appending block with lower_bound: " << block->edit_offset_lower_bound()
                         << ", on slot: " << offset << BATT_INSPECT(data.size());
                 batt::ScopedLock<std::unordered_set<i64>> locked_offsets{offsets};
@@ -253,8 +299,10 @@ TEST_F(ChangeLogTest, ConcurrentWritesMultipleContexts)
     ASSERT_TRUE(reader.ok());
 
     int slots_read = 0;
-    auto visitor_fn =
-        [&](ChangeLogBlock* block, EditOffset edit_offset, ConstBuffer payload) -> Status {
+    auto visitor_fn = [&](FirstVisitToBlock,
+                          ChangeLogBlock* block,
+                          EditOffset edit_offset,
+                          ConstBuffer payload) -> Status {
       VLOG(1) << "Reading block with lower_bound: " << block->edit_offset_lower_bound()
               << ", on slot: " << edit_offset << ", payload size: " << payload.size();
 
@@ -302,22 +350,29 @@ TEST_F(ChangeLogTest, BlockBoundaryConditions)
   ChangeLogWriter::Context context(**writer);
 
   // Write data that will span multiple blocks
+  //
   std::string large_data(900, 'X');  // Almost fills a block
+
+  EXPECT_TRUE(this->visited_blocks_.empty());
 
   for (int i = 0; i < num_appends; ++i) {
     Status write_status = context.append_slot(
         EditOffset{0},
         large_data.size(),
-        [&large_data, i](ChangeLogBlock* block, MutableBuffer buffer, EditOffset offset) {
+        [&large_data, i, this](FirstVisitToBlock first_visit,
+                               ChangeLogBlock* block,
+                               MutableBuffer buffer,
+                               EditOffset offset) {
           VLOG(1) << "Appending block with lower_bound: " << block->edit_offset_lower_bound()
                   << ", on slot: " << offset;
+          this->on_visit_block(first_visit, block);
           std::memcpy(buffer.data(), large_data.data(), large_data.size());
         });
 
     if (!write_status.ok()) {
       // TODO: [Gabe Bornstein 4/1/26] We never hit this condition, do we expect to?
       //
-      LOG(INFO) << "Resource exchausted";
+      LOG(INFO) << "Resource exhausted";
       EXPECT_EQ(write_status, batt::StatusCode::kResourceExhausted);
     }
   }
@@ -353,8 +408,10 @@ TEST_F(ChangeLogTest, ReadEmptyLog)
   ASSERT_TRUE(reader.ok());
 
   int slots_read = 0;
-  auto visitor_fn =
-      [&](ChangeLogBlock* block, EditOffset edit_offset, ConstBuffer payload) -> Status {
+  auto visitor_fn = [&](FirstVisitToBlock,
+                        ChangeLogBlock* block,
+                        EditOffset edit_offset,
+                        ConstBuffer payload) -> Status {
     VLOG(1) << "Reading block with lower_bound: " << block->edit_offset_lower_bound()
             << ", on slot: " << edit_offset << ", payload size: " << payload.size();
     slots_read++;
@@ -410,7 +467,10 @@ TEST_F(ChangeLogTest, ExceedCapacityWrapAround)
       Status write_status = context.append_slot(
           EditOffset{0},
           slot_data.size(),
-          [&slot_data, &offsets](ChangeLogBlock* block, MutableBuffer buffer, EditOffset offset) {
+          [&slot_data, &offsets](FirstVisitToBlock,
+                                 ChangeLogBlock* block,
+                                 MutableBuffer buffer,
+                                 EditOffset offset) {
             VLOG(1) << "Appending block with lower_bound: " << block->edit_offset_lower_bound()
                     << ", on slot: " << offset;
             offsets.insert(offset.value());
@@ -454,8 +514,10 @@ TEST_F(ChangeLogTest, ExceedCapacityWrapAround)
 
     int slots_read = 0;
     std::unordered_set<i64> unique_blocks;
-    auto visitor_fn =
-        [&](ChangeLogBlock* block, EditOffset edit_offset, ConstBuffer payload) -> Status {
+    auto visitor_fn = [&](FirstVisitToBlock,
+                          ChangeLogBlock* block,
+                          EditOffset edit_offset,
+                          ConstBuffer payload) -> Status {
       VLOG(1) << "Reading block with lower_bound: " << block->edit_offset_lower_bound()
               << ", on slot: " << edit_offset << ", payload size: " << payload.size();
 
@@ -514,7 +576,7 @@ TEST_F(ChangeLogTest, CorruptBlockInMiddle)
           EditOffset{0},
           test_data[i].size(),
           [&data = test_data[i],
-           i](ChangeLogBlock* block, MutableBuffer buffer, EditOffset offset) {
+           i](FirstVisitToBlock, ChangeLogBlock* block, MutableBuffer buffer, EditOffset offset) {
             VLOG(1) << "Writing slot " << i
                     << " to block with lower_bound: " << block->edit_offset_lower_bound()
                     << ", at edit_offset: " << offset;
@@ -576,8 +638,10 @@ TEST_F(ChangeLogTest, CorruptBlockInMiddle)
     int slots_read = 0;
     std::vector<EditOffset> recovered_offsets;
 
-    auto visitor_fn =
-        [&](ChangeLogBlock* block, EditOffset edit_offset, ConstBuffer payload) -> Status {
+    auto visitor_fn = [&](FirstVisitToBlock,
+                          ChangeLogBlock* block,
+                          EditOffset edit_offset,
+                          ConstBuffer payload) -> Status {
       slots_read++;
       recovered_offsets.push_back(edit_offset);
 

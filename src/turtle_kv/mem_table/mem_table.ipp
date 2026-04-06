@@ -81,18 +81,18 @@ Status BasicMemTable<StorageT, AllocationTrackerT>::put(
   // First, make sure the key/value pair will fit in this MemTable (and make sure the MemTable
   // hasn't been finalized).
   //
-  const i64 item_size = PackedSizeOfEdit{}(key.size(), value.size());
-  BATT_REQUIRE_OK(this->prepare_edit(item_size));
+  const i64 edit_size = PackedSizeOfEdit{}(key.size(), value.size());
+  BATT_ASSIGN_OK_RESULT(const i64 total_size_before, this->prepare_edit(edit_size));
 
   // Now that we have successfully reserved space in the MemTable, we *must* increase
   // this->committed_bytes_total_ by the same amount after we are done modifying the log/index;
   // otherwise whoever calls this->finalize() will have no way of knowing that all writers are done.
   //
-  auto on_scope_exit = batt::finally([&] {
-    this->commit_edit(item_size);
+  auto on_scope_exit = batt::finally([this, edit_size] {
+    this->commit_edit(edit_size);
   });
 
-  PerOpStorageContext op_storage_context{*this, storage_writer_context};
+  PerOpStorageContext op_storage_context{*this, storage_writer_context, total_size_before};
   {
     MemTableValueEntryInserter<PerOpStorageContext> inserter{
         op_storage_context,
@@ -112,12 +112,12 @@ Status BasicMemTable<StorageT, AllocationTrackerT>::put(
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
 template <MemTableStorage StorageT, MemTableAllocationTracker AllocationTrackerT>
-Status BasicMemTable<StorageT, AllocationTrackerT>::prepare_edit(i64 packed_edit_size)
+StatusOr<i64> BasicMemTable<StorageT, AllocationTrackerT>::prepare_edit(i64 packed_edit_size)
 {
   // Update the maximum item size.  We track this so that we can make a conservative estimate of how
   // much space might be wasted per batch, once the MemTable is finalized/compacted.
   //
-  if (packed_edit_size > atomic_clamp_min(this->max_item_size_, packed_edit_size)) {
+  if (packed_edit_size > atomic_clamp_min(*this->max_item_size_, packed_edit_size)) {
     //
     // If we're in here, it's because `packed_edit_size` was larger than the most recently observed
     // value of `this->max_item_size_`; larger max item size means more bytes per batch might be
@@ -130,26 +130,27 @@ Status BasicMemTable<StorageT, AllocationTrackerT>::prepare_edit(i64 packed_edit
   //----- --- -- -  -  -   -
   // Try to reserve `packed_edit_size` bytes in the MemTable.
   //
-  const i64 prior_value = this->prepared_bytes_total_.fetch_add(packed_edit_size);
+  const i64 prior_value = this->prepared_bytes_total_->fetch_add(packed_edit_size);
 
   // If the new value of prepared_bytes_total_ is under the limit, then the edit can be accepted. If
   // the MemTable has been finalized, then `prior_value` with have the 2nd-most-significant bit set
   // (see kFinalizedMask), so this check will certainly fail.
   //
-  if (prior_value + packed_edit_size <= this->max_byte_size_.load()) {
-    return OkStatus();
+  if (prior_value + packed_edit_size <= this->max_byte_size_.load() &&
+      this->overcommit_triggered_.load() == false) {
+    return {prior_value};
   }
 
   //----- --- -- -  -  -   -
   // The prepare did not succeed; revert the prepare.
   //
-  const i64 observed_value = this->prepared_bytes_total_.fetch_sub(packed_edit_size);
+  const i64 observed_value = this->prepared_bytes_total_->fetch_sub(packed_edit_size);
 
   // If we observe the finalized bit to be set, then wake any threads waiting inside
   // MemTable::finalize().
   //
   if ((observed_value & Self::kFinalizedMask) != 0) {
-    this->committed_bytes_total_.notify_all();
+    this->committed_bytes_total_->notify_all();
   }
 
   return {batt::StatusCode::kResourceExhausted};
@@ -160,9 +161,9 @@ Status BasicMemTable<StorageT, AllocationTrackerT>::prepare_edit(i64 packed_edit
 template <MemTableStorage StorageT, MemTableAllocationTracker AllocationTrackerT>
 void BasicMemTable<StorageT, AllocationTrackerT>::commit_edit(i64 packed_edit_size)
 {
-  const i64 prior_value = this->committed_bytes_total_.fetch_add(packed_edit_size);
+  const i64 prior_value = this->committed_bytes_total_->fetch_add(packed_edit_size);
   if ((prior_value & Self::kFinalizedMask) != 0) {
-    this->committed_bytes_total_.notify_all();
+    this->committed_bytes_total_->notify_all();
   }
 }
 
@@ -197,8 +198,8 @@ Optional<ValueView> BasicMemTable<StorageT, AllocationTrackerT>::finalized_get(
 template <MemTableStorage StorageT, MemTableAllocationTracker AllocationTrackerT>
 bool BasicMemTable<StorageT, AllocationTrackerT>::finalize() noexcept
 {
-  const i64 prior_committed = this->committed_bytes_total_.fetch_or(Self::kFinalizedMask);
-  const i64 prior_prepared = this->prepared_bytes_total_.fetch_or(Self::kFinalizedMask);
+  const i64 prior_committed = this->committed_bytes_total_->fetch_or(Self::kFinalizedMask);
+  const i64 prior_prepared = this->prepared_bytes_total_->fetch_or(Self::kFinalizedMask);
 
   const bool newly_finalized = (prior_committed & Self::kFinalizedMask) == 0;
 
@@ -210,10 +211,10 @@ bool BasicMemTable<StorageT, AllocationTrackerT>::finalize() noexcept
         << "MemTable::committed_bytes_total_ should never be greater than "
            "MemTable::prepared_bytes_total_!";
 
-    this->committed_bytes_total_.wait(observed_committed);
+    this->committed_bytes_total_->wait(observed_committed);
 
-    observed_prepared = this->prepared_bytes_total_.load();
-    observed_committed = this->committed_bytes_total_.load();
+    observed_prepared = this->prepared_bytes_total_->load();
+    observed_committed = this->committed_bytes_total_->load();
   }
 
   // If this is the first thread to call finalize, then we must set the upper bound.
@@ -252,7 +253,7 @@ void BasicMemTable<StorageT, AllocationTrackerT>::await_finalize() noexcept
 template <MemTableStorage StorageT, MemTableAllocationTracker AllocationTrackerT>
 bool BasicMemTable<StorageT, AllocationTrackerT>::is_finalized() const
 {
-  return (this->committed_bytes_total_.load() & Self::kFinalizedMask) != 0 &&
+  return (this->committed_bytes_total_->load() & Self::kFinalizedMask) != 0 &&
          this->edit_offset_lower_bound_ <= EditOffset{this->edit_offset_upper_bound_.load()};
 }
 
@@ -260,12 +261,29 @@ bool BasicMemTable<StorageT, AllocationTrackerT>::is_finalized() const
 //
 template <MemTableStorage StorageT, MemTableAllocationTracker AllocationTrackerT>
 Status BasicMemTable<StorageT, AllocationTrackerT>::put_recovered_slot(
+    FirstVisitToBlock first_visit,
     StorageBlockBuffer* block_buffer,
     EditOffset edit_offset,
     const KeyView& key,
     const ValueView& value)
 {
-  this->attach_block_buffer(block_buffer);
+  // As in normal operation, check to make sure the edit doesn't overflow the MemTable.
+  // (Since we aren't writing any new data, however, we don't need to save the total bytes prepared
+  // before--the "ok" return value of prepare_edit--since that is only needed to calculate when to
+  // rebase.)
+  //
+  const i64 edit_size = PackedSizeOfEdit{}(key.size(), value.size());
+  BATT_REQUIRE_OK(this->prepare_edit(edit_size));
+
+  // What's prepared must be committed.
+  //
+  auto on_scope_exit = batt::finally([this, edit_size] {
+    this->commit_edit(edit_size);
+  });
+
+  if (first_visit) {
+    this->attach_block_buffer(block_buffer);
+  }
 
   MemTableRecoveryInserter inserter{
       edit_offset,
@@ -284,20 +302,18 @@ template <MemTableStorage StorageT, MemTableAllocationTracker AllocationTrackerT
 void BasicMemTable<StorageT, AllocationTrackerT>::attach_block_buffer(
     StorageBlockBuffer* block_buffer)
 {
-  if (block_buffer->ref_count() == 1) {
-    block_buffer->add_ref(1);
-    this->metrics_.log_bytes_allocated.add(block_buffer->block_size());
-    i64 cache_alloc_delta = 0;
-    {
-      absl::MutexLock lock{&this->block_list_mutex_};
+  block_buffer->add_ref(1);
+  this->metrics_.log_bytes_allocated.add(block_buffer->block_size());
+  i64 cache_alloc_delta = 0;
+  {
+    absl::MutexLock lock{&this->block_list_mutex_};
 
-      this->block_size_total_ += block_buffer->block_size();
-      this->block_buffers_.emplace_back(block_buffer);
+    this->block_size_total_ += block_buffer->block_size();
+    this->block_buffers_.emplace_back(block_buffer);
 
-      cache_alloc_delta = this->update_external_cache_alloc();
-    }
-    this->handle_external_cache_alloc(cache_alloc_delta);
+    cache_alloc_delta = this->update_external_cache_alloc();
   }
+  this->handle_external_cache_alloc(cache_alloc_delta);
 }
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
@@ -346,7 +362,7 @@ template <MemTableStorage StorageT, MemTableAllocationTracker AllocationTrackerT
 void BasicMemTable<StorageT, AllocationTrackerT>::handle_external_cache_alloc(i64 cache_alloc_delta)
 {
   if (cache_alloc_delta > 0) {
-    const i64 observed_current_size = this->prepared_bytes_total_.load();
+    const i64 observed_current_size = this->prepared_bytes_total_->load();
 
     llfs::PageCacheOvercommit overcommit;
     overcommit.allow(true);
@@ -365,8 +381,7 @@ void BasicMemTable<StorageT, AllocationTrackerT>::handle_external_cache_alloc(i6
     // much worse.
     //
     if (overcommit.is_triggered()) {
-      atomic_clamp_max(this->prepared_bytes_total_,
-                       std::max<i64>(observed_current_size, this->max_bytes_per_batch_ / 2));
+      this->overcommit_triggered_.store(true);
 
       this->allocation_tracker_.on_overcommit([this, observed_current_size](std::ostream& out) {
         out << "Truncating MemTable size due to cache overcommit;"
@@ -393,7 +408,7 @@ void BasicMemTable<StorageT, AllocationTrackerT>::handle_external_cache_alloc(i6
 template <MemTableStorage StorageT, MemTableAllocationTracker AllocationTrackerT>
 i64 BasicMemTable<StorageT, AllocationTrackerT>::calculate_max_byte_size() const
 {
-  const i64 max_wasted_per_batch = this->max_item_size_.load() - 1;
+  const i64 max_wasted_per_batch = this->max_item_size_->load() - 1;
   const i64 min_full_batch_size = this->max_bytes_per_batch_ - max_wasted_per_batch;
   return this->max_batch_count_ * min_full_batch_size;
 }

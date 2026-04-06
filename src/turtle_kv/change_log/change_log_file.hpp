@@ -7,6 +7,7 @@
 //+++++++++++-+-+--+----- --- -- -  -  -   -
 
 #pragma once
+#define TURTLE_KV_CHANGE_LOG_FILE_HPP
 
 #include <turtle_kv/api_types.hpp>
 #include <turtle_kv/change_log/change_log_block.hpp>

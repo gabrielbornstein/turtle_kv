@@ -117,11 +117,11 @@ ChangeLogWriter::~ChangeLogWriter() noexcept
   this->halt();
   this->join();
 
+  ChangeLogWriter::remove_buffer_refs(this->poll_updates());
+
   this->state_.with_lock([](State& state) {
     state.check_ready_to_shut_down();
   });
-
-  ChangeLogWriter::remove_buffer_refs(this->poll_updates());
 }
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
