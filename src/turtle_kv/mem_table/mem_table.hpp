@@ -255,6 +255,13 @@ class BasicMemTable : public MemTableBase
     return BATT_CHECKED_CAST(usize, this->max_byte_size_.load());
   }
 
+  /** \brief Returns true if no edits have been added to this MemTable.
+   */
+  bool empty()
+  {
+    return this->art_index_.empty();
+  }
+
   //+++++++++++-+-+--+----- --- -- -  -  -   -
  private:
   //+++++++++++-+-+--+----- --- -- -  -  -   -

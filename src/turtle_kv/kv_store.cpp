@@ -632,16 +632,20 @@ Status KVStore::force_checkpoint()
     this->checkpoint_distance_.compare_exchange_strong(expected, saved_checkpoint_distance);
   });
 
-  boost::intrusive_ptr<MemTable> old_mem_table = [this] {
+  boost::intrusive_ptr<MemTable> old_mem_table = [this]() -> boost::intrusive_ptr<MemTable> {
     batt::Toggle<State>::Reader state_reader{this->state_};
+    if (state_reader->mem_table_->empty()) {
+      return nullptr;
+    }
     return state_reader->mem_table_;
   }();
 
-  BATT_REQUIRE_OK(this->finalize_mem_table(std::move(old_mem_table)));
-
-  BATT_REQUIRE_OK(this->deltas_size_->await_true([this](usize n) {
-    return n < 2;
-  }));
+  if (old_mem_table) {
+    BATT_REQUIRE_OK(this->finalize_mem_table(std::move(old_mem_table)));
+    BATT_REQUIRE_OK(this->deltas_size_->await_true([this](usize n) {
+      return n < 2;
+    }));
+  }
 
   return OkStatus();
 }

@@ -285,6 +285,8 @@ StatusOr<Checkpoint> Checkpoint::apply_batch(batt::WorkerPool& worker_pool,
       .edit_size_totals = None,
   };
 
+  BATT_CHECK_NE(update.result_set.size(), 0);
+
   BATT_REQUIRE_OK(this->tree_->apply_batch_update(tree_options,
                                                   ParentNodeHeight{this->tree_height_ + 1},
                                                   update,

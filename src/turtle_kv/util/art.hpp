@@ -1142,6 +1142,21 @@ class ART : public ARTBase
   template <typename Fn>
   void scan(std::string_view lower_bound_key, const Fn& fn);
 
+  /** \brief Returns true iff the container is empty.
+   */
+  bool empty()
+  {
+    BranchView branch;
+    for (;;) {
+      SeqMutex<u32>::ReadLock root_read_lock{this->super_root_.mutex_};
+      branch.load(this->root_);
+      if (!root_read_lock.changed()) {
+        break;
+      }
+    }
+    return branch.ptr == nullptr;
+  }
+
   //+++++++++++-+-+--+----- --- -- -  -  -   -
  private:
   using SmallestParentNode = Node4;

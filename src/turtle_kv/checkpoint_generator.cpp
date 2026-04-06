@@ -70,6 +70,8 @@ void CheckpointGenerator::join() noexcept
 StatusOr<usize> CheckpointGenerator::apply_batch(std::unique_ptr<DeltaBatch>&& batch,
                                                  llfs::PageCacheOvercommit& overcommit) noexcept
 {
+  BATT_CHECK_NOT_NULLPTR(batch);
+
   VLOG(1) << "CheckpointGenerator::apply_batch()" << BATT_INSPECT(batch->debug_info());
 
   // Verify that the batches are coming in order with no gaps.
