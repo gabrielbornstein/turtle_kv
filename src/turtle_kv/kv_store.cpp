@@ -624,6 +624,51 @@ Status KVStore::put(const KeyView& key, const ValueView& value) noexcept /*overr
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
+// Will be called by run_recovery(): (very similar to recover latest mem table)
+//
+//     reader = new ChangeLogReader()
+//     reader->visit_slots([](...){
+//         if (edit_offset < checkpoint.bound) {
+//             return; // continue
+//         }
+//         this->recover_put(...);
+//     });
+//
+//
+#if 0
+Status KVStore::recover_put(
+    FirstVisitToBlock first_visit,
+    ChangeLogBlock* block,
+    EditOffset edit_offset,
+    ConstBuffer payload)  // TODO [tastolfi 2026-04-07] need parse(payload) -> key, value
+{
+  for (;;) {
+    boost::intrusive_ptr<MemTable> full_mem_table;
+
+    {
+      batt::Toggle<State>::Reader state_reader{this->state_};
+
+      Status status =
+          state_reader->mem_table_->put_recovered_slot(first_visit, block, edit_offset, key, value);
+
+      if (status.ok() || status != batt::StatusCode::kResourceExhausted) {
+        return status;
+      }
+
+      full_mem_table = state_reader->mem_table_;
+    }
+
+    BATT_CHECK_NOT_NULLPTR(full_mem_table);
+    BATT_REQUIRE_OK(this->finalize_mem_table(std::move(full_mem_table)));
+
+    // TODO [tastolfi 2026-04-07] maybe also the back-pressure stuff (i.e., waiting for the deltas
+    // to shrink?)
+  }
+}
+#endif
+
+//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
+//
 Status KVStore::force_checkpoint()
 {
   const usize saved_checkpoint_distance = this->checkpoint_distance_.exchange(1);
@@ -912,11 +957,15 @@ void KVStore::wait_for_new_mem_table(EditOffset target_edit_offset)
   // Spin until we see a MemTable with a sufficiently advanced starting edit offset.
   //
   for (;;) {
-    batt::Toggle<State>::Reader state_reader{this->state_};
-
-    if (state_reader->mem_table_->edit_offset_lower_bound() >= target_edit_offset) {
-      break;
+    const State* observed = nullptr;
+    {
+      batt::Toggle<State>::Reader state_reader{this->state_};
+      if (state_reader->mem_table_->edit_offset_lower_bound() >= target_edit_offset) {
+        break;
+      }
+      observed = state_reader.get();
     }
+    this->state_.wait(observed);
   }
 }
 

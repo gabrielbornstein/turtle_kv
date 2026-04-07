@@ -260,6 +260,13 @@ class KVStore : public Table
 
   void checkpoint_flush_thread_main();
 
+  /** \brief Called during recovery to recover MemTables one edit at a time.
+   */
+  Status recover_put(FirstVisitToBlock first_visit,
+                     ChangeLogBlock* block,
+                     EditOffset edit_offset,
+                     ConstBuffer payload);
+
   //+++++++++++-+-+--+----- --- -- -  -  -   -
 
   KVStoreMetrics metrics_;
