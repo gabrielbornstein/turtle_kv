@@ -381,45 +381,38 @@ u64 query_page_loader_reset_every_n()
     , page_cache_{*BATT_OK_RESULT_OR_PANIC(this->storage_context_->get_page_cache())}
     , tree_options_{tree_options}
     , runtime_options_{runtime_options}
-    , log_writer_{std::move(change_log_writer)}
+    , mem_table_allocation_tracker_{this->page_cache(), this->metrics_.overcommit}
+    , change_log_writer_{std::move(change_log_writer)}
     , checkpoint_distance_{this->runtime_options_.initial_checkpoint_distance}
     , checkpoint_log_{std::move(checkpoint_log)}
     , filter_page_write_state_{FilterPageWriteState::make_new()}
+    , per_thread_{}
     , state_{}
-    , deltas_size_{[this] {
-      batt::Toggle<State>::Writer writer{this->state_};
-
-      State& init_state = writer.new_value();
-
-      // TODO [tastolfi 2026-03-24] - for recovery, starting at EditOffset{0} is wrong.
-      //
-      init_state.mem_table_ = this->create_mem_table(EditOffset{0});
-      init_state.base_checkpoint_.emplace(Checkpoint::make_empty());
-
-      this->next_mem_table_edit_offset_.store(
-          init_state.mem_table_->edit_offset_lower_bound().value());
-
-      return init_state.deltas_.size();
-    }()}
-
+    , deltas_size_{0}
     , checkpoint_token_pool_{std::make_shared<batt::Grant::Issuer>(
           /*max_concurrent_checkpoint_jobs=*/1)}
-
-    , info_task_{this->task_scheduler_.schedule_task(),
-                 [this] {
-                   this->info_task_main();
-                 },
-                 "KVStore::info_task"}
-
-    , checkpoint_generator_{this->worker_pool_,
-                            this->tree_options_,
-                            this->page_cache(),
-                            batt::make_copy(this->filter_page_write_state_),
-                            batt::Toggle<State>::Reader{this->state_}->base_checkpoint_->clone(),
-                            *this->checkpoint_log_}
-
+    , halt_{false}
+    , info_task_{}
+    , next_mem_table_edit_offset_{0}
+    , finalized_mem_table_channel_{}
+    , checkpoint_update_channel_{}
+    , checkpoint_generator_{}
     , checkpoint_batch_count_{0}
+    , checkpoint_flush_channel_{}
+    , mem_table_batch_scanner_thread_{}
+    , checkpoint_update_thread_{}
+    , checkpoint_flush_thread_{}
 {
+  this->initialize_state();
+
+  this->checkpoint_generator_.emplace(
+      this->worker_pool_,
+      this->tree_options_,
+      this->page_cache(),
+      batt::make_copy(this->filter_page_write_state_),
+      batt::Toggle<State>::Reader{this->state_}->base_checkpoint_->clone(),
+      *this->checkpoint_log_);
+
   this->tree_options_.set_trie_index_reserve_size(this->tree_options_.trie_index_reserve_size());
 
   BATT_CHECK_OK(KVStore::global_init());
@@ -440,6 +433,13 @@ u64 query_page_loader_reset_every_n()
       LOG(WARNING) << "Failed to assign filter device: " << BATT_INSPECT(status);
     }
   }
+
+  this->info_task_.emplace(
+      this->task_scheduler_.schedule_task(),
+      [this] {
+        this->info_task_main();
+      },
+      "KVStore::info_task");
 
   if (this->runtime_options_.use_threaded_checkpoint_pipeline) {
     this->mem_table_batch_scanner_thread_.emplace([this] {
@@ -493,13 +493,48 @@ KVStore::~KVStore() noexcept
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
+void KVStore::initialize_state()
+{
+  batt::Toggle<State>::Writer writer{this->state_};
+
+  State& init_state = writer.new_value();
+
+  // TODO [tastolfi 2026-03-24] - for recovery, starting at EditOffset{0} is wrong.
+  //
+  init_state.mem_table_ = this->create_mem_table(EditOffset{0});
+  init_state.base_checkpoint_.emplace(Checkpoint::make_empty());
+
+  this->next_mem_table_edit_offset_.set_value(
+      init_state.mem_table_->edit_offset_lower_bound().value());
+
+  this->deltas_size_->set_value(init_state.deltas_.size());
+}
+
+//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
+//
 void KVStore::halt()
 {
+  // Let it be known: WE ARE HALTING!
+  //
   this->halt_.set_value(true);
-  this->log_writer_->halt();
+
+  // Stop the ChangeLogWriter.
+  //
+  this->change_log_writer_->halt();
+
+  // Close all Watches.
+  //
+  this->deltas_size_->close();
+  this->next_mem_table_edit_offset_.close();
+
+  // Close all Channels.
+  //
   this->finalized_mem_table_channel_.close();
   this->checkpoint_update_channel_.close();
   this->checkpoint_flush_channel_.close();
+
+  // Prevent new asynchronous filter page writes from being initiated.
+  //
   this->filter_page_write_state_->halt();
 }
 
@@ -508,7 +543,7 @@ void KVStore::halt()
 void KVStore::join()
 {
   this->filter_page_write_state_->join();
-  this->log_writer_->join();
+  this->change_log_writer_->join();
   if (this->mem_table_batch_scanner_thread_) {
     this->mem_table_batch_scanner_thread_->join();
     this->mem_table_batch_scanner_thread_ = None;
@@ -521,7 +556,10 @@ void KVStore::join()
     this->checkpoint_flush_thread_->join();
     this->checkpoint_flush_thread_ = None;
   }
-  this->info_task_.join();
+  if (this->info_task_) {
+    this->info_task_->join();
+    this->info_task_ = None;
+  }
 }
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
@@ -532,7 +570,7 @@ boost::intrusive_ptr<MemTable> KVStore::create_mem_table(EditOffset edit_offset_
 
   boost::intrusive_ptr<MemTable> mem_table{new MemTable{
       this->mem_table_allocation_tracker_,
-      *this->log_writer_,
+      *this->change_log_writer_,
       this->metrics_.mem_table,
       edit_offset_lower_bound,
       /*max_bytes_per_batch=*/this->tree_options_.flush_size(),
@@ -574,7 +612,8 @@ Status KVStore::put(const KeyView& key, const ValueView& value) noexcept /*overr
       // Insert the key/value pair into the active MemTable; this will also append a change log
       // buffer.
       //
-      Status status = observed_mem_table->put(thread_context.log_writer_context_, key, value);
+      Status status =
+          observed_mem_table->put(thread_context.change_log_writer_context_, key, value);
 
 #if TURTLE_KV_PROFILE_UPDATES
       put_mem_table_timer.stop();
@@ -957,13 +996,13 @@ void KVStore::wait_for_new_mem_table(EditOffset target_edit_offset)
   // Spin until we see a MemTable with a sufficiently advanced starting edit offset.
   //
   for (;;) {
-    const State* observed = nullptr;
+    u64 observed;
     {
       batt::Toggle<State>::Reader state_reader{this->state_};
       if (state_reader->mem_table_->edit_offset_lower_bound() >= target_edit_offset) {
         break;
       }
-      observed = state_reader.get();
+      observed = state_reader.seq();
     }
     this->state_.wait(observed);
   }
@@ -982,13 +1021,13 @@ Status KVStore::push_mem_table_to_channel(boost::intrusive_ptr<MemTable>&& mem_t
   const EditOffset this_edit_offset = mem_table->edit_offset_lower_bound();
   const EditOffset next_edit_offset = mem_table->edit_offset_upper_bound();
 
-  while (this->next_mem_table_edit_offset_.load() != this_edit_offset.value()) {
-    batt::spin_yield();
-  }
+  BATT_REQUIRE_OK(this->next_mem_table_edit_offset_.await_true([this_edit_offset](i64 observed) {
+    return EditOffset{observed} == this_edit_offset;
+  }));
 
   BATT_REQUIRE_OK(this->finalized_mem_table_channel_.write(std::move(mem_table)));
 
-  const i64 replaced_value = this->next_mem_table_edit_offset_.exchange(next_edit_offset.value());
+  const i64 replaced_value = this->next_mem_table_edit_offset_.set_value(next_edit_offset.value());
   BATT_CHECK_EQ(replaced_value, this_edit_offset.value());
 
   return OkStatus();
@@ -1239,7 +1278,7 @@ StatusOr<std::unique_ptr<CheckpointJob>> KVStore::apply_batch_to_checkpoint(
     //
     StatusOr<usize> push_status = TURTLE_KV_COLLECT_LATENCY(
         this->metrics_.apply_batch_latency,
-        this->checkpoint_generator_.apply_batch(std::move(delta_batch), overcommit));
+        this->checkpoint_generator_->apply_batch(std::move(delta_batch), overcommit));
 
     BATT_REQUIRE_OK(push_status);
     BATT_CHECK_EQ(*push_status, 1);
@@ -1271,7 +1310,7 @@ StatusOr<std::unique_ptr<CheckpointJob>> KVStore::apply_batch_to_checkpoint(
   //
   this->metrics_.checkpoint_count.add(1);
   this->metrics_.checkpoint_pinned_pages_stats.update(
-      this->checkpoint_generator_.page_cache_job().pinned_page_count());
+      this->checkpoint_generator_->page_cache_job().pinned_page_count());
 
   // Allocate a token for the checkpoint job.
   //
@@ -1280,11 +1319,12 @@ StatusOr<std::unique_ptr<CheckpointJob>> KVStore::apply_batch_to_checkpoint(
 
   // Serialize all pages and create the job.
   //
-  StatusOr<std::unique_ptr<CheckpointJob>> checkpoint_job = TURTLE_KV_COLLECT_LATENCY(
-      this->metrics_.finalize_checkpoint_latency,
-      this->checkpoint_generator_.finalize_checkpoint(std::move(checkpoint_token),
-                                                      batt::make_copy(this->checkpoint_token_pool_),
-                                                      overcommit));
+  StatusOr<std::unique_ptr<CheckpointJob>> checkpoint_job =
+      TURTLE_KV_COLLECT_LATENCY(this->metrics_.finalize_checkpoint_latency,
+                                this->checkpoint_generator_->finalize_checkpoint(
+                                    std::move(checkpoint_token),
+                                    batt::make_copy(this->checkpoint_token_pool_),
+                                    overcommit));
 
   BATT_REQUIRE_OK(checkpoint_job);
 
@@ -1304,6 +1344,10 @@ StatusOr<std::unique_ptr<CheckpointJob>> KVStore::apply_batch_to_checkpoint(
 //
 void KVStore::checkpoint_flush_thread_main()
 {
+  auto on_scope_exit = batt::finally([&] {
+    this->deltas_size_->close();
+  });
+
   Status status = [this]() -> Status {
     for (;;) {
       BATT_ASSIGN_OK_RESULT(std::unique_ptr<CheckpointJob> checkpoint_job,
@@ -1422,8 +1466,8 @@ void KVStore::collect_stats(
   auto& kv_store = this->metrics_;
   auto& checkpoint_log = *this->checkpoint_log_;
   auto& cache = checkpoint_log.cache();
-  auto& change_log_file = this->log_writer_->change_log_file();
-  auto& change_log_writer = this->log_writer_->metrics();
+  auto& change_log_file = this->change_log_writer_->change_log_file();
+  auto& change_log_writer = this->change_log_writer_->metrics();
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
   // PageCacheSlot::Pool metrics.
@@ -1669,7 +1713,7 @@ void KVStore::collect_stats(
   // Checkpoint metrics.
   //
   {
-    auto& checkpoint = this->checkpoint_generator_.metrics();
+    auto& checkpoint = this->checkpoint_generator_->metrics();
 
     fn("kv_store.checkpoint.count", kv_store.checkpoint_count.get());
     fn("kv_store.batch.count", kv_store.batch_edits_count.get());
