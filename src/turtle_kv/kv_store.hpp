@@ -143,6 +143,8 @@ class KVStore : public Table
       const TreeOptions& tree_options,
       Optional<RuntimeOptions> runtime_options = None) noexcept;
 
+  batt::Status run_recovery(const std::filesystem::path& path, EditOffset checkpoint_upper_bound);
+
   // TODO [tastolfi 2026-04-02] Should probably be private.
   //
   static batt::StatusOr<turtle_kv::Checkpoint> recover_latest_checkpoint(
@@ -231,13 +233,14 @@ class KVStore : public Table
                    const TreeOptions& tree_options,
                    const RuntimeOptions& runtime_options,
                    std::unique_ptr<ChangeLogWriter>&& change_log_writer,
-                   std::unique_ptr<llfs::Volume>&& checkpoint_log) noexcept;
+                   std::unique_ptr<llfs::Volume>&& checkpoint_log,
+                   Checkpoint&& latest_recovered_checkpoint) noexcept;
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
 
   /** \brief Initializes the `State` of the KVStore.
    */
-  void initialize_state();
+  void initialize_state(Checkpoint&& latest_recovered_checkpoint);
 
   /** \brief Creates and returns a new MemTable, with current checkpoint distance settings and the
    * specified EditOffset lower bound.
