@@ -280,8 +280,21 @@ u64 query_page_loader_reset_every_n()
     runtime_options = RuntimeOptions::with_default_values();
   }
 
-  // TODO [tastolfi 2026-04-03]:
-  // BATT_ASSIGN_OK_RESULT(Checkpoint latest_checkpoint, KVStore::recover_latest_checkpoint(...));
+  // Recover the checkpoint
+  //
+  BATT_ASSIGN_OK_RESULT(Checkpoint latest_checkpoint,
+                        KVStore::recover_latest_checkpoint(*checkpoint_log_volume));
+
+  // TODO: [Gabe Bornstein 4/8/26] I don't like that we have to mess with checkpoint_upper_bound
+  // in two places (KVStore::KVStore() is the other place). Consider how to refactor.
+  // 1. Could move everything into KVStore::KVStore. Would requiring passing `dir_path` in.
+  // 2. Could pass `checkpoint_upper_bound` as a parameter to KVStore::KVStore.
+  // 3. Could update the value of the lastest_checkpoint.edit_offset_upper_bound before passing it
+  // to KVStore::KVStore.
+  // 4. Leave it as is.
+  //
+  Optional<turtle_kv::EditOffset> checkpoint_upper_bound =
+      latest_checkpoint.edit_offset_upper_bound();
 
   std::unique_ptr<KVStore> kv_store{new KVStore{
       task_scheduler,
@@ -292,17 +305,12 @@ u64 query_page_loader_reset_every_n()
       *runtime_options,
       std::move(change_log_writer),
       std::move(checkpoint_log_volume),
-      // TODO [tastolfi 2026-04-03]:
-      // std::move(latest_checkpoint),
+      std::move(latest_checkpoint),
   }};
 
-  // TODO [tastolfi 2026-04-03]:
-  //
-  // In class KVStore: (private?)
-  //  Status run_recovery();
-
-  // TODO [tastolfi 2026-04-03]:
-  // BATT_REQUIRE_OK(kv_store->run_recovery());
+  BATT_REQUIRE_OK(kv_store->run_recovery(
+      dir_path / change_log_file_name(),
+      checkpoint_upper_bound == None ? EditOffset{0} : *checkpoint_upper_bound));
 
   return {std::move(kv_store)};
 }
@@ -372,7 +380,8 @@ u64 query_page_loader_reset_every_n()
                               const TreeOptions& tree_options,
                               const RuntimeOptions& runtime_options,
                               std::unique_ptr<ChangeLogWriter>&& change_log_writer,
-                              std::unique_ptr<llfs::Volume>&& checkpoint_log) noexcept
+                              std::unique_ptr<llfs::Volume>&& checkpoint_log,
+                              Checkpoint&& checkpoint) noexcept
     : metrics_{}
     , task_scheduler_{task_scheduler}
     , worker_pool_{worker_pool}
@@ -386,15 +395,16 @@ u64 query_page_loader_reset_every_n()
     , checkpoint_log_{std::move(checkpoint_log)}
     , filter_page_write_state_{FilterPageWriteState::make_new()}
     , state_{}
-    , deltas_size_{[this] {
+    , deltas_size_{[this, &checkpoint] {
       batt::Toggle<State>::Writer writer{this->state_};
 
       State& init_state = writer.new_value();
 
-      // TODO [tastolfi 2026-03-24] - for recovery, starting at EditOffset{0} is wrong.
-      //
-      init_state.mem_table_ = this->create_mem_table(EditOffset{0});
-      init_state.base_checkpoint_.emplace(Checkpoint::make_empty());
+      Optional<turtle_kv::EditOffset> checkpoint_upper_bound = checkpoint.edit_offset_upper_bound();
+
+      init_state.mem_table_ = this->create_mem_table(
+          checkpoint_upper_bound == None ? EditOffset{0} : *checkpoint_upper_bound);
+      init_state.base_checkpoint_.emplace(std::move(checkpoint));
 
       this->next_mem_table_edit_offset_.store(
           init_state.mem_table_->edit_offset_lower_bound().value());
@@ -415,7 +425,7 @@ u64 query_page_loader_reset_every_n()
                             this->tree_options_,
                             this->page_cache(),
                             batt::make_copy(this->filter_page_write_state_),
-                            batt::Toggle<State>::Reader{this->state_}->base_checkpoint_->clone(),
+                            batt::Toggle<State>::Reader{this->state_} -> base_checkpoint_->clone(),
                             *this->checkpoint_log_}
 
     , checkpoint_batch_count_{0}
@@ -624,23 +634,10 @@ Status KVStore::put(const KeyView& key, const ValueView& value) noexcept /*overr
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-// Will be called by run_recovery(): (very similar to recover latest mem table)
-//
-//     reader = new ChangeLogReader()
-//     reader->visit_slots([](...){
-//         if (edit_offset < checkpoint.bound) {
-//             return; // continue
-//         }
-//         this->recover_put(...);
-//     });
-//
-//
-#if 0
-Status KVStore::recover_put(
-    FirstVisitToBlock first_visit,
-    ChangeLogBlock* block,
-    EditOffset edit_offset,
-    ConstBuffer payload)  // TODO [tastolfi 2026-04-07] need parse(payload) -> key, value
+Status KVStore::recover_put(FirstVisitToBlock first_visit,
+                            ChangeLogBlock* block,
+                            EditOffset edit_offset,
+                            ConstBuffer payload)
 {
   for (;;) {
     boost::intrusive_ptr<MemTable> full_mem_table;
@@ -648,8 +645,14 @@ Status KVStore::recover_put(
     {
       batt::Toggle<State>::Reader state_reader{this->state_};
 
-      Status status =
-          state_reader->mem_table_->put_recovered_slot(first_visit, block, edit_offset, key, value);
+      StatusOr<std::pair<KeyView, ValueView>> unpacked_slot = unpack_key_value_slot(payload);
+      BATT_REQUIRE_OK(unpacked_slot);
+
+      Status status = state_reader->mem_table_->put_recovered_slot(first_visit,
+                                                                   block,
+                                                                   edit_offset,
+                                                                   unpacked_slot->first,
+                                                                   unpacked_slot->second);
 
       if (status.ok() || status != batt::StatusCode::kResourceExhausted) {
         return status;
@@ -658,6 +661,11 @@ Status KVStore::recover_put(
       full_mem_table = state_reader->mem_table_;
     }
 
+    // Handle case where MemTable has filled up and we need to:
+    // 1. Finalize the old MemTable.
+    // 2. Create a new MemTable.
+    // 3. Retry the put.
+    //
     BATT_CHECK_NOT_NULLPTR(full_mem_table);
     BATT_REQUIRE_OK(this->finalize_mem_table(std::move(full_mem_table)));
 
@@ -665,7 +673,6 @@ Status KVStore::recover_put(
     // to shrink?)
   }
 }
-#endif
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
@@ -965,7 +972,13 @@ void KVStore::wait_for_new_mem_table(EditOffset target_edit_offset)
       }
       observed = state_reader.get();
     }
-    this->state_.wait(observed);
+    // TODO: [Gabe Bornstein 4/8/26] Temporary fix to get this to compile. Figure out permanent fix
+    // for `.wait()`.
+    //
+    // this->state_.wait(observed);
+    while (!observed) {
+      batt::spin_yield();
+    }
   }
 }
 
@@ -992,6 +1005,37 @@ Status KVStore::push_mem_table_to_channel(boost::intrusive_ptr<MemTable>&& mem_t
   BATT_CHECK_EQ(replaced_value, this_edit_offset.value());
 
   return OkStatus();
+}
+
+//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
+//
+batt::Status KVStore::run_recovery(const std::filesystem::path& path,
+                                   EditOffset checkpoint_upper_bound)
+{
+  // Reover MemTable's from the ChangeLog
+  //
+  BATT_ASSIGN_OK_RESULT(std::unique_ptr<ChangeLogReader> log, ChangeLogReader::open(path));
+
+  batt::Status status =
+      log->visit_slots([this, checkpoint_upper_bound](FirstVisitToBlock first_visit,
+                                                      ChangeLogBlock* block,
+                                                      EditOffset edit_offset,
+                                                      ConstBuffer payload) -> batt::Status {
+        // Skip slots already recovered by checkpoint
+        //
+        if (edit_offset < checkpoint_upper_bound) {
+          return batt::OkStatus();
+        }
+
+        batt::Status recovered_slot_status =
+            this->recover_put(first_visit, block, edit_offset, payload);
+        BATT_REQUIRE_OK(recovered_slot_status);
+
+        return batt::OkStatus();
+      });
+
+  BATT_REQUIRE_OK(status);
+  return batt::OkStatus();
 }
 
 using CheckpointEvent = llfs::PackedVariant<turtle_kv::PackedCheckpoint>;
@@ -1133,9 +1177,9 @@ void KVStore::mem_table_batch_scanner_thread_main()
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
 template <typename Fn>
-  requires std::invocable<Fn, std::unique_ptr<DeltaBatch>>
-Status KVStore::scan_mem_table_to_build_batches(boost::intrusive_ptr<MemTable>&& mem_table,
-                                                Fn&& consume_fn)
+requires std::invocable<Fn, std::unique_ptr<DeltaBatch>> Status
+KVStore::scan_mem_table_to_build_batches(boost::intrusive_ptr<MemTable>&& mem_table,
+                                         Fn&& consume_fn)
 {
   MemTable::BatchCompactor batch_compactor{*mem_table,
                                            /*byte_size_limit=*/this->tree_options_.flush_size()};

@@ -113,6 +113,8 @@ class KVStore : public Table
       const TreeOptions& tree_options,
       Optional<RuntimeOptions> runtime_options = None) noexcept;
 
+  batt::Status run_recovery(const std::filesystem::path& path, EditOffset checkpoint_upper_bound);
+
   // TODO [tastolfi 2026-04-02] Should probably be private.
   //
   static batt::StatusOr<turtle_kv::Checkpoint> recover_latest_checkpoint(
@@ -201,7 +203,8 @@ class KVStore : public Table
                    const TreeOptions& tree_options,
                    const RuntimeOptions& runtime_options,
                    std::unique_ptr<ChangeLogWriter>&& change_log_writer,
-                   std::unique_ptr<llfs::Volume>&& checkpoint_log) noexcept;
+                   std::unique_ptr<llfs::Volume>&& checkpoint_log,
+                   Checkpoint&& checkpoint) noexcept;
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
 
@@ -237,9 +240,8 @@ class KVStore : public Table
   void info_task_main() noexcept;
 
   template <typename Fn>
-    requires std::invocable<Fn, std::unique_ptr<DeltaBatch>>
-  Status scan_mem_table_to_build_batches(boost::intrusive_ptr<MemTable>&& mem_table,
-                                         Fn&& consume_fn);
+  requires std::invocable<Fn, std::unique_ptr<DeltaBatch>> Status
+  scan_mem_table_to_build_batches(boost::intrusive_ptr<MemTable>&& mem_table, Fn&& consume_fn);
 
   void mem_table_batch_scanner_thread_main();
 
