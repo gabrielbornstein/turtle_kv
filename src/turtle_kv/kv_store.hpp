@@ -86,6 +86,36 @@ class KVStore : public Table
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
 
+  /** \brief We allow 2 deltas, which are finalized MemTables, plus 1 active MemTable.
+   *
+   * This is because of the following update pipeline:
+   *
+   *```
+   * ┌───────────┐
+   * │   State   │  time ───▶
+   * │───────────│
+   * │  MemTable:│  M1─────────────────────M2──────────────────────M3───────────────────────────
+   * │    Deltas:│  []────────────────────[M1]────────────────────[M1, M2]────────────────[M2]──
+   * │Checkpoint:│  C0─────────────────────────────────────────────────────────────────────C1───
+   * └───────────┘ ┌─────────────────────┐┌───────────────────────┐┌─────────────────────── ▲
+   *               │filling MemTable M1  ││filling MemTable M2    ││filling MemTable M3     │
+   *               └─────────────────────┘└───────────────────────┘└─────────────────────── │
+   *                         finalize M1 │            finalize M2 │                         │
+   *                                     ▼                        ▼                         │
+   *                                     ┌────────────────────────┐┌─────────────────────── │
+   *                                     │building Checkpoint C1  ││building Checkpoint C2  │
+   *                                     └────────────────────────┘└─────────────────────── │
+   *                                                    commit C1 │                         │
+   *                                                              ▼            update State │
+   *                                                              ┌─────────────────────────┐
+   *                                                              │writing Checkpoint C1    │
+   *                                                              └─────────────────────────┘
+   *```
+   */
+  static constexpr usize kMaxDeltasSize = 2;
+
+  //+++++++++++-+-+--+----- --- -- -  -  -   -
+
   static Status configure_storage_context(llfs::StorageContext& storage_context,
                                           const TreeOptions& tree_options,
                                           const RuntimeOptions& runtime_options) noexcept;
