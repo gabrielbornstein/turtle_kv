@@ -157,6 +157,8 @@ u64 query_page_loader_reset_every_n()
             (kv_store_config.change_log_size_bytes + ChangeLogFile::kDefaultBlockSize - 1) /
                 ChangeLogFile::kDefaultBlockSize)},
         .block0_offset = FileOffset{ChangeLogFile::kDefaultBlock0Offset},
+        .lower_bound = 0,
+        .upper_bound = 0,
     };
 
     BATT_REQUIRE_OK(ChangeLogFile::create(dir_path / change_log_file_name(),  //
@@ -267,6 +269,10 @@ u64 query_page_loader_reset_every_n()
   BATT_REQUIRE_OK(storage_context.add_existing_named_file(dir_path / filter_page_file_name()));
   BATT_REQUIRE_OK(storage_context.add_existing_named_file(dir_path / checkpoint_log_file_name()));
 
+  // TODO: [Gabe Bornstein 4/29/26] Consider moving ChangeLogWriter initialization to after
+  // run_recovery. ChangeLogWriter needs to be initialized with the active block range, and the edit
+  // offset upper bounds of the active blocks. These values will be outputs of run_recovery.
+  //
   BATT_ASSIGN_OK_RESULT(std::unique_ptr<ChangeLogWriter> change_log_writer,
                         ChangeLogWriter::open(dir_path / change_log_file_name()));
 
@@ -285,13 +291,6 @@ u64 query_page_loader_reset_every_n()
   BATT_ASSIGN_OK_RESULT(Checkpoint latest_checkpoint,
                         KVStore::recover_latest_checkpoint(*checkpoint_log_volume));
 
-  // TODO [Gabe Bornstein 4/8/26] [tastolfi 2026-04-08] What I am worried about is that we are
-  // opening the ChangeLogWriter *before* doing recovery; to me this could spell trouble.  It makes
-  // sense that run_recovery takes the path to the change log file; I think a good side-effect of
-  // successful `run_recovery` could be to figure out what the correct values for the append and
-  // trim points are, and create the ChangeLogWriter after we know that information.
-  //
-
   std::unique_ptr<KVStore> kv_store{new KVStore{
       task_scheduler,
       worker_pool,
@@ -305,6 +304,9 @@ u64 query_page_loader_reset_every_n()
   }};
 
   BATT_REQUIRE_OK(kv_store->run_recovery(dir_path / change_log_file_name()));
+
+  // TODO: [Gabe Bornstein 4/27/26] Consider running trim somewhere here post ChangeLogWriter
+  // initialization and recovery.
 
   return {std::move(kv_store)};
 }
@@ -413,7 +415,7 @@ u64 query_page_loader_reset_every_n()
       this->tree_options_,
       this->page_cache(),
       batt::make_copy(this->filter_page_write_state_),
-      batt::Toggle<State>::Reader{this->state_}->base_checkpoint_->clone(),
+      batt::Toggle<State>::Reader { this->state_ } -> base_checkpoint_->clone(),
       *this->checkpoint_log_);
 
   this->tree_options_.set_trie_index_reserve_size(this->tree_options_.trie_index_reserve_size());
@@ -1101,6 +1103,9 @@ Status KVStore::push_mem_table_to_channel(boost::intrusive_ptr<MemTable>&& mem_t
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
+// TODO: [Gabe Bornstein 4/29/26] An output/side-effect of run_recovery should be knowing the
+// edit_offset upper_bounds of the recovered active blocks.
+//
 batt::Status KVStore::run_recovery(const std::filesystem::path& path)
 
 {
@@ -1227,9 +1232,9 @@ void KVStore::mem_table_batch_scanner_thread_main()
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
 template <typename Fn>
-  requires std::invocable<Fn, std::unique_ptr<DeltaBatch>>
-Status KVStore::scan_mem_table_to_build_batches(boost::intrusive_ptr<MemTable>&& mem_table,
-                                                Fn&& consume_fn)
+requires std::invocable<Fn, std::unique_ptr<DeltaBatch>> Status
+KVStore::scan_mem_table_to_build_batches(boost::intrusive_ptr<MemTable>&& mem_table,
+                                         Fn&& consume_fn)
 {
   MemTable::BatchCompactor batch_compactor{*mem_table,
                                            /*byte_size_limit=*/this->tree_options_.flush_size()};

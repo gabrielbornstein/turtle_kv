@@ -298,14 +298,7 @@ void ChangeLogWriter::Context::push_buffer(BlockBuffer*& buffer,
   }
   BATT_REQUIRE_OK(ec);
 
-  BATT_ASSIGN_OK_RESULT(std::unique_ptr<ChangeLogFile> log_file, ChangeLogFile::open(path));
-
-  // TODO [tastolfi 2026-04-20] pass real values for active blocks params!
-  //
-  return {std::make_unique<ChangeLogWriter>(std::move(log_file),
-                                            options,
-                                            make_interval(BlockIndex{0}, BlockIndex{0}),
-                                            Slice<EditOffset>{})};
+  return ChangeLogWriter::open(path, options);
 }
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
@@ -313,18 +306,43 @@ void ChangeLogWriter::Context::push_buffer(BlockBuffer*& buffer,
 /*static*/ StatusOr<std::unique_ptr<ChangeLogWriter>> ChangeLogWriter::open(
     const std::filesystem::path& path,                //
     Optional<ChangeLogWriter::Options> maybe_options  //
+    // TODO: [Gabe Bornstein 4/27/26] Consider making these optional
+    // const Interval<BlockIndex>& active_block_range,
+    // const Slice<EditOffset>& active_blocks_upper_bounds
     ) noexcept
 {
   Options options = maybe_options.value_or(Options::with_default_values());
 
   BATT_ASSIGN_OK_RESULT(std::unique_ptr<ChangeLogFile> log_file, ChangeLogFile::open(path));
 
-  // TODO [tastolfi 2026-04-20] pass real values for active blocks params!
+  const ChangeLogFile::Config& config = log_file->config();
+
+  i64 recovered_lower = config.lower_bound;
+  i64 recovered_upper = config.upper_bound;
+
+  // Widen the upper bound by max_batch_size_ to account for blocks that may have been written to
+  // disk but not yet reflected in the persisted config header.
   //
-  return {std::make_unique<ChangeLogWriter>(std::move(log_file),
-                                            options,
-                                            make_interval(BlockIndex{0}, BlockIndex{0}),
-                                            Slice<EditOffset>{})};
+  // TODO: [Gabe Bornstein 4/29/26] Should we be adding max_batch_size_ here? We need to add the
+  // largest possible distance between flushes to the ChangeLogFile config header. This distance is
+  // determined by how frequently we flush the active block range to the config header. We only
+  // flush to the config header in "activate_blocks". What's the largest possible gap there?
+  //
+  recovered_upper = recovered_upper + ChangeLogWriter::max_batch_size_;
+
+  Interval<BlockIndex> active_block_range =
+      make_interval(BlockIndex{recovered_lower}, BlockIndex{recovered_upper});
+
+  LOG(INFO) << BATT_INSPECT(active_block_range);
+
+  return {std::make_unique<ChangeLogWriter>(
+      std::move(log_file),
+      options,
+      active_block_range,
+
+      // TODO: [Gabe Bornstein 4/29/26] Initialize the actual upper_bounds of active_blocks.
+      //
+      Slice<EditOffset>{})};
 }
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
@@ -619,7 +637,7 @@ auto ChangeLogWriter::prepare_blocks(CollectedBlocksState& input,
   // Add as many blocks as we can.
   //
   while (!input.blocks.empty() && space_in_file >= this->config().block_size &&
-         output.block_chunks.size() < this->max_batch_size_) {
+         output.block_chunks.size() < ChangeLogWriter::max_batch_size_) {
     //----- --- -- -  -  -   -
     BlockBuffer* const next_block = input.blocks.front();
 
@@ -656,7 +674,8 @@ auto ChangeLogWriter::write_blocks(PreparedBlocksState& input, WrittenBlocksStat
     output.check_invariants(this->config());
   });
 
-  BATT_CHECK_LE(input.block_chunks.size(), this->max_batch_size_) << "Too many prepared blocks!";
+  BATT_CHECK_LE(input.block_chunks.size(), ChangeLogWriter::max_batch_size_)
+      << "Too many prepared blocks!";
 
   // Write!
   //
@@ -740,10 +759,6 @@ auto ChangeLogWriter::write_blocks(PreparedBlocksState& input, WrittenBlocksStat
 Status ChangeLogWriter::activate_blocks(WrittenBlocksState& input,
                                         ActiveBlocksState& output) noexcept
 {
-  // TODO: [Gabe Bornstein 4/23/26] Consider updating the change log header here
-  // (active_block_range, active_blocks_upper_bounds). We don't want to update the header too
-  // frequently. How frequently is activate_blocks called?
-  //
   if (input.blocks.empty()) {
     return OkStatus();
   }
@@ -819,6 +834,13 @@ Status ChangeLogWriter::activate_blocks(WrittenBlocksState& input,
     // No wrap-around for active_upper_bound_block, because it must stay >= the lower bound.
     //
     cfg.increment_upper_bound(output.block_range);
+  }
+
+  {
+    ChangeLogFile::Config& config = this->change_log_file().config();
+    config.lower_bound = output.block_range.lower_bound;
+    config.upper_bound = output.block_range.upper_bound;
+    BATT_REQUIRE_OK(this->change_log_file().flush_config());
   }
 
   return OkStatus();

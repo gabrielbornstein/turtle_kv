@@ -176,21 +176,23 @@ class ChangeLogWriter
      *    wait_for_resource is `batt::WaitForResource::kFalse`
      */
     template <typename SerializeFn>
-      requires std::
-          invocable<SerializeFn&&, FirstVisitToBlock, BlockBuffer*, MutableBuffer, EditOffset>
-        Status append_slot(EditOffset min_edit_offset_lower_bound,
-                           usize byte_size,
-                           batt::WaitForResource wait_for_resource,
-                           SerializeFn&& fn) noexcept;
+    requires std::
+        invocable<SerializeFn&&, FirstVisitToBlock, BlockBuffer*, MutableBuffer, EditOffset>
+            Status append_slot(EditOffset min_edit_offset_lower_bound,
+                               usize byte_size,
+                               batt::WaitForResource wait_for_resource,
+                               SerializeFn&& fn)
+    noexcept;
 
     /** \brief Calls `this->append_slot` with `wait_for_resource=batt::WaitForResource::kTrue`.
      */
     template <typename SerializeFn>
-      requires std::
-          invocable<SerializeFn&&, FirstVisitToBlock, BlockBuffer*, MutableBuffer, EditOffset>
-        Status append_slot(EditOffset min_edit_offset_lower_bound,
-                           usize byte_size,
-                           SerializeFn&& fn) noexcept
+    requires std::
+        invocable<SerializeFn&&, FirstVisitToBlock, BlockBuffer*, MutableBuffer, EditOffset>
+            Status append_slot(EditOffset min_edit_offset_lower_bound,
+                               usize byte_size,
+                               SerializeFn&& fn)
+    noexcept
     {
       return this->append_slot(min_edit_offset_lower_bound,
                                byte_size,
@@ -390,8 +392,8 @@ class ChangeLogWriter
    * passed range (`range`).
    */
   template <typename BufferRange>
-    requires std::ranges::range<BufferRange> &&
-             std::assignable_from<BlockBuffer*&, std::ranges::range_value_t<BufferRange>>
+  requires std::ranges::range<BufferRange> &&
+      std::assignable_from<BlockBuffer*&, std::ranges::range_value_t<BufferRange>>
   static void remove_buffer_refs(const BufferRange& range, i32 delta = 1) noexcept
   {
     for (BlockBuffer* buffer : range) {
@@ -479,7 +481,7 @@ class ChangeLogWriter
    */
   batt::Mutex<State> state_;
 
-  const usize max_batch_size_ =
+  const static usize max_batch_size_ =
 #if BATT_PLATFORM_IS_LINUX
       IOV_MAX;
 #else
@@ -498,12 +500,12 @@ class ChangeLogWriter
 // #=##=##=#==#=#==#===#+==#+==========+==+=+=+=+=+=++=+++=+++++=-++++=-+++++++++++
 
 template <typename SerializeFn>
-  requires std::
-      invocable<SerializeFn&&, FirstVisitToBlock, ChangeLogBlock*, MutableBuffer, EditOffset>
-    inline Status ChangeLogWriter::Context::append_slot(EditOffset min_edit_offset_lower_bound,
-                                                        usize byte_size,
-                                                        batt::WaitForResource wait_for_resource,
-                                                        SerializeFn&& serialize_fn) noexcept
+requires std::
+    invocable<SerializeFn&&, FirstVisitToBlock, ChangeLogBlock*, MutableBuffer, EditOffset>
+inline Status ChangeLogWriter::Context::append_slot(EditOffset min_edit_offset_lower_bound,
+                                                    usize byte_size,
+                                                    batt::WaitForResource wait_for_resource,
+                                                    SerializeFn&& serialize_fn) noexcept
 {
   Context& context = *this;
   ChangeLogWriter& writer = this->writer_;

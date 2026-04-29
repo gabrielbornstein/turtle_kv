@@ -74,6 +74,19 @@ class ChangeLogFile
     BlockCount block_count;
     FileOffset block0_offset;
 
+    // The physical address in the ChangeLogFile of the oldest known
+    // active block. The lower bound will never Greater Than the upper_bound. NOT guaranteed to be
+    // up to date. The actual oldest active block may be newer. The lower_bound should guarantee it
+    // is Less Than the lower bound of the actual oldest active block.
+    //
+    little_i64 lower_bound;
+
+    // Logical address in the ChangeLogFile of the newest known active block. NOT guaranteed to be
+    // up to date. The actual newest active block may be newer. The upper_bound should guarantee it
+    // is Less Than the upper bound of the actual newest active block.
+    //
+    little_i64 upper_bound;
+
     //+++++++++++-+-+--+----- --- -- -  -  -   -
 
     static Config with_default_values() noexcept;
@@ -224,13 +237,20 @@ class ChangeLogFile
     little_i64 block_count;
     little_i64 block0_offset;
 
-    // TODO: [Gabe Bornstein 4/23/26] Add enough info to initialize ChangeLogWriter during recover.
-    // Determine where/when it makes sense to update this information.
+    // The physical address in the ChangeLogFile of the oldest known
+    // active block. The lower bound will never Greater Than the upper_bound. NOT guaranteed to be
+    // up to date. The actual oldest active block may be newer. The lower_bound should guarantee it
+    // is Less Than the lower bound of the actual oldest active block.
     //
-    // Interval<BlockIndex>& active_block_range;
-    // Slice<EditOffset>& active_blocks_upper_bounds;
+    little_i64 lower_bound;
 
-    u8 reserved_[4096 - 32];
+    // Logical address in the ChangeLogFile of the newest known active block. NOT guaranteed to be
+    // up to date. The actual newest active block may be newer. The upper_bound should guarantee it
+    // is Less Than the upper bound of the actual newest active block.
+    //
+    little_i64 upper_bound;
+
+    u8 reserved_[4096 - 48];
 
     //+++++++++++-+-+--+----- --- -- -  -  -   -
 
@@ -255,10 +275,12 @@ class ChangeLogFile
 
   //+++++++++++-+-+--+----- --- -- -  -  -   -
 
-  const Config& config() const noexcept
+  Config& config() noexcept
   {
     return this->config_;
   }
+
+  Status flush_config() noexcept;
 
   StatusOr<batt::Grant> reserve_blocks(BlockCount block_count,
                                        batt::WaitForResource wait_for_resource) noexcept;
@@ -324,8 +346,6 @@ class ChangeLogFile
 BATT_OBJECT_PRINT_IMPL((inline), ChangeLogFile::Config, (block_size, block_count, block0_offset))
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
-// TODO: [Gabe Bornstein 1/16/26] Do I need to update other ChangeLogFile member data? Like lower,
-// upper bound? They aren't recovered from ::open.
 //
 template <typename SerializeFn>
 batt::Status ChangeLogFile::read_blocks(SerializeFn process_block)
