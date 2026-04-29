@@ -55,7 +55,7 @@ class ChangeLogReader
 
   // +++++++++++-+-+--+----- --- -- -  -  -   -
   //
-  Status visit_slots(const SlotVisitorFn& visitor)
+  batt::StatusOr<RecoveredChangeLogState> visit_slots(const SlotVisitorFn& visitor)
   {
     batt::StatusOr<std::vector<boost::intrusive_ptr<ChangeLogBlock>>> blocks =
         this->change_log_->read_blocks_into_vector();

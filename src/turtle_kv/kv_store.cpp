@@ -269,15 +269,6 @@ u64 query_page_loader_reset_every_n()
   BATT_REQUIRE_OK(storage_context.add_existing_named_file(dir_path / filter_page_file_name()));
   BATT_REQUIRE_OK(storage_context.add_existing_named_file(dir_path / checkpoint_log_file_name()));
 
-  // TODO: [Gabe Bornstein 4/29/26] Consider moving ChangeLogWriter initialization to after
-  // run_recovery. ChangeLogWriter needs to be initialized with the active block range, and the edit
-  // offset upper bounds of the active blocks. These values will be outputs of run_recovery.
-  //
-  BATT_ASSIGN_OK_RESULT(std::unique_ptr<ChangeLogWriter> change_log_writer,
-                        ChangeLogWriter::open(dir_path / change_log_file_name()));
-
-  change_log_writer->start(task_scheduler.schedule_task());
-
   BATT_ASSIGN_OK_RESULT(std::unique_ptr<llfs::Volume> checkpoint_log_volume,
                         open_checkpoint_log(storage_context,  //
                                             dir_path / checkpoint_log_file_name()));
@@ -286,10 +277,12 @@ u64 query_page_loader_reset_every_n()
     runtime_options = RuntimeOptions::with_default_values();
   }
 
-  // Recover the checkpoint
+  // Recover the checkpoint.
   //
   BATT_ASSIGN_OK_RESULT(Checkpoint latest_checkpoint,
                         KVStore::recover_latest_checkpoint(*checkpoint_log_volume));
+
+  const EditOffset checkpoint_upper_bound = latest_checkpoint.edit_offset_upper_bound();
 
   std::unique_ptr<KVStore> kv_store{new KVStore{
       task_scheduler,
@@ -303,10 +296,17 @@ u64 query_page_loader_reset_every_n()
       std::move(latest_checkpoint),
   }};
 
-  BATT_REQUIRE_OK(kv_store->run_recovery(dir_path / change_log_file_name()));
+  batt::StatusOr<RecoveredChangeLogState> recovered_state =
+      kv_store->run_recovery(dir_path / change_log_file_name());
 
-  // TODO: [Gabe Bornstein 4/27/26] Consider running trim somewhere here post ChangeLogWriter
-  // initialization and recovery.
+  BATT_REQUIRE_OK(recovered_state);
+
+  // Create the ChangeLogWriter with the actual recovered state.
+  //
+  BATT_ASSIGN_OK_RESULT(std::unique_ptr<ChangeLogWriter> change_log_writer,
+                        ChangeLogWriter::open(dir_path / change_log_file_name(), recovered_state));
+
+  change_log_writer->start(task_scheduler.schedule_task());
 
   return {std::move(kv_store)};
 }
@@ -1103,11 +1103,7 @@ Status KVStore::push_mem_table_to_channel(boost::intrusive_ptr<MemTable>&& mem_t
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
-// TODO: [Gabe Bornstein 4/29/26] An output/side-effect of run_recovery should be knowing the
-// edit_offset upper_bounds of the recovered active blocks.
-//
-batt::Status KVStore::run_recovery(const std::filesystem::path& path)
-
+batt::StatusOr<RecoveredChangeLogState> KVStore::run_recovery(const std::filesystem::path& path)
 {
   EditOffset checkpoint_upper_bound = EditOffset{0};
   {
@@ -1119,7 +1115,7 @@ batt::Status KVStore::run_recovery(const std::filesystem::path& path)
   //
   BATT_ASSIGN_OK_RESULT(std::unique_ptr<ChangeLogReader> log, ChangeLogReader::open(path));
 
-  batt::Status status =
+  batt::StatusOr<RecoveredChangeLogState> status =
       log->visit_slots([this, checkpoint_upper_bound](FirstVisitToBlock first_visit,
                                                       ChangeLogBlock* block,
                                                       EditOffset edit_offset,
@@ -1134,11 +1130,16 @@ batt::Status KVStore::run_recovery(const std::filesystem::path& path)
             this->recover_put(first_visit, block, edit_offset, payload);
         BATT_REQUIRE_OK(recovered_slot_status);
 
+        // TODO: [Gabe bornstein 4/29/26] To capture the active range of blocks for the
+        // ChangeLogWriter, save the smallest block lower_bound, and the largest block upperbound.
+        // Also save a Slice of all block upper_bounds.
+        //
+
         return batt::OkStatus();
       });
 
   BATT_REQUIRE_OK(status);
-  return batt::OkStatus();
+  return *status;
 }
 
 using CheckpointEvent = llfs::PackedVariant<turtle_kv::PackedCheckpoint>;

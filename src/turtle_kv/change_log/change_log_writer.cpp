@@ -347,6 +347,31 @@ void ChangeLogWriter::Context::push_buffer(BlockBuffer*& buffer,
 
 //==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
 //
+/*static*/ StatusOr<std::unique_ptr<ChangeLogWriter>> ChangeLogWriter::open(
+    const std::filesystem::path& path,                   //
+    const RecoveredChangeLogState& recovered_state,      //
+    Optional<ChangeLogWriter::Options> maybe_options     //
+    ) noexcept
+{
+  Options options = maybe_options.value_or(Options::with_default_values());
+
+  BATT_ASSIGN_OK_RESULT(std::unique_ptr<ChangeLogFile> log_file, ChangeLogFile::open(path));
+
+  std::vector<EditOffset> upper_bounds = recovered_state.active_blocks_upper_bounds;
+
+  auto writer = std::make_unique<ChangeLogWriter>(
+      std::move(log_file),
+      options,
+      recovered_state.active_block_range,
+      as_slice(upper_bounds));
+
+  writer->next_edit_offset_.store(recovered_state.next_edit_offset.value());
+
+  return {std::move(writer)};
+}
+
+//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
+//
 /*explicit*/ ChangeLogWriter::ChangeLogWriter(
     std::unique_ptr<ChangeLogFile>&& change_log,
     const Options& options,

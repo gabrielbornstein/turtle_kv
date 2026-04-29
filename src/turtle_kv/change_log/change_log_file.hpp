@@ -447,4 +447,16 @@ batt::Status ChangeLogFile::read_blocks(SerializeFn process_block)
   return batt::OkStatus();
 }
 
+/** \brief The result of recovering active block state from a ChangeLogFile.
+ */
+struct RecoveredChangeLogState {
+  Interval<BlockIndex> active_block_range;
+  std::vector<EditOffset> active_blocks_upper_bounds;
+  EditOffset next_edit_offset;
+
+  //+++++++++++-+-+--+----- --- -- -  -  -   -
+
+  StatusOr<RecoveredChangeLogState> recover(EditOffset checkpoint_upper_bound) noexcept;
+};
+
 }  // namespace turtle_kv

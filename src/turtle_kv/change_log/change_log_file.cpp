@@ -164,6 +164,10 @@ ChangeLogFile::~ChangeLogFile() noexcept
 batt::StatusOr<std::vector<boost::intrusive_ptr<ChangeLogBlock>>>
 ChangeLogFile::read_blocks_into_vector()
 {
+  // TODO: [Gabe Bornstein 4/29/26] Consider adding optional parameter that could denote which block
+  // to start reading from, and which block to stop reading from. We only need to read the potential
+  // active range, denoted in ChangeLogFile::Config.
+  //
   std::vector<boost::intrusive_ptr<ChangeLogBlock>> blocks;
   batt::Status read_blocks_status =
       this->read_blocks([&](boost::intrusive_ptr<ChangeLogBlock> block) -> batt::Status {
@@ -179,6 +183,67 @@ ChangeLogFile::read_blocks_into_vector()
 
   BATT_REQUIRE_OK(read_blocks_status);
   return blocks;
+}
+
+//==#==========+==+=+=++=+++++++++++-+-+--+----- --- -- -  -  -   -
+//
+StatusOr<RecoveredChangeLogState> RecoveredChangeLogState::recover(
+    EditOffset checkpoint_upper_bound) noexcept
+{
+  const ChangeLogFile::Config& config = this->config();
+  const i64 block_count = config.block_count;
+
+  BATT_ASSIGN_OK_RESULT(std::vector<boost::intrusive_ptr<ChangeLogBlock>> blocks,
+                        this->read_blocks_into_vector());
+
+  // Scan all recovered blocks. A block is "active" if its edit_offset_upper_bound is greater than
+  // the checkpoint_upper_bound (i.e. it contains data not yet checkpointed).
+  //
+  // TODO: [Gabe Bornstein 4/29/26] Handle case where config.lower_bound isn't set.
+  //
+  i64 active_lower = config.lower_bound;
+  i64 active_upper = config.upper_bound;
+  EditOffset max_edit_offset = checkpoint_upper_bound;
+  u64 file_size = sizeof(PackedConfig) + config.block_size * config.block_count;
+
+  for (auto block : blocks) {
+    if (block->edit_offset_lower_bound() > checkpoint_upper_bound) {
+      if (block->edit_offset_lower_bound() < active_lower) {
+        // TODO: [Gabe Bornstein 4/29/26] Update so that this is a physical file offset. Might be
+        // wrong right now. Look at how ChangeLogWriter::activate_blocks does it.
+        active_lower = block->edit_offset_lower_bound() % config.file_size;
+      }
+      active_upper = block->edit_offset_upper_bound();
+      if (block->edit_offset_upper_bound() > max_edit_offset) {
+        max_edit_offset = block->edit_offset_upper_bound();
+      }
+    }
+  }
+
+  // Handle case where there were no active blocks.
+  //
+  if (active_lower == 0 && active_upper == 0) {
+    return RecoveredChangeLogState{
+        .active_block_range = make_interval(BlockIndex{0}, BlockIndex{0}),
+        .active_blocks_upper_bounds = {},
+        .next_edit_offset = checkpoint_upper_bound,
+    };
+  }
+
+  // Fill up the upper bounds for each block
+  //
+  std::vector<EditOffset> upper_bounds;
+  upper_bounds.reserve(active_upper - active_lower);
+  for (i64 i = active_lower; i < active_upper; ++i) {
+    const i64 block_index = i % block_count;
+    upper_bounds.push_back(blocks[block_index]->edit_offset_upper_bound());
+  }
+
+  return RecoveredChangeLogState{
+      .active_block_range = make_interval(BlockIndex{active_lower}, BlockIndex{active_upper}),
+      .active_blocks_upper_bounds = std::move(upper_bounds),
+      .next_edit_offset = max_edit_offset,
+  };
 }
 
 }  // namespace turtle_kv
